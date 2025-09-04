@@ -21,7 +21,7 @@ export const actions: Actions = {
 
     // verify admin *right after login* to avoid setting a cookie for non-admins
     const { data: adminRow } = await sb
-      .from('admins')
+      .from('admin_users')
       .select('user_id')
       .eq('user_id', data.user.id)
       .maybeSingle();

@@ -1,27 +1,44 @@
+// src/hooks.server.ts
 import type { Handle } from '@sveltejs/kit';
-import { supabaseFromCookies } from '$lib/supabase.server';
+import { createClient } from '@supabase/supabase-js';
+import { env } from '$env/dynamic/private';
+
+const supabaseAnon = () =>
+  createClient(env.SUPABASE_URL!, env.SUPABASE_ANON_KEY!);
 
 export const handle: Handle = async ({ event, resolve }) => {
-  // default
   event.locals.userId = null;
   event.locals.isAdmin = false;
 
-  // build per-request supabase client using the token cookie (if present)
-  const sb = supabaseFromCookies(event.cookies);
+  const token = event.cookies.get('sb') ?? null;
 
-  // 1) resolve user from token
-  const { data: userData } = await sb.auth.getUser();
-  const uid = userData?.user?.id ?? null;
-  event.locals.userId = uid;
+  try {
+    // 1) Resolve user from the raw token
+    if (token) {
+      const { data: userData, error: uErr } = await supabaseAnon().auth.getUser(token);
+      if (uErr) {
+        console.error('[hooks] getUser error:', uErr);
+      }
+      const uid = userData?.user?.id ?? null;
+      event.locals.userId = uid;
 
-  // 2) check admin table (simple & authoritative on each request)
-  if (uid) {
-    const { data: adminRow } = await sb
-      .from('admins')
-      .select('user_id')
-      .eq('user_id', uid)
-      .maybeSingle();
-    event.locals.isAdmin = !!adminRow;
+      // 2) Check admins table (must be allowed by your RLS)
+      if (uid) {
+        const { data: adminRow, error: aErr } = await supabaseAnon()
+          .from('admin_users')
+          .select('user_id')
+          .eq('user_id', uid)
+          .maybeSingle();
+
+        if (aErr) {
+          console.error('[hooks] admins query error:', aErr);
+        }
+
+        event.locals.isAdmin = !!adminRow;
+      }
+    }
+  } catch (e) {
+    console.error('[hooks] unexpected auth error:', e);
   }
 
   return resolve(event);

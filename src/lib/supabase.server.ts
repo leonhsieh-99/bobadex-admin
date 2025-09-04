@@ -4,7 +4,7 @@ import type { Cookies } from '@sveltejs/kit';
 
 /** Anonymous client (no Authorization header) */
 export function supabaseAnon(): SupabaseClient {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
 /** Per-request client that forwards the user token via Authorization */
