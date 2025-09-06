@@ -1,11 +1,10 @@
 // src/routes/admin/brands/+page.server.ts
 import type { PageServerLoad, Actions } from './$types';
 import { error, redirect } from '@sveltejs/kit';
-import { supabaseFromCookies } from '$lib/supabase.server';
 
-export const load: PageServerLoad = async ({ cookies }) => {
-  const sb = supabaseFromCookies(cookies);
-  const { data, error: qErr } = await sb
+export const load: PageServerLoad = async ({ locals }) => {
+  // pending approvals
+  const { data: pending, error: qErr } = await locals.sb
     .from('brand_staging')
     .select('id, suggested_name, status, created_at, duplicates')
     .eq('status', 'pending')
@@ -17,21 +16,31 @@ export const load: PageServerLoad = async ({ cookies }) => {
     throw error(500, 'Failed to load pending brands');
   }
 
-  return { pending: data ?? [] };
+  // brands needing icons
+  const { data: iconless, error: iErr } = await locals.sb
+    .from('brands')
+    .select('slug, display, icon_path, created_at')
+    .or('icon_path.is.null,icon_path.eq.')
+    .order('created_at', { ascending: true });
+
+  if (iErr) {
+    console.error('brands query error:', iErr);
+    throw error(500, 'Failed to load brands needing icons');
+  }
+
+  return { pending: pending ?? [], iconless: iconless ?? [] };
 };
 
-// src/routes/admin/brands/+page.server.ts
 export const actions: Actions = {
-  verify: async ({ request, cookies }) => {
-    const sb = supabaseFromCookies(cookies);
+  verify: async ({ request, locals }) => {
     const form = await request.formData();
     const id = form.get('id') as string | null;
-    const force_slug = (form.get('force_slug') as string | null) || undefined;
+    const force_display = (form.get('force_display') as string | null) || undefined;
 
     if (!id) throw redirect(303, '/admin/brands?toast=verify_failed&msg=missing_id');
 
-    const { data, error } = await sb.functions.invoke('verify-brand', {
-      body: { id, force_slug } // no generate_icon
+    const { data, error } = await locals.sb.functions.invoke('verify-brand', {
+      body: { id, force_display }
     });
 
     if (error || (data)?.error) {
@@ -39,22 +48,25 @@ export const actions: Actions = {
       throw redirect(303, `/admin/brands?toast=verify_failed&msg=${msg}`);
     }
 
-    throw redirect(303, '/admin/brands?toast=verified');
+    const slug = (data).slug;
+    const display = (data).display;
+
+
+    throw redirect(
+      303,
+      `/admin/brands?toast=verified&slug=${encodeURIComponent(slug)}&display=${encodeURIComponent(display)}`
+    );
   },
 
-  reject: async ({ request, cookies }) => {
-    const sb = supabaseFromCookies(cookies);
+  reject: async ({ request, locals }) => {
     const form = await request.formData();
     const id = form.get('id') as string | null;
     const reason = (form.get('reason') as string | null) || undefined;
 
     if (!id) throw redirect(303, '/admin/brands?toast=reject_failed&msg=missing_id');
 
-    const accessToken = cookies.get('sb') ?? null;
-
-    const { data, error } = await sb.functions.invoke('reject-brand', {
-      body: { id, reason },
-      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined
+    const { data, error } = await locals.sb.functions.invoke('reject-brand', {
+      body: { id, reason }
     });
 
     if (error || (data)?.error) {
@@ -70,4 +82,3 @@ export const actions: Actions = {
     throw redirect(303, '/admin/brands?toast=rejected');
   }
 };
-

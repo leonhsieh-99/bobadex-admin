@@ -13,31 +13,44 @@ export const actions: Actions = {
     const email = String(form.get('email') ?? '');
     const password = String(form.get('password') ?? '');
 
+    // 1) Sign in with anon client
     const sb = supabaseAnon();
     const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if (error || !data?.user || !data?.session) {
       return fail(400, { message: 'Invalid credentials' });
     }
 
-    // verify admin *right after login* to avoid setting a cookie for non-admins
-    const { data: adminRow } = await sb
+    // 2) Run the admin check **as the user** (RLS sees auth.uid())
+    //    Option A: reuse the same client by setting the session
+    await sb.auth.setSession({
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token
+    });
+
+    const { data: adminRow, error: adminErr } = await sb
       .from('admin_users')
       .select('user_id')
       .eq('user_id', data.user.id)
       .maybeSingle();
 
-    if (!adminRow) return fail(403, { message: 'Not an admin' });
+    if (adminErr) {
+      return fail(500, { message: adminErr.message });
+    }
+    if (!adminRow) {
+      return fail(403, { message: 'Not an admin' });
+    }
 
-    // store only the Supabase access token (httpOnly, sameSite)
-    const maxAge = Math.min(data.session.expires_in ?? 3600, 8 * 3600); // cap to 8h for admin
-    cookies.set('sb', data.session.access_token, {
+    // 3) Set cookies with the **expected names**
+    const accessMaxAge = Math.min(data.session.expires_in ?? 3600, 8 * 3600); // cap 8h for admin
+    cookies.set('sb-access-token', data.session.access_token, {
       path: '/',
       httpOnly: true,
       sameSite: 'lax',
-      secure: false, // set true in production (HTTPS)
-      maxAge
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: accessMaxAge
     });
 
+    // 4) Go to admin
     throw redirect(302, '/admin');
   }
 };

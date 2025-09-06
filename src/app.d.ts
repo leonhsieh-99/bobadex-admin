@@ -5,9 +5,10 @@ declare global {
 // See https://kit.svelte.dev/docs/types#app
 	declare namespace App {
 		interface Locals {
-		userId: string | null;
-		isAdmin: boolean;
-		}
+			sb: SupabaseClient;
+			userId: string | null;
+			isAdmin: boolean;
+		  }
 	}
   
 }
