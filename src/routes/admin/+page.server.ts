@@ -13,7 +13,7 @@ export const load: PageServerLoad = async ({ locals }) => {
   const { data: countsRow } = await locals.supabase
     .rpc('admin_counts')
     .single<Counts>();
-  console.log(countsRow);
+
   const counts: Counts = countsRow ?? {
     pending_brands: 0,
     pending_reports: 0,
