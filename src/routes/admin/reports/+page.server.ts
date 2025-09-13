@@ -3,7 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { supabaseAdmin } from '$lib/supabase.server';
 
 export const load: PageServerLoad = async ({ locals }) => {
-  const { data, error } = await locals.sb
+  const { data, error } = await locals.supabase
     .from('reports')
     .select('*')
     .order('created_at', { ascending: false })
@@ -19,7 +19,7 @@ export const actions: Actions = {
     const status = form.get('status') as 'accepted' | 'rejected' | 'dismissed';
     const note = (form.get('note') as string) || null;
 
-    const { error } = await locals.sb.rpc('resolve_report', {
+    const { error } = await locals.supabase.rpc('resolve_report', {
       p_report_id: id,
       p_status: status,
       p_note: note
@@ -35,12 +35,22 @@ export const actions: Actions = {
     const note = (form.get('note') as string) || null;
 
     // DB delete + audit; returns [{ bucket, path }]
-    const { data, error } = await locals.sb.rpc('admin_delete_image', {
+    const { data, error } = await locals.supabase.rpc('admin_delete_image', {
       p_media_id: mediaId,
       p_report_id: reportId,
       p_note: note
     });
-    if (error) return { ok: false, message: error.message };
+    // if (error) return { ok: false, message: error.message };
+
+
+    if (error) {
+      console.error('RPC admin_delete_image failed', {
+        code:   error.code,
+        hint:   (error).hint,
+        details:(error).details,
+        message:error.message
+      });
+    }
 
     // Remove object(s) from Storage using SERVICE ROLE
     const admin = supabaseAdmin();
@@ -60,7 +70,7 @@ export const actions: Actions = {
     const reason = (form.get('reason') as string) || 'policy violation';
 
     // App-level ban in your DB (RLS-protected RPC)
-    const { data: ok, error: e1 } = await locals.sb.rpc('admin_ban_user', {
+    const { data: ok, error: e1 } = await locals.supabase.rpc('admin_ban_user', {
       p_user_id: userId,
       p_reason: reason
     });
@@ -71,7 +81,7 @@ export const actions: Actions = {
     await admin.auth.admin.updateUserById(userId, { app_metadata: { banned: true } });
 
     if (reportId) {
-      await locals.sb.rpc('resolve_report', {
+      await locals.supabase.rpc('resolve_report', {
         p_report_id: reportId,
         p_status: 'accepted',
         p_note: 'user banned'
@@ -84,7 +94,7 @@ export const actions: Actions = {
     const form = await request.formData();
     const userId = String(form.get('user_id') || '');
 
-    const { data: ok, error: e1 } = await locals.sb.rpc('admin_unban_user', { p_user_id: userId });
+    const { data: ok, error: e1 } = await locals.supabase.rpc('admin_unban_user', { p_user_id: userId });
     if (e1 || !ok) return { ok: false, message: e1?.message ?? 'unban failed' };
 
     const admin = supabaseAdmin();

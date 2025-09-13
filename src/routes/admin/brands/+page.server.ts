@@ -4,7 +4,7 @@ import { error, redirect } from '@sveltejs/kit';
 
 export const load: PageServerLoad = async ({ locals }) => {
   // pending approvals
-  const { data: pending, error: qErr } = await locals.sb
+  const { data: pending, error: qErr } = await locals.supabase
     .from('brand_staging')
     .select('id, suggested_name, status, created_at, duplicates')
     .eq('status', 'pending')
@@ -17,7 +17,7 @@ export const load: PageServerLoad = async ({ locals }) => {
   }
 
   // brands needing icons
-  const { data: iconless, error: iErr } = await locals.sb
+  const { data: iconless, error: iErr } = await locals.supabase
     .from('brands')
     .select('slug, display, icon_path, created_at')
     .or('icon_path.is.null,icon_path.eq.')
@@ -39,7 +39,7 @@ export const actions: Actions = {
 
     if (!id) throw redirect(303, '/admin/brands?toast=verify_failed&msg=missing_id');
 
-    const { data, error } = await locals.sb.functions.invoke('verify-brand', {
+    const { data, error } = await locals.supabase.functions.invoke('verify-brand', {
       body: { id, force_display }
     });
 
@@ -65,7 +65,7 @@ export const actions: Actions = {
 
     if (!id) throw redirect(303, '/admin/brands?toast=reject_failed&msg=missing_id');
 
-    const { data, error } = await locals.sb.functions.invoke('reject-brand', {
+    const { data, error } = await locals.supabase.functions.invoke('reject-brand', {
       body: { id, reason }
     });
 

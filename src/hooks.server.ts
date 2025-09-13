@@ -1,30 +1,88 @@
 // src/hooks.server.ts
 import type { Handle } from '@sveltejs/kit';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { env } from '$env/dynamic/private';
 
+type Jwt = { sub?: string; user_id?: string; exp?: number };
+
+function decodeJwt(token: string | undefined): Jwt | null {
+  if (!token) return null;
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(part.length / 4) * 4, '=');
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const obj = JSON.parse(json) as Record<string, unknown>;
+    return {
+      sub: typeof obj.sub === 'string' ? obj.sub : undefined,
+      user_id: typeof obj.user_id === 'string' ? obj.user_id : undefined,
+      exp: typeof obj.exp === 'number' ? obj.exp : undefined
+    };
+  } catch {
+    return null;
+  }
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_ANON_KEY');
+  }
+
+  // Read auth cookies we set at login
   const access = event.cookies.get('sb-access-token') ?? '';
-  const sb = createClient(env.SUPABASE_URL!, env.SUPABASE_ANON_KEY!, {
-    global: access ? { headers: { Authorization: `Bearer ${access}` } } : {}
+  const refresh = event.cookies.get('sb-refresh-token') ?? '';
+
+  // ONE server client for the whole request.
+  // We forward the bearer via global.headers so PostgREST (db/rpc) sees auth.uid().
+  const supabase: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    global: access ? { headers: { Authorization: `Bearer ${access}` } } : {},
+    auth: {
+      // we’ll set the session manually below – no cookie storage needed on server
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
   });
 
-  event.locals.sb = sb;
+  // Optional but helpful: let supabase-js know the session too (so other modules
+  // besides PostgREST will also send the bearer automatically).
+  if (access && refresh) {
+    try {
+      await supabase.auth.setSession({ access_token: access, refresh_token: refresh });
+    } catch {
+      // ignore — we already pass Authorization via global.headers
+    }
+  }
+
+  // Fill locals
+  event.locals.supabase = supabase;
   event.locals.userId = null;
   event.locals.isAdmin = false;
 
-  const { data: userData } = await sb.auth.getUser();
-  const uid = userData?.user?.id ?? null;
+  // Derive uid from JWT (no network)
+  const jwt = decodeJwt(access);
+  const notExpired = jwt?.exp ? jwt.exp * 1000 > Date.now() : false;
+  const uid = notExpired ? (jwt?.sub ?? jwt?.user_id ?? null) : null;
   event.locals.userId = uid;
 
+  // Admin check (RLS will see auth.uid() because of Authorization header above)
+  let isAdmin = false;
   if (uid) {
-    const { data: row } = await sb
+    const { data } = await supabase
       .from('admin_users')
       .select('user_id')
       .eq('user_id', uid)
       .maybeSingle();
-    event.locals.isAdmin = !!row;
+    isAdmin = !!data;
   }
+  event.locals.isAdmin = isAdmin;
 
-  return resolve(event);
+  // (tiny cache if you like; safe to keep)
+  event.cookies.set('adm', isAdmin ? '1' : '', {
+    path: '/', httpOnly: true, sameSite: 'lax', maxAge: isAdmin ? 300 : 0
+  });
+
+  return resolve(event, {
+    filterSerializedResponseHeaders: (name) => name === 'content-range'
+  });
 };

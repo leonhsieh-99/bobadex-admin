@@ -1,16 +1,14 @@
-// See https://svelte.dev/docs/kit/types#app.d.ts
-// for information about these interfaces
+// src/app.d.ts
+import type { SupabaseClient } from '@supabase/supabase-js';
+
 declare global {
-// See https://kit.svelte.dev/docs/types#app
-// See https://kit.svelte.dev/docs/types#app
-	declare namespace App {
-		interface Locals {
-			sb: SupabaseClient;
-			userId: string | null;
-			isAdmin: boolean;
-		  }
-	}
-  
+  namespace App {
+    interface Locals {
+      supabase: SupabaseClient;
+      userId: string | null;
+      isAdmin: boolean;
+    }
+  }
 }
 
 export {};

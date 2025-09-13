@@ -1,11 +1,17 @@
 <script lang="ts">
-    import '../app.css';
-    import Toaster from '$lib/Toaster.svelte';
-    import { navigating } from '$app/stores';
-  </script>
-  
-  <Toaster />
-  <slot />
+  import '../app.css';
+  import { page } from '$app/stores';
+  import Toaster from '$lib/Toaster.svelte';
+  import AdminHeader from '$lib/AdminHeader.svelte';
+  import { navigating } from '$app/stores';
+</script>
+
+{#if $page.url.pathname.startsWith('/admin')}
+  <AdminHeader />
+{/if}
+
+<slot />
+<Toaster />
 
 {#if $navigating}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
