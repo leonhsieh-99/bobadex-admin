@@ -1,17 +1,14 @@
 <script lang="ts">
-  import { page } from '$app/stores';
   import { browser } from '$app/environment';
   import { onMount } from 'svelte';
   import { toasts } from '$lib/toast';
   import { base } from '$app/paths';
 
-  // active link helpers
-  const navBase = 'px-3 py-2 rounded';
-  const idle = navBase + ' hover:bg-gray-100';
-  const active = navBase + ' bg-gray-900 text-white';
-  $: path = $page.url.pathname;
-  const is = (href: string) =>
-    href === '/admin' ? path === '/admin' : (path === href || path.startsWith(href + '/'));
+  const navLink = 'px-3 py-2 rounded hover:bg-gray-100';
+
+  function withBase(p: string) {
+    return (base && base !== '/') ? `${base}${p}` : p;
+  }
 
   // --- Typeahead state ---
   let q = '';
@@ -160,7 +157,7 @@
 
                   <a
                     class="ml-3 text-xs text-blue-600 underline whitespace-nowrap"
-                    href={`/admin/brands?slug=${encodeURIComponent(r.slug)}`}
+                    href={withBase(`/admin/brands?slug=${encodeURIComponent(r.slug)}`)}
                     on:click={(e) => e.stopPropagation()}
                   >
                     open
@@ -174,10 +171,10 @@
     </div>
 
     <nav class="flex gap-2">
-      <a href="/admin"          class={is('/admin') ? active : idle}>Dashboard</a>
-      <a href="/admin/brands"   class={is('/admin/brands') ? active : idle}>Brands</a>
-      <a href="/admin/reports"  class={is('/admin/reports') ? active : idle}>Reports</a>
-      <a href="/admin/imports"  class={is('/admin/imports') ? active : idle}>Imports</a>
+      <a href={withBase('/admin')}         class={navLink}>Dashboard</a>
+      <a href={withBase('/admin/brands')}  class={navLink}>Brands</a>
+      <a href={withBase('/admin/reports')} class={navLink}>Reports</a>
+      <a href={withBase('/admin/imports')} class={navLink}>Imports</a>
     </nav>
   </div>
 </header>
