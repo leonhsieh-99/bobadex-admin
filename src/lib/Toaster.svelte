@@ -3,7 +3,7 @@
     import { fly, fade } from 'svelte/transition';
   </script>
   
-  <div class="fixed inset-0 pointer-events-none">
+  <div class="fixed inset-0 pointer-events-none z-[1000]">
     <div class="absolute right-4 top-4 flex w-full max-w-sm flex-col gap-2">
       {#each $toasts as t (t.id)}
         <div

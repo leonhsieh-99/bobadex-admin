@@ -3,6 +3,9 @@
   import { onMount } from 'svelte';
   import { toasts } from '$lib/toast';
   import { base } from '$app/paths';
+  import { createClient } from '@supabase/supabase-js';
+  import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
+  import { tick } from 'svelte';
 
   const navLink = 'px-3 py-2 rounded hover:bg-gray-100';
 
@@ -20,7 +23,15 @@
   let inputEl: HTMLInputElement | null = null;
   let debounceId: ReturnType<typeof setTimeout> | null = null;
 
-  // map server redirect codes -> toast appearance + default text
+  // actions-menu state (tracks which row index is open)
+  let menuFor: number | null = null;
+  let menuEl: HTMLUListElement | null = null;
+
+  // supabase (for re-generate icon)
+  const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY, {
+    auth: { persistSession: true }
+  });
+
   const map: Record<string, { kind: 'success'|'error'|'info'; text: string }> = {
     created_new:       { kind: 'success', text: 'Created new brand' },
     merged_existing:   { kind: 'success', text: 'Merged into existing brand' },
@@ -51,6 +62,7 @@
       results = await r.json();
       open = results.length > 0;
       activeIndex = 0;
+      menuFor = null; // close any open menu when new results arrive
     } catch (err) {
       console.error('brand-search fetch failed', err);
     } finally {
@@ -61,7 +73,10 @@
   // Close on outside click
   function onClickOutside(e: MouseEvent) {
     if (!box) return;
-    if (!box.contains(e.target as Node)) open = false;
+    if (!box.contains(e.target as Node)) {
+      open = false;
+      menuFor = null;
+    }
   }
 
   function handle(url: URL) {
@@ -85,7 +100,6 @@
   }
 
   onMount(() => {
-    // prove we mounted on /admin/*
     console.log('[AdminHeader] mounted');
     if (browser) handle(new URL(window.location.href));
     document.addEventListener('click', onClickOutside);
@@ -94,7 +108,7 @@
 
   function onKey(e: KeyboardEvent) {
     if (!open) return;
-    if (e.key === 'Escape') open = false;
+    if (e.key === 'Escape') { open = false; menuFor = null; }
     if (e.key === 'ArrowDown') { e.preventDefault(); activeIndex = Math.min(activeIndex + 1, results.length - 1); }
     if (e.key === 'ArrowUp')   { e.preventDefault(); activeIndex = Math.max(activeIndex - 1, 0); }
     if (e.key === 'Enter') {
@@ -102,8 +116,44 @@
       if (r) {
         q = r.slug;
         open = false;
+        menuFor = null;
         inputEl?.select();
       }
+    }
+  }
+
+  // ==== actions ====
+
+  async function requestDelete(slug: string) {
+    try {
+      const r = await fetch(withBase('/admin/_api/brand-delete-request'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug })
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || 'request failed');
+      toasts.success('Delete request filed');
+    } catch (e: any) {
+      console.error(e);
+      toasts.error(e?.message ?? 'Delete request failed');
+    } finally {
+      menuFor = null;
+    }
+  }
+
+  async function regenerateIcon(slug: string, prompt: string) {
+    try {
+      const { data, error } = await supabase.functions.invoke('generate-icon', {
+        body: { slug, prompt }
+      });
+      if (error || !(data as any)?.path) throw new Error(error?.message ?? 'generation failed');
+      toasts.success('Icon generated');
+    } catch (e: any) {
+      console.error(e);
+      toasts.error(e?.message ?? 'Icon generation failed');
+    } finally {
+      menuFor = null;
     }
   }
 </script>
@@ -111,7 +161,8 @@
 <svelte:window on:keydown={onKey} />
 
 <header class="sticky top-0 z-40 border-b bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60">
-  <div class="mx-auto max-w-6xl px-4 py-4 flex items-center justify-between gap-3">
+  <!-- padding: px-5 (was px-4) -->
+  <div class="mx-auto max-w-6xl px-5 py-4 flex items-center justify-between gap-3">
     <h1 class="text-2xl font-bold">Bobadex Admin</h1>
 
     <!-- Typeahead -->
@@ -141,7 +192,7 @@
             <ul role="listbox" aria-label="Brand results" class="max-h-80 overflow-auto">
               {#each results as r, i}
                 <li
-                  class="px-3 py-2 text-sm flex items-center justify-between {i===activeIndex ? 'bg-gray-50' : ''}"
+                  class="px-3 py-2 text-sm flex items-center justify-between gap-2 {i===activeIndex ? 'bg-gray-50' : ''}"
                   aria-selected={i === activeIndex}
                   role="option"
                   on:mouseenter={() => (activeIndex = i)}
@@ -149,19 +200,81 @@
                   <button
                     type="button"
                     class="flex-1 text-left flex items-center gap-2 hover:bg-gray-50 rounded px-1 py-1"
-                    on:click={() => { q = r.slug; open = false; inputEl?.select(); }}
+                    on:click={() => { q = r.slug; open = false; menuFor = null; inputEl?.select(); }}
                   >
                     <span class="font-medium">{r.display}</span>
                     <span class="text-xs text-gray-500">({r.slug})</span>
                   </button>
 
+                  <!-- open link -->
                   <a
-                    class="ml-3 text-xs text-blue-600 underline whitespace-nowrap"
+                    class="text-xs text-blue-600 underline whitespace-nowrap"
                     href={withBase(`/admin/brands?slug=${encodeURIComponent(r.slug)}`)}
                     on:click={(e) => e.stopPropagation()}
                   >
                     open
                   </a>
+
+                  <!-- actions menu trigger + popup -->
+                  <div class="relative">
+                    <button
+                      type="button"
+                      class="ml-1 rounded p-1 hover:bg-gray-100"
+                      aria-haspopup="menu"
+                      aria-expanded={menuFor === i}
+                      aria-controls={"menu-" + i}
+                      on:click={(e) => { e.stopPropagation(); menuFor = (menuFor === i ? null : i); tick().then(() => menuEl?.focus()); }}
+                    >
+                      <!-- kebab -->
+                      <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+                        <path fill="currentColor" d="M12 8a2 2 0 1 0 0-4a2 2 0 0 0 0 4m0 6a2 2 0 1 0 0-4a2 2 0 0 0 0 4m0 6a2 2 0 1 0 0-4a2 2 0 0 0 0 4"/>
+                      </svg>
+                      <span class="sr-only">Actions for {r.display}</span>
+                    </button>
+
+                    {#if menuFor === i}
+                      <!-- Make the container focusable (tabindex="-1") and give it role="menu" -->
+                      <ul
+                        id={"menu-" + i}
+                        role="menu"
+                        tabindex="-1"
+                        class="absolute right-0 mt-1 w-44 rounded-lg border bg-white shadow-md z-10 overflow-hidden"
+                        bind:this={menuEl}
+                        on:keydown={(e) => {
+                          const items = Array.from(menuEl?.querySelectorAll('[role="menuitem"]') ?? []) as HTMLButtonElement[];
+                          const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+                          if (e.key === 'Escape') { e.preventDefault(); menuFor = null; (e.currentTarget as HTMLElement).blur(); }
+                          else if (e.key === 'ArrowDown') { e.preventDefault(); (items[idx + 1] ?? items[0])?.focus(); }
+                          else if (e.key === 'ArrowUp')   { e.preventDefault(); (items[idx - 1] ?? items[items.length - 1])?.focus(); }
+                          else if (e.key === 'Tab')       { menuFor = null; } // close on tab out
+                        }}
+                        on:click={(e) => e.stopPropagation()}
+                      >
+                        <li role="none">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
+                            on:click={() => { requestDelete(r.slug); }}
+                            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); requestDelete(r.slug); } }}
+                          >
+                            Request delete
+                          </button>
+                        </li>
+                        <li role="none">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
+                            on:click={() => { regenerateIcon(r.slug, r.display); }}
+                            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); regenerateIcon(r.slug, r.display); } }}
+                          >
+                            Re-generate icon
+                          </button>
+                        </li>
+                      </ul>
+                    {/if}
+                  </div>
                 </li>
               {/each}
             </ul>
