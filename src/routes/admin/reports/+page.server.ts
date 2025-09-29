@@ -34,32 +34,34 @@ export const actions: Actions = {
     const reportId = (form.get('report_id') as string) || null;
     const note = (form.get('note') as string) || null;
 
-    // DB delete + audit; returns [{ bucket, path }]
     const { data, error } = await locals.supabase.rpc('admin_delete_image', {
       p_media_id: mediaId,
       p_report_id: reportId,
       p_note: note
     });
-    // if (error) return { ok: false, message: error.message };
+    if (error) return { ok: false, message: error.message };
 
-
-    if (error) {
-      console.error('RPC admin_delete_image failed', {
-        code:   error.code,
-        hint:   (error).hint,
-        details:(error).details,
-        message:error.message
-      });
+    const items: { bucket: string; path: string }[] = Array.isArray(data) ? data : (data ? [data] : []);
+    const byBucket = new Map<string, Set<string>>();
+    for (const it of items) {
+      if (!it?.bucket || !it?.path) continue;
+      const set = byBucket.get(it.bucket) ?? new Set<string>();
+      set.add(it.path);
+      byBucket.set(it.bucket, set);
     }
 
-    // Remove object(s) from Storage using SERVICE ROLE
-    const admin = supabaseAdmin();
-    const items = Array.isArray(data) ? data : [data];
-    for (const it of items) {
-      if (it?.bucket && it?.path) {
-        await admin.storage.from(it.bucket).remove([it.path]);
+    const admin = supabaseAdmin(); // service-role client
+    for (const [bucket, set] of byBucket) {
+      const paths = Array.from(set);
+      if (!paths.length) continue;
+      const { error: rmErr } = await admin.storage.from(bucket).remove(paths);
+      // Treat 404 as success; only fail hard on other errors
+      if (rmErr && !/Not Found|404/i.test(rmErr.message)) {
+        console.error('Storage remove failed', bucket, rmErr.message);
+        return { ok: false, message: 'Storage delete failed' };
       }
     }
+
     return { ok: true };
   },
 
