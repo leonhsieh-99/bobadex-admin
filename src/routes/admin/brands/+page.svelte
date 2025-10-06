@@ -40,6 +40,11 @@
       progress.update((p) => ({ ...p, [slug]: 'err' }));
       return false;
     }
+    const originalPath = (res as any).path as string;
+    const bucket = 'shop-media';
+    await supabase.functions.invoke('generate-thumb', {
+      body: { bucket, path: originalPath, sizes: [256, 512], overwrite: true }
+    });
     progress.update((p) => ({ ...p, [slug]: 'ok' }));
     doneCount.update((n) => n + 1);
     return true;
