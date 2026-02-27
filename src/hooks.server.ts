@@ -1,7 +1,8 @@
 // src/hooks.server.ts
 import type { Handle } from '@sveltejs/kit';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { env } from '$env/dynamic/private';
+import { env as privateEnv } from '$env/dynamic/private';
+import { env as publicEnv } from '$env/dynamic/public';
 
 type Jwt = { sub?: string; user_id?: string; exp?: number };
 
@@ -24,9 +25,10 @@ function decodeJwt(token: string | undefined): Jwt | null {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
-  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
-    throw new Error('Missing SUPABASE_URL or SUPABASE_ANON_KEY');
-  }
+  const url = publicEnv.PUBLIC_SUPABASE_URL;
+  const anon = publicEnv.PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !anon) throw new Error('Missing PUBLIC_SUPABASE_URL or PUBLIC_SUPABASE_ANON_KEY');
 
   // Read auth cookies we set at login
   const access = event.cookies.get('sb-access-token') ?? '';
@@ -34,14 +36,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   // ONE server client for the whole request.
   // We forward the bearer via global.headers so PostgREST (db/rpc) sees auth.uid().
-  const supabase: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+  const supabase: SupabaseClient = createClient(url, anon, {
     global: access ? { headers: { Authorization: `Bearer ${access}` } } : {},
-    auth: {
-      // we’ll set the session manually below – no cookie storage needed on server
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false
-    }
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
   });
 
   // Optional but helpful: let supabase-js know the session too (so other modules
