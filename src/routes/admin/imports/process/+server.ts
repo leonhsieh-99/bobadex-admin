@@ -9,6 +9,7 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 
   // Tiny admin gate (RLS still applies in the DB + function)
   const { data: adminRow } = await locals.supabase
+    .schema('mod')
     .from('admin_users')
     .select('user_id')
     .eq('user_id', locals.userId)
@@ -17,7 +18,7 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
   if (!adminRow) throw error(403, 'Forbidden');
 
   // Fire & forget the Edge Function — no need to await.
-  void locals.supabase.functions.invoke('process-osm-job', { body: { id: jobId } });
+  void locals.supabase.functions.invoke('process-osm-candidates', { body: { job_id: jobId } });
 
   // Immediately return; UI can poll job status
   throw redirect(303, `/admin/imports?toast=processing&id=${jobId}`);

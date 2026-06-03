@@ -65,13 +65,20 @@ export const handle: Handle = async ({ event, resolve }) => {
   // Admin check (RLS will see auth.uid() because of Authorization header above)
   let isAdmin = false;
   if (uid) {
-    const { data } = await supabase
+    const { data, error } = await supabase
+      .schema('mod')
       .from('admin_users')
       .select('user_id')
       .eq('user_id', uid)
       .maybeSingle();
+    
+    if (error) {
+      console.error('mod.admin_users query failed', error);
+      throw new Error(`mod.admin_users query failed: ${error.message}`);
+    }
     isAdmin = !!data;
   }
+  
   event.locals.isAdmin = isAdmin;
 
   // (tiny cache if you like; safe to keep)

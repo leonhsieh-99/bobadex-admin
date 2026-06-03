@@ -2,7 +2,7 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
 import { createClient } from '@supabase/supabase-js';
-import { env } from '$env/dynamic/private';
+import { env } from '$env/dynamic/public';
 
 const PROD = process.env.NODE_ENV === 'production';
 
@@ -18,19 +18,19 @@ export const actions: Actions = {
     const email = String(form.get('email') ?? '');
     const password = String(form.get('password') ?? '');
 
-    if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    if (!env.PUBLIC_SUPABASE_URL || !env.PUBLIC_SUPABASE_ANON_KEY) {
       return fail(500, { message: 'Server not configured' });
     }
 
     // Use a throwaway anon client for sign-in
-    const sb = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    const sb = createClient(env.PUBLIC_SUPABASE_URL, env.PUBLIC_SUPABASE_ANON_KEY, {
       auth: { persistSession: false, detectSessionInUrl: false }
     });
 
     const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if (error || !data?.session) {
       return fail(400, { message: 'Invalid credentials' });
-    }
+    } 
 
     // Set BOTH cookies so future requests have auth context
     const { access_token, refresh_token, expires_in } = data.session;

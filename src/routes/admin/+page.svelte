@@ -2,9 +2,11 @@
 <script lang="ts">
   type Counts = {
     pending_brands: number;
+    pending_icons: number;
     pending_reports: number;
     running_osm_jobs: number;
     queued_osm_jobs: number;
+    pending_candidates: number;
   };
 
   export let data: {

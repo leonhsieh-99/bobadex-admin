@@ -4,6 +4,7 @@ import { supabaseAdmin } from '$lib/supabase.server';
 
 export const load: PageServerLoad = async ({ locals }) => {
   const { data, error } = await locals.supabase
+    .schema('mod')
     .from('reports')
     .select('*')
     .order('created_at', { ascending: false })
