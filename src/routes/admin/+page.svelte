@@ -1,125 +1,296 @@
-<!-- src/routes/admin/+page.svelte -->
 <script lang="ts">
-  type Counts = {
-    pending_brands: number;
-    pending_icons: number;
-    pending_reports: number;
-    running_osm_jobs: number;
-    queued_osm_jobs: number;
-    pending_candidates: number;
-  };
+	type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'retry_waiting';
 
-  export let data: {
-    counts: Counts;
-    recent: {
-      jobs: Array<{ id: string; status: 'queued'|'running'|'succeeded'|'failed'; source: string | null; created_at: string; note?: string | null }>;
-      brands: Array<{ id: string; suggested_name: string; created_at: string }>;
-      reports: Array<{ id: string; created_at: string; category?: string | null; status: string }>;
-    };
-  };
+	export let data: {
+		metrics: {
+			reviewQueue: number;
+			needsReview: number;
+			blocked: number;
+			activeJobs: number;
+			failedJobs: number;
+			pendingIntake: number;
+			pendingBrands: number;
+			pendingReports: number;
+			brandCount: number;
+			newBrands: number;
+			totalCandidates: number;
+		};
+		pipeline: {
+			candidateStatusCounts: Record<string, number>;
+			llmStatusCounts: Record<string, number>;
+			jobStatusCounts: Record<string, number>;
+		};
+		latestImport: {
+			id: string;
+			status: JobStatus;
+			region_key: string | null;
+			created_at: string;
+			started_at: string | null;
+			finished_at: string | null;
+			error_text: string | null;
+			tileCounts: Record<string, number>;
+			completedTiles: number;
+			tileTotal: number;
+		} | null;
+		recentImports: Array<{
+			id: string;
+			status: JobStatus;
+			region_key: string | null;
+			created_at: string;
+		}>;
+		reviewCandidates: Array<{
+			id: string;
+			name: string | null;
+			process_status: string;
+			llm_review_status: string | null;
+			match_score: number | null;
+			region_key: string | null;
+			created_at: string;
+		}>;
+		stagingRows: Array<{
+			id: string;
+			suggested_name: string;
+			status: string;
+			source: string | null;
+			created_at: string | null;
+		}>;
+		reportRows: Array<{
+			id: string;
+			content_type: string;
+			reason: string | null;
+			status: string;
+			created_at: string;
+		}>;
+		sourceErrors: string[];
+	};
+
+	const number = new Intl.NumberFormat('en-US');
+
+	function relativeDate(value: string | null) {
+		if (!value) return 'Unknown';
+		const elapsed = Date.now() - new Date(value).getTime();
+		const minutes = Math.max(0, Math.floor(elapsed / 60000));
+		if (minutes < 1) return 'Just now';
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		const days = Math.floor(hours / 24);
+		return `${days}d ago`;
+	}
+
+	function statusClasses(status: string) {
+		if (status === 'succeeded' || status === 'reviewed') return 'bg-emerald-50 text-emerald-700';
+		if (status === 'failed' || status === 'blocked') return 'bg-red-50 text-red-700';
+		if (status === 'running' || status === 'processing') return 'bg-blue-50 text-blue-700';
+		return 'bg-zinc-100 text-zinc-700';
+	}
+
+	$: importProgress = data.latestImport?.tileTotal
+		? Math.round((data.latestImport.completedTiles / data.latestImport.tileTotal) * 100)
+		: 0;
+	$: autoMatched = data.pipeline.candidateStatusCounts.merged ?? 0;
+	$: llmReviewed = data.pipeline.llmStatusCounts.reviewed ?? 0;
 </script>
 
-<main class="mx-auto max-w-6xl px-4 py-6 space-y-8">
-  <!-- KPI cards -->
-  <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-    <a href="/admin/brands"  class="rounded-xl border p-4 hover:bg-gray-50">
-      <div class="text-xs text-gray-500">Pending brands</div>
-      <div class="mt-1 text-3xl font-semibold">{data.counts.pending_brands}</div>
-    </a>
-    <a href="/admin/brands" class="rounded-xl border p-4 hover:bg-gray-50">
-      <div class="text-xs text-gray-500">Brand icons pending</div>
-      <div class="mt-1 text-3xl font-semibold">{data.counts.pending_icons}</div>
-    </a>
-    <a href="/admin/reports" class="rounded-xl border p-4 hover:bg-gray-50">
-      <div class="text-xs text-gray-500">Pending reports</div>
-      <div class="mt-1 text-3xl font-semibold">{data.counts.pending_reports}</div>
-    </a>
-    <a href="/admin/imports" class="rounded-xl border p-4 hover:bg-gray-50">
-      <div class="text-xs text-gray-500">OSM jobs (queued)</div>
-      <div class="mt-1 text-3xl font-semibold">{data.counts.queued_osm_jobs}</div>
-    </a>
-    <a href="/admin/imports" class="rounded-xl border p-4 hover:bg-gray-50">
-      <div class="text-xs text-gray-500">OSM candidates pending</div>
-      <div class="mt-1 text-3xl font-semibold">{data.counts.pending_candidates}</div>
-    </a>
-  </section>
+<svelte:head><title>Dashboard | Bobadex Admin</title></svelte:head>
 
-  <!-- Recent -->
-  <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <div class="rounded-xl border overflow-hidden">
-      <div class="p-4 flex items-center justify-between">
-        <h2 class="font-semibold">Recent OSM Jobs</h2>
-        <a href="/admin/imports" class="text-sm text-gray-600 hover:underline">View all</a>
-      </div>
-      <table class="w-full text-sm">
-        <thead class="bg-gray-50">
-          <tr>
-            <th class="px-4 py-2 text-left">Created</th>
-            <th class="px-4 py-2 text-left">Source</th>
-            <th class="px-4 py-2 text-left">Status</th>
-            <th class="px-4 py-2 text-left">Note</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y">
-          {#each data.recent.jobs as j}
-            <tr>
-              <td class="px-4 py-2">{new Date(j.created_at).toLocaleString()}</td>
-              <td class="px-4 py-2">{j.source ?? '—'}</td>
-              <td class="px-4 py-2">
-                {#if j.status === 'running'}
-                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs bg-blue-100 text-blue-800">running</span>
-                {:else if j.status === 'succeeded'}
-                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs bg-emerald-100 text-emerald-800">succeeded</span>
-                {:else if j.status === 'failed'}
-                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs bg-red-100 text-red-800">failed</span>
-                {:else}
-                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs bg-gray-100 text-gray-800">{j.status}</span>
-                {/if}
-              </td>
-              <td class="px-4 py-2">{j.note ?? '—'}</td>
-            </tr>
-          {/each}
-          {#if data.recent.jobs.length === 0}
-            <tr><td colspan="4" class="px-4 py-6 text-center text-gray-500">No jobs yet</td></tr>
-          {/if}
-        </tbody>
-      </table>
-    </div>
+<main class="mx-auto max-w-6xl space-y-8 px-5 py-7 sm:py-9">
+	<header class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+		<div>
+			<p class="text-xs font-semibold tracking-normal text-zinc-500 uppercase">Operations</p>
+			<h2 class="mt-1 text-2xl font-semibold text-zinc-950 sm:text-3xl">Dashboard</h2>
+			<p class="mt-2 max-w-2xl text-sm text-zinc-600">
+				Pipeline health, review workload, and incoming admin requests.
+			</p>
+		</div>
+		<div class="flex gap-2">
+			<a
+				href="/admin/imports"
+				class="inline-flex items-center rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+			>Manage imports</a>
+			<a
+				href="/admin/reviews"
+				class="inline-flex items-center rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+			>Open review queue</a>
+		</div>
+	</header>
 
-    <div class="rounded-xl border">
-      <div class="p-4">
-        <h2 class="font-semibold">What needs attention</h2>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x">
-        <div class="p-4">
-          <div class="mb-2 text-sm font-medium">Pending Brands</div>
-          <ul class="space-y-2">
-            {#each data.recent.brands as b}
-              <li class="text-sm flex items-center justify-between">
-                <span class="truncate">{b.suggested_name}</span>
-                <a class="ml-2 text-xs text-gray-600 hover:underline" href="/admin/brands">open</a>
-              </li>
-            {/each}
-            {#if data.recent.brands.length === 0}
-              <li class="text-sm text-gray-500">Nothing pending</li>
-            {/if}
-          </ul>
-        </div>
-        <div class="p-4">
-          <div class="mb-2 text-sm font-medium">Pending Reports</div>
-          <ul class="space-y-2">
-            {#each data.recent.reports as r}
-              <li class="text-sm flex items-center justify-between">
-                <span class="truncate">{r.category ?? 'report'}</span>
-                <a class="ml-2 text-xs text-gray-600 hover:underline" href="/admin/reports">open</a>
-              </li>
-            {/each}
-            {#if data.recent.reports.length === 0}
-              <li class="text-sm text-gray-500">Nothing pending</li>
-            {/if}
-          </ul>
-        </div>
-      </div>
-    </div>
-  </section>
+	{#if data.sourceErrors.length}
+		<div class="flex items-start justify-between gap-4 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+			<div>
+				<p class="font-medium">Some dashboard sources could not be loaded</p>
+				<p class="mt-0.5 text-amber-800">{data.sourceErrors.join(', ')}. Other metrics are still current.</p>
+			</div>
+		</div>
+	{/if}
+
+	<section aria-label="Key metrics" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+		<a href="/admin/reviews" class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-zinc-300 hover:shadow">
+			<div class="flex items-center justify-between gap-3">
+				<span class="text-sm font-medium text-zinc-600">Review queue</span>
+				<span class="h-2.5 w-2.5 rounded-full bg-amber-400"></span>
+			</div>
+			<p class="mt-3 text-3xl font-semibold text-zinc-950">{number.format(data.metrics.reviewQueue)}</p>
+			<p class="mt-1 text-xs text-zinc-500">{data.metrics.needsReview} model requested · {data.metrics.blocked} after skip</p>
+		</a>
+
+		<a href="/admin/imports" class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-zinc-300 hover:shadow">
+			<div class="flex items-center justify-between gap-3">
+				<span class="text-sm font-medium text-zinc-600">Import jobs</span>
+				<span class="h-2.5 w-2.5 rounded-full {data.metrics.failedJobs ? 'bg-red-500' : data.metrics.activeJobs ? 'bg-blue-500' : 'bg-emerald-500'}"></span>
+			</div>
+			<p class="mt-3 text-3xl font-semibold text-zinc-950">{number.format(data.metrics.activeJobs)}</p>
+			<p class="mt-1 text-xs {data.metrics.failedJobs ? 'text-red-600' : 'text-zinc-500'}">{data.metrics.failedJobs ? `${data.metrics.failedJobs} failed job needs attention` : 'No failed jobs'}</p>
+		</a>
+
+		<a href="/admin/brands" class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-zinc-300 hover:shadow">
+			<div class="flex items-center justify-between gap-3">
+				<span class="text-sm font-medium text-zinc-600">Incoming requests</span>
+				<span class="h-2.5 w-2.5 rounded-full bg-sky-500"></span>
+			</div>
+			<p class="mt-3 text-3xl font-semibold text-zinc-950">{number.format(data.metrics.pendingIntake)}</p>
+			<p class="mt-1 text-xs text-zinc-500">{data.metrics.pendingBrands} brands · {data.metrics.pendingReports} reports</p>
+		</a>
+
+		<div class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+			<div class="flex items-center justify-between gap-3">
+				<span class="text-sm font-medium text-zinc-600">Brand catalog</span>
+				<span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+			</div>
+			<p class="mt-3 text-3xl font-semibold text-zinc-950">{number.format(data.metrics.brandCount)}</p>
+			<p class="mt-1 text-xs text-zinc-500">+{data.metrics.newBrands} in the last 7 days</p>
+		</div>
+	</section>
+
+	<section>
+		<div class="mb-4 flex items-end justify-between">
+			<div>
+				<h3 class="text-lg font-semibold text-zinc-950">Pipeline overview</h3>
+				<p class="mt-1 text-sm text-zinc-500">Where the current candidate set stands.</p>
+			</div>
+			<span class="text-sm tabular-nums text-zinc-500">{number.format(data.metrics.totalCandidates)} total candidates</span>
+		</div>
+
+		<div class="grid border-y border-zinc-200 lg:grid-cols-3 lg:divide-x lg:divide-y-0">
+			<div class="border-b border-zinc-200 py-5 lg:border-b-0 lg:pr-6">
+				<div class="flex items-center justify-between">
+					<p class="text-sm font-semibold text-zinc-900">1. Ingest</p>
+					<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(data.latestImport?.status ?? 'idle')}">{data.latestImport?.status ?? 'No run'}</span>
+				</div>
+				<p class="mt-3 text-2xl font-semibold text-zinc-950">{data.latestImport?.region_key ?? 'No region'}</p>
+				{#if data.latestImport}
+					<div class="mt-4 h-2 overflow-hidden rounded-full bg-zinc-100">
+						<div class="h-full bg-emerald-500" style={`width: ${Math.min(importProgress, 100)}%`}></div>
+					</div>
+					<p class="mt-2 text-xs text-zinc-500">{data.latestImport.completedTiles} of {data.latestImport.tileTotal} tiles · started {relativeDate(data.latestImport.started_at ?? data.latestImport.created_at)}</p>
+				{:else}
+					<p class="mt-2 text-sm text-zinc-500">Start a region import to populate the pipeline.</p>
+				{/if}
+			</div>
+
+			<div class="border-b border-zinc-200 py-5 lg:border-b-0 lg:px-6">
+				<div class="flex items-center justify-between">
+					<p class="text-sm font-semibold text-zinc-900">2. Deterministic matching</p>
+					<span class="text-xs text-zinc-500">current dataset</span>
+				</div>
+				<p class="mt-3 text-2xl font-semibold text-zinc-950">{number.format(autoMatched)} merged</p>
+				<div class="mt-4 grid grid-cols-3 gap-2 text-xs">
+					<div><p class="font-semibold text-zinc-900">{data.pipeline.candidateStatusCounts.approved ?? 0}</p><p class="text-zinc-500">approved</p></div>
+					<div><p class="font-semibold text-zinc-900">{data.pipeline.candidateStatusCounts.needs_review ?? 0}</p><p class="text-zinc-500">review</p></div>
+					<div><p class="font-semibold text-red-700">{data.pipeline.candidateStatusCounts.blocked ?? 0}</p><p class="text-zinc-500">blocked</p></div>
+				</div>
+			</div>
+
+			<div class="py-5 lg:pl-6">
+				<div class="flex items-center justify-between">
+					<p class="text-sm font-semibold text-zinc-900">3. LLM review</p>
+					<a href="/admin/imports#llm-review" class="text-xs font-medium text-zinc-600 hover:text-zinc-950">Manage</a>
+				</div>
+				<p class="mt-3 text-2xl font-semibold text-zinc-950">{number.format(llmReviewed)} reviewed</p>
+				<div class="mt-4 grid grid-cols-3 gap-2 text-xs">
+					<div><p class="font-semibold text-zinc-900">{data.pipeline.llmStatusCounts.pending ?? 0}</p><p class="text-zinc-500">pending</p></div>
+					<div><p class="font-semibold text-blue-700">{data.pipeline.llmStatusCounts.processing ?? 0}</p><p class="text-zinc-500">processing</p></div>
+					<div><p class="font-semibold text-red-700">{data.pipeline.llmStatusCounts.failed ?? 0}</p><p class="text-zinc-500">failed</p></div>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
+		<div>
+			<div class="mb-3 flex items-center justify-between">
+				<div>
+					<h3 class="text-lg font-semibold text-zinc-950">Priority review</h3>
+					<p class="mt-1 text-sm text-zinc-500">Newest candidates waiting for a decision.</p>
+				</div>
+				<a href="/admin/reviews" class="text-sm font-medium text-zinc-700 hover:text-zinc-950">View all</a>
+			</div>
+			<div class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
+				{#each data.reviewCandidates as candidate}
+					<a href={`/admin/reviews?status=${candidate.process_status}&q=${encodeURIComponent(candidate.name ?? '')}`} class="flex items-center justify-between gap-4 border-b border-zinc-100 px-4 py-3 last:border-b-0 hover:bg-zinc-50">
+						<div class="min-w-0">
+							<p class="truncate text-sm font-medium text-zinc-900">{candidate.name ?? 'Unnamed candidate'}</p>
+							<p class="mt-0.5 text-xs text-zinc-500">{candidate.region_key ?? 'Unknown region'} · LLM {candidate.llm_review_status ?? 'unassigned'} · {relativeDate(candidate.created_at)}</p>
+						</div>
+						<div class="flex shrink-0 items-center gap-3">
+							{#if candidate.match_score != null}<span class="text-xs tabular-nums text-zinc-500">{Math.round(candidate.match_score * 100)}%</span>{/if}
+							<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(candidate.process_status)}">{candidate.process_status.replace('_', ' ')}</span>
+						</div>
+					</a>
+				{/each}
+				{#if data.reviewCandidates.length === 0}
+					<div class="px-4 py-10 text-center text-sm text-zinc-500">The candidate queue is clear.</div>
+				{/if}
+			</div>
+		</div>
+
+		<div>
+			<div class="mb-3 flex items-center justify-between">
+				<div>
+					<h3 class="text-lg font-semibold text-zinc-950">Recent imports</h3>
+					<p class="mt-1 text-sm text-zinc-500">Latest region-level runs.</p>
+				</div>
+				<a href="/admin/imports" class="text-sm font-medium text-zinc-700 hover:text-zinc-950">Details</a>
+			</div>
+			<div class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
+				{#each data.recentImports as job}
+					<div class="flex items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3 last:border-b-0">
+						<div>
+							<p class="text-sm font-medium text-zinc-900">{job.region_key ?? 'Unknown region'}</p>
+							<p class="mt-0.5 text-xs text-zinc-500">{relativeDate(job.created_at)}</p>
+						</div>
+						<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(job.status)}">{job.status.replace('_', ' ')}</span>
+					</div>
+				{/each}
+				{#if data.recentImports.length === 0}
+					<div class="px-4 py-10 text-center text-sm text-zinc-500">No region imports yet.</div>
+				{/if}
+			</div>
+		</div>
+	</section>
+
+	<section>
+		<div class="mb-3 flex items-center justify-between">
+			<div>
+				<h3 class="text-lg font-semibold text-zinc-950">Incoming admin work</h3>
+				<p class="mt-1 text-sm text-zinc-500">Requests originating outside the OSM pipeline.</p>
+			</div>
+		</div>
+		<div class="grid gap-4 sm:grid-cols-2">
+			<a href="/admin/brands" class="rounded-lg border border-zinc-200 bg-white p-4 hover:border-zinc-300">
+				<div class="flex items-center justify-between">
+					<p class="text-sm font-semibold text-zinc-900">Brand submissions</p>
+					<span class="text-2xl font-semibold text-zinc-950">{data.metrics.pendingBrands}</span>
+				</div>
+				<p class="mt-3 truncate text-sm text-zinc-500">{data.stagingRows[0]?.suggested_name ?? 'No pending submissions'}</p>
+			</a>
+			<a href="/admin/reports" class="rounded-lg border border-zinc-200 bg-white p-4 hover:border-zinc-300">
+				<div class="flex items-center justify-between">
+					<p class="text-sm font-semibold text-zinc-900">User reports</p>
+					<span class="text-2xl font-semibold text-zinc-950">{data.metrics.pendingReports}</span>
+				</div>
+				<p class="mt-3 truncate text-sm text-zinc-500">{data.reportRows[0] ? `${data.reportRows[0].content_type}: ${data.reportRows[0].reason ?? 'No reason supplied'}` : 'No pending reports'}</p>
+			</a>
+		</div>
+	</section>
 </main>

@@ -1,13 +1,13 @@
 <script lang="ts">
-    export let form: { message?: string } | undefined;
+    export let form: { message?: string; email?: string } | undefined;
     let showPassword = false;
   </script>
-  
+
   <div class="min-h-screen relative overflow-hidden bg-gradient-to-br from-zinc-50 via-white to-zinc-100 dark:from-zinc-900 dark:via-zinc-950 dark:to-zinc-900">
     <!-- decorative blurs -->
     <div class="pointer-events-none absolute -top-24 -left-24 h-72 w-72 rounded-full bg-fuchsia-400/20 blur-3xl"></div>
     <div class="pointer-events-none absolute -bottom-24 -right-24 h-72 w-72 rounded-full bg-sky-400/20 blur-3xl"></div>
-  
+
     <div class="mx-auto flex min-h-screen max-w-7xl items-center justify-center px-6">
       <div class="w-full max-w-md">
         <!-- Brand -->
@@ -20,7 +20,7 @@
           </h1>
           <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Sign in to continue</p>
         </div>
-  
+
         <!-- Card -->
         <div class="rounded-2xl border border-zinc-200/60 bg-white/70 p-6 shadow-lg backdrop-blur-md dark:border-zinc-800/60 dark:bg-zinc-900/60">
           {#if form?.message}
@@ -42,6 +42,7 @@
                 required
                 autocomplete="email"
                 placeholder="you@company.com"
+                value={form?.email ?? ''}
                 class="block w-full rounded-xl border border-zinc-300/80 bg-white/80 px-3 py-2 text-zinc-900 placeholder-zinc-400 shadow-sm outline-none ring-0 transition focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-zinc-800/70 dark:text-zinc-50"
               />
             </div>
@@ -93,4 +94,3 @@
       </div>
     </div>
   </div>
-  

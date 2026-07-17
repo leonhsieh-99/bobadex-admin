@@ -6,6 +6,7 @@
 	import { writable, get } from 'svelte/store';
 	import { createClient } from '@supabase/supabase-js';
 	import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
+	import ReviewTabs from '$lib/ReviewTabs.svelte';
 
 	type PendingBrand = {
 		id: string;
@@ -333,6 +334,7 @@
 			</div>
 		</div>
 	</header>
+	<div class="mt-5"><ReviewTabs active="submissions" /></div>
 
 	<section class="mt-6 space-y-4">
 		{#if groups.length === 0}

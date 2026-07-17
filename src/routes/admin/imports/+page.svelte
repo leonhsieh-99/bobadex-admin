@@ -1,7 +1,9 @@
 <!-- src/routes/admin/imports/+page.svelte -->
 <script lang="ts">
+	import { applyAction, enhance } from '$app/forms';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import type { SubmitFunction } from './$types';
 
 	type OsmCandidateStatus =
 		| 'pending'
@@ -10,122 +12,104 @@
 		| 'needs_review'
 		| 'blocked'
 		| 'rejected';
-	type CandidateStatusFilter = 'all' | OsmCandidateStatus;
+	type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'retry_waiting';
+	type LlmReviewStatus = 'pending' | 'processing' | 'reviewed' | 'failed';
 
 	export let data: {
 		jobs: Array<{
 			id: string;
 			source: string | null;
-			status: 'running' | 'succeeded' | 'failed';
+			status: JobStatus;
+			job_kind: 'region' | 'tile' | string;
+			parent_job_id: string | null;
+			region_key: string | null;
+			tile_index: number | null;
+			total_tiles: number | null;
 			created_at: string;
+			started_at: string | null;
+			finished_at: string | null;
 			stats: Record<string, number> | null;
 			note: string | null;
 			error_text: string | null;
 		}>;
-		candidates: Array<{
+		latestRegionJob: {
 			id: string;
-			name: string | null;
-			lat: number | null;
-			lon: number | null;
-			tags: Record<string, string> | null;
-			matched_brand_slug: string | null;
-			match_score: number | null;
-			blocked_brand: boolean;
-			blocked_reason: string | null;
-			staging_id: string | null;
-			process_status: OsmCandidateStatus;
+			status: JobStatus;
+			region_key: string | null;
+			total_tiles: number | null;
 			created_at: string;
-		}>;
-		stagingRows: Array<{
-			id: string;
-			suggested_name: string;
-			normalized_name: string | null;
-			location: string | null;
-			status: string;
-			source: string;
-			duplicates: number | null;
-			created_at: string;
-			approved_slug: string | null;
-		}>;
+			started_at: string | null;
+			finished_at: string | null;
+		} | null;
+		latestTileJobs: Array<{ id: string; status: JobStatus }>;
+		jobStatusCounts: Partial<Record<JobStatus, number>>;
+		latestTileStatusCounts: Partial<Record<JobStatus, number>>;
 		regionCodes: Array<{
 			code: string;
 			country_code: string;
 			region_name: string;
 		}>;
-		candidateStatuses: OsmCandidateStatus[];
-		candStatus: CandidateStatusFilter;
-		q: string;
+		regionBounds: Array<{
+			region_code: string;
+			south: number;
+			west: number;
+			north: number;
+			east: number;
+			grid_rows: number;
+			grid_cols: number;
+			active: boolean;
+		}>;
+		candidateStatusCounts: Partial<Record<OsmCandidateStatus, number>>;
+		llmReviewStatusCounts: Partial<Record<LlmReviewStatus, number>>;
+		matchBucketCounts: Record<string, number>;
+		processReasonCounts: Array<{ status: OsmCandidateStatus; reason: string; count: number }>;
+		llmReviews: Array<{
+			id: string;
+			candidate_id: string;
+			model: string | null;
+			action: string | null;
+			proposed_brand_slug: string | null;
+			proposed_display: string | null;
+			confidence: number | null;
+			reason: string | null;
+			evidence: string[] | null;
+			sources: string[] | null;
+			auto_decision: string | null;
+			created_at: string;
+		}>;
+		llmActionCounts: Record<string, number>;
+		llmAutoDecisionCounts: Record<string, number>;
+		cronJobs: Array<{
+			jobid: number;
+			schedule: string;
+			command: string;
+			active?: boolean | null;
+			jobname?: string | null;
+		}>;
+		cronRuns: Array<{
+			jobid: number;
+			status: string | null;
+			start_time: string | null;
+			end_time: string | null;
+			return_message: string | null;
+		}>;
+		cronError: string | null;
 	};
-
-	const candidateStatusLabels: Record<CandidateStatusFilter, string> = {
-		all: 'All',
-		pending: 'Pending',
-		needs_review: 'Needs review',
-		blocked: 'Blocked',
-		approved: 'Approved',
-		merged: 'Merged',
-		rejected: 'Rejected'
-	};
-
-	// Build a friendly location label from OSM tags, or fall back to coords
-	function locLabel(c: {
-		lat: number | null;
-		lon: number | null;
-		tags: Record<string, any> | null;
-	}) {
-		const t = c.tags ?? {};
-		// Prefer addr:* (street number & street), then city/town/village
-		const no = t['addr:housenumber'] || '';
-		const street = t['addr:street'] || '';
-		const city = t['addr:city'] || t.city || t.town || t.village || '';
-
-		if (street || no) return `${no ? no + ' ' : ''}${street}${city ? ', ' + city : ''}`;
-		if (city) return city;
-		if (typeof c.lat === 'number' && typeof c.lon === 'number') {
-			return `${c.lat.toFixed(5)}, ${c.lon.toFixed(5)}`;
-		}
-		return '';
-	}
-
-	// Link to a map for quick verification (OSM link)
-	function osmLink(c: { lat: number | null; lon: number | null }) {
-		if (typeof c.lat !== 'number' || typeof c.lon !== 'number') return null;
-		return `https://www.openstreetmap.org/?mlat=${c.lat}&mlon=${c.lon}#map=18/${c.lat}/${c.lon}`;
-	}
-
-	const defaultParams = JSON.stringify(
-		{
-			bbox: [32.4, -124.5, 42.1, -114.1],
-			timeout: 180,
-			filters: [
-				{ k: 'cuisine', op: '~', v: '^(bubble_tea|milk_tea)$' },
-				{
-					k: 'amenity',
-					op: '=',
-					v: 'cafe',
-					nameRegex: '(\\btea\\b|\\bcha\\b|\\bbubble\\b|\\bboba\\b)',
-					i: true
-				}
-			],
-			out: 'center'
-		},
-		null,
-		2
-	);
 
 	let selectedRegionCode =
 		data.regionCodes.find((r) => r.code === 'US-CA')?.code ?? data.regionCodes[0]?.code ?? 'US-CA';
 	let jobsContainer: HTMLDivElement | null = null;
 	let visibleJobsCount = 25;
-	let searchTerm = data.q;
-	let lastSyncedQ = data.q;
-	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+	let importDetailsOpen = false;
 
 	$: visibleJobs = data.jobs.slice(0, visibleJobsCount);
-	$: if (data.q !== lastSyncedQ) {
-		searchTerm = data.q;
-		lastSyncedQ = data.q;
-	}
+	$: selectedRegion = data.regionCodes.find((r) => r.code === selectedRegionCode);
+	$: selectedBounds = data.regionBounds.find((r) => r.region_code === selectedRegionCode);
+	$: selectedTileCount = (selectedBounds?.grid_rows ?? 0) * (selectedBounds?.grid_cols ?? 0);
+	$: latestTileTotal = data.latestTileJobs.length || data.latestRegionJob?.total_tiles || 0;
+	$: latestTileDone =
+		(data.latestTileStatusCounts.succeeded ?? 0) + (data.latestTileStatusCounts.failed ?? 0);
+	$: latestTilePercent = latestTileTotal ? Math.round((latestTileDone / latestTileTotal) * 100) : 0;
 
 	function onJobsScroll() {
 		if (!jobsContainer) return;
@@ -141,458 +125,654 @@
 		visibleJobsCount = Math.min(25, data.jobs.length || 25);
 	});
 
-	$: selectedRegion = data.regionCodes.find((r) => r.code === selectedRegionCode);
+	const enhancePipelineAction: SubmitFunction = () => {
+		return async ({ result }) => {
+			if (result.type === 'redirect') {
+				await goto(result.location, {
+					invalidateAll: true,
+					keepFocus: true,
+					noScroll: true
+				});
+				return;
+			}
 
-	function candidateUrl(status = data.candStatus, q = searchTerm) {
-		const params = new URLSearchParams();
-		params.set('status', status);
-		const trimmed = q.trim();
-		if (trimmed) params.set('q', trimmed);
-		return `/admin/imports?${params.toString()}`;
+			await applyAction(result);
+		};
+	};
+
+	function formatNumber(value: number | null | undefined) {
+		return new Intl.NumberFormat().format(value ?? 0);
 	}
 
-	function applyCandidateFilters(status = data.candStatus, q = searchTerm, replaceState = false) {
-		return goto(candidateUrl(status, q), {
-			keepFocus: true,
-			noScroll: true,
-			replaceState
-		});
+	function formatDate(value: string | null | undefined) {
+		return value ? new Date(value).toLocaleString() : '—';
 	}
 
-	function scheduleCandidateSearch() {
-		if (searchTimer) clearTimeout(searchTimer);
-		searchTimer = setTimeout(() => {
-			searchTimer = null;
-			void applyCandidateFilters(data.candStatus, searchTerm, true);
-		}, 250);
+	function shortId(value: string | null | undefined) {
+		return value ? value.slice(0, 8) : '—';
 	}
 </script>
 
+<svelte:window on:keydown={(event) => event.key === 'Escape' && (importDetailsOpen = false)} />
+
 <main class="mx-auto max-w-6xl space-y-8 px-4 py-6">
-	<h1 class="text-2xl font-bold">OSM Imports</h1>
+	<header class="border-b border-gray-200 pb-5">
+		<p class="text-xs font-semibold tracking-wide text-teal-700 uppercase">OSM pipeline</p>
+		<h1 class="mt-1 text-2xl font-semibold text-gray-950">Import control center</h1>
+		<p class="mt-2 max-w-3xl text-sm text-gray-600">
+			Configure a region import, move queued data through deterministic and LLM processing, then
+			hand unresolved candidates to the review queue.
+		</p>
+	</header>
 
-	<!-- Queue form -->
-	<section class="space-y-3 rounded-xl border p-4">
-		<h2 class="font-semibold">Start OSM Import</h2>
-
-		<form method="POST" action="/admin/imports/_api/queue" class="space-y-2">
-			<label for="region_key" class="block text-xs text-gray-600">Region key</label>
-			<select
-				id="region_key"
-				name="region_key"
-				class="w-full rounded border px-3 py-2 text-sm"
-				bind:value={selectedRegionCode}
-			>
-				{#each data.regionCodes as rc}
-					<option value={rc.code}>{rc.region_name} ({rc.country_code})</option>
-				{/each}
-			</select>
-			{#if selectedRegion}
-				<p class="text-xs text-gray-500">
-					{selectedRegion.code} · {selectedRegion.region_name}, {selectedRegion.country_code}
-				</p>
-			{/if}
-
-			<label for="params" class="block text-xs text-gray-600"
-				>Params (JSON; must include bbox:[south,west,north,east])</label
-			>
-			<textarea
-				id="params"
-				name="params"
-				class="h-40 w-full rounded-lg border px-3 py-2 font-mono text-sm"
-				spellcheck="false">{defaultParams}</textarea
-			>
-
-			<div class="flex items-center gap-2">
-				<input
-					name="note"
-					class="flex-1 rounded border px-3 py-2 text-sm"
-					placeholder="Note (optional)"
-				/>
-				<button type="submit" class="rounded-lg bg-gray-900 px-4 py-2 text-white">Queue</button>
+	<section class="grid grid-cols-2 gap-3 lg:grid-cols-6">
+		<div class="rounded-lg border border-gray-200 bg-white p-4">
+			<div class="text-xs text-gray-500">Queued tiles</div>
+			<div class="mt-1 text-2xl font-semibold">{formatNumber(data.jobStatusCounts.queued)}</div>
+		</div>
+		<div class="rounded-lg border border-gray-200 bg-white p-4">
+			<div class="text-xs text-gray-500">Running tiles</div>
+			<div class="mt-1 text-2xl font-semibold">{formatNumber(data.jobStatusCounts.running)}</div>
+		</div>
+		<div class="rounded-lg border border-gray-200 bg-white p-4">
+			<div class="text-xs text-gray-500">Succeeded</div>
+			<div class="mt-1 text-2xl font-semibold">{formatNumber(data.jobStatusCounts.succeeded)}</div>
+		</div>
+		<div class="rounded-lg border border-gray-200 bg-white p-4">
+			<div class="text-xs text-gray-500">Failed</div>
+			<div class="mt-1 text-2xl font-semibold">{formatNumber(data.jobStatusCounts.failed)}</div>
+		</div>
+		<a class="rounded-lg border border-gray-200 bg-white p-4 hover:bg-gray-50" href="/admin/reviews">
+			<div class="text-xs text-gray-500">Needs review</div>
+			<div class="mt-1 text-2xl font-semibold">
+				{formatNumber(data.candidateStatusCounts.needs_review)}
 			</div>
-		</form>
-	</section>
-
-	<!-- Jobs -->
-	<section class="overflow-hidden rounded-xl border">
-		<div class="max-h-[22rem] overflow-y-auto" bind:this={jobsContainer} on:scroll={onJobsScroll}>
-			<table class="w-full text-sm">
-				<thead class="sticky top-0 z-10 bg-gray-50">
-					<tr>
-						<th class="px-4 py-2 text-left">Created</th>
-						<th class="px-4 py-2 text-left">Status</th>
-						<th class="px-4 py-2 text-left">Note</th>
-						<th class="px-4 py-2 text-left">Stats</th>
-						<th class="px-4 py-2 text-left">Actions</th>
-					</tr>
-				</thead>
-				<tbody class="divide-y">
-					{#each visibleJobs as r}
-						<tr>
-							<td class="px-4 py-2">{new Date(r.created_at).toLocaleString()}</td>
-							<td class="px-4 py-2">
-								{#if r.status === 'running'}
-									<span
-										class="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-800"
-										>running</span
-									>
-								{:else if r.status === 'succeeded'}
-									<span
-										class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800"
-										>succeeded</span
-									>
-								{:else if r.status === 'failed'}
-									<span
-										class="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
-										>failed</span
-									>
-								{:else}
-									<span
-										class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-800"
-										>{r.status}</span
-									>
-								{/if}
-							</td>
-							<td class="px-4 py-2">{r.note ?? '—'}</td>
-							<td class="px-4 py-2">
-								{#if r.stats}
-									<div class="flex flex-wrap gap-1">
-										<span
-											class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-800"
-											title="Total elements seen">seen {r.stats.total_elements ?? 0}</span
-										>
-										<span
-											class="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800"
-											title="New or updated candidates">+{r.stats.inserted_or_updated ?? 0}</span
-										>
-										<span
-											class="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-800"
-											title="Unchanged rows">upd {r.stats.unchanged ?? 0}</span
-										>
-										<span
-											class="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800"
-											title="Skipped elements">skip {r.stats.skipped ?? 0}</span
-										>
-									</div>
-								{:else}
-									—
-								{/if}
-
-								{#if r.status === 'failed' && r.error_text}
-									<div class="mt-1 line-clamp-2 text-xs text-red-600">{r.error_text}</div>
-								{/if}
-							</td>
-							<td class="px-4 py-2">
-								<div class="flex items-center gap-2">
-									<form method="POST" action="/admin/imports/process" class="m-0">
-										<input type="hidden" name="job_id" value={r.id} />
-										<button
-											class="rounded-lg bg-gray-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
-											disabled={r.status === 'running'}
-											title={r.status === 'running' ? 'Already running' : 'Process this job'}
-										>
-											{r.status === 'running' ? 'Processing…' : 'Process'}
-										</button>
-									</form>
-
-									<form method="POST" action="/admin/imports/_api/dequeue" class="m-0">
-										<input type="hidden" name="job_id" value={r.id} />
-										<button class="rounded bg-red-600 px-2 py-1 text-xs text-white">Delete</button>
-									</form>
-								</div>
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-			{#if visibleJobsCount < data.jobs.length}
-				<div class="border-t bg-white px-4 py-2 text-xs text-gray-500">
-					Loading more jobs as you scroll... ({visibleJobsCount}/{data.jobs.length})
-				</div>
-			{/if}
+		</a>
+		<div class="rounded-lg border border-gray-200 bg-white p-4">
+			<div class="text-xs text-gray-500">Pending process</div>
+			<div class="mt-1 text-2xl font-semibold">
+				{formatNumber(data.candidateStatusCounts.pending)}
+			</div>
 		</div>
 	</section>
 
-	<!-- Candidates -->
-	<section class="rounded-xl border bg-white">
-		<!-- Header / Controls (outside the list) -->
-		<div class="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
-			<div class="flex items-center gap-3">
-				<h2 class="text-lg font-semibold">Candidates</h2>
-				<span class="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-700"
-					>{data.candidates.length}</span
-				>
-			</div>
-
-			<form
-				method="GET"
-				class="flex w-full flex-col gap-2 sm:flex-row sm:items-center md:w-auto"
-				on:submit|preventDefault={() => applyCandidateFilters(data.candStatus, searchTerm)}
-			>
-				<!-- Segmented status pills -->
-				<div class="flex flex-wrap gap-1 rounded-lg border bg-gray-50 p-1 text-xs">
-					<label class="cursor-pointer">
-						<input
-							type="radio"
-							class="peer sr-only"
-							name="status"
-							value="all"
-							checked={data.candStatus === 'all'}
-							on:change={() => applyCandidateFilters('all', searchTerm)}
-						/>
-						<span
-							class="inline-flex rounded-md px-3 py-1 peer-checked:border peer-checked:border-gray-200 peer-checked:bg-white peer-checked:shadow"
-							>{candidateStatusLabels.all}</span
-						>
-					</label>
-					{#each data.candidateStatuses as status}
-						<label class="cursor-pointer">
-							<input
-								type="radio"
-								class="peer sr-only"
-								name="status"
-								value={status}
-								checked={data.candStatus === status}
-								on:change={() => applyCandidateFilters(status, searchTerm)}
-							/>
-							<span
-								class="inline-flex rounded-md px-3 py-1 peer-checked:border peer-checked:border-gray-200 peer-checked:bg-white peer-checked:shadow"
-								>{candidateStatusLabels[status]}</span
-							>
-						</label>
-					{/each}
+	<section class="grid grid-cols-1 gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+		<div class="rounded-xl border border-gray-200 bg-white p-5">
+			<div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+				<div>
+					<h2 class="text-lg font-semibold text-gray-950">1. Region grid and import</h2>
+					<p class="mt-1 text-sm text-gray-500">
+						Set tile dimensions, then create one parent job and tile jobs.
+					</p>
 				</div>
-
-				<!-- Search -->
-				<div class="relative flex-1 sm:w-72">
-					<svg
-						class="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-gray-400"
-						viewBox="0 0 20 20"
-						fill="currentColor"
+				<div class="flex items-center gap-2">
+					{#if selectedBounds}
+						<span class="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+							{formatNumber(selectedTileCount)} tiles
+						</span>
+					{/if}
+					<button
+						type="button"
+						class="inline-flex h-8 items-center gap-2 rounded-md border border-gray-300 px-2.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+						title="Import details"
+						on:click={() => (importDetailsOpen = true)}
 					>
-						<path
-							fill-rule="evenodd"
-							d="M12.9 14.32a8 8 0 111.414-1.414l4.387 4.387-1.414 1.414-4.387-4.387zM14 8a6 6 0 11-12 0 6 6 0 0112 0z"
-							clip-rule="evenodd"
-						/>
-					</svg>
-					<input
-						name="q"
-						class="w-full rounded-lg border px-9 py-2 text-sm placeholder:text-gray-400"
-						placeholder="Search name…"
-						bind:value={searchTerm}
-						on:input={scheduleCandidateSearch}
-					/>
+						<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+							<path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+						</svg>
+						Details
+					</button>
 				</div>
+			</div>
 
-				<button class="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white">Apply</button>
-			</form>
+			<div class="mt-4 grid gap-4 md:grid-cols-[1fr_auto]">
+				<form
+					method="POST"
+					action="?/updateGrid"
+					class="grid gap-3 sm:grid-cols-[1fr_7rem_7rem_auto]"
+					use:enhance={enhancePipelineAction}
+				>
+					<label class="block">
+						<span class="text-xs font-medium text-gray-600">Region</span>
+						<select
+							name="region_code"
+							class="mt-1 w-full rounded-md border-gray-300 px-3 py-2 text-sm"
+							bind:value={selectedRegionCode}
+						>
+							{#each data.regionCodes as rc}
+								<option value={rc.code}>{rc.region_name} ({rc.code})</option>
+							{/each}
+						</select>
+					</label>
+					<label class="block">
+						<span class="text-xs font-medium text-gray-600">Rows</span>
+						<input
+							name="grid_rows"
+							type="number"
+							min="1"
+							max="200"
+							class="mt-1 w-full rounded-md border-gray-300 px-3 py-2 text-sm"
+							value={selectedBounds?.grid_rows ?? 40}
+						/>
+					</label>
+					<label class="block">
+						<span class="text-xs font-medium text-gray-600">Cols</span>
+						<input
+							name="grid_cols"
+							type="number"
+							min="1"
+							max="200"
+							class="mt-1 w-full rounded-md border-gray-300 px-3 py-2 text-sm"
+							value={selectedBounds?.grid_cols ?? 40}
+						/>
+					</label>
+					<button
+						class="mt-5 rounded-md border border-gray-300 px-3 py-2 text-sm font-semibold hover:bg-gray-50"
+					>
+						Save grid
+					</button>
+				</form>
+
+				<form
+					method="POST"
+					action="?/startRegionImport"
+					class="flex items-end"
+					use:enhance={enhancePipelineAction}
+				>
+					<input type="hidden" name="region_code" value={selectedRegionCode} />
+					<button
+						class="rounded-md bg-gray-950 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
+					>
+						Start import
+					</button>
+				</form>
+			</div>
+
+			{#if selectedBounds}
+				<div class="mt-4 grid gap-2 text-xs text-gray-600 sm:grid-cols-2">
+					<div>
+						Bounds: {selectedBounds.south}, {selectedBounds.west} to {selectedBounds.north}, {selectedBounds.east}
+					</div>
+					<div>Active: {selectedBounds.active ? 'yes' : 'no'}</div>
+				</div>
+			{/if}
 		</div>
 
-		<!-- List -->
-		<div class="divide-y">
-			{#each data.candidates as c}
-				<article class="p-4">
-					<!-- TRUE side-by-side on md+ -->
-					<div class="md:flex md:items-start md:gap-4">
-						<!-- LEFT: info -->
-						<div class="min-w-0 md:flex-1">
-							<div class="flex items-start justify-between gap-3">
+		<div class="rounded-xl border border-gray-200 bg-white p-5">
+			<h2 class="text-lg font-semibold text-gray-950">Latest region run</h2>
+			{#if data.latestRegionJob}
+				<div class="mt-3 space-y-3">
+					<div class="flex items-center justify-between gap-3">
+						<div>
+							<div class="text-sm font-medium">
+								{data.latestRegionJob.region_key ?? 'Unknown region'}
+							</div>
+							<div class="text-xs text-gray-500">job {shortId(data.latestRegionJob.id)}</div>
+						</div>
+						<span class="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700"
+							>{data.latestRegionJob.status}</span
+						>
+					</div>
+					<div class="h-2 overflow-hidden rounded-full bg-gray-100">
+						<div class="h-full bg-emerald-500" style={`width: ${latestTilePercent}%`}></div>
+					</div>
+					<div class="grid grid-cols-4 gap-2 text-center text-xs">
+						<div class="rounded-md bg-gray-50 p-2">
+							queued<br /><b>{data.latestTileStatusCounts.queued ?? 0}</b>
+						</div>
+						<div class="rounded-md bg-blue-50 p-2">
+							running<br /><b>{data.latestTileStatusCounts.running ?? 0}</b>
+						</div>
+						<div class="rounded-md bg-emerald-50 p-2">
+							done<br /><b>{data.latestTileStatusCounts.succeeded ?? 0}</b>
+						</div>
+						<div class="rounded-md bg-rose-50 p-2">
+							failed<br /><b>{data.latestTileStatusCounts.failed ?? 0}</b>
+						</div>
+					</div>
+					<p class="text-xs text-gray-500">Created {formatDate(data.latestRegionJob.created_at)}</p>
+				</div>
+			{:else}
+				<p class="mt-3 text-sm text-gray-500">No region import has been started yet.</p>
+			{/if}
+		</div>
+	</section>
+
+	<section class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+		<div class="rounded-xl border border-gray-200 bg-white p-5">
+			<div class="flex items-start justify-between gap-4">
+				<div>
+					<h2 class="text-lg font-semibold text-gray-950">2. Queue drain and cron</h2>
+					<p class="mt-1 text-sm text-gray-500">
+						Cron drains queued tile jobs by invoking the tile runner.
+					</p>
+				</div>
+				<form
+					method="POST"
+					action="?/drainQueue"
+					class="flex items-center gap-2"
+					use:enhance={enhancePipelineAction}
+				>
+					<input
+						name="limit"
+						type="number"
+						min="1"
+						max="50"
+						value="5"
+						class="w-20 rounded-md border-gray-300 px-2 py-1.5 text-sm"
+					/>
+					<button class="rounded-md bg-gray-950 px-3 py-1.5 text-sm font-semibold text-white"
+						>Drain now</button
+					>
+				</form>
+			</div>
+
+			{#if data.cronError}
+				<p class="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+					Cron tables are not visible to this app role: {data.cronError}
+				</p>
+			{:else}
+				<div class="mt-4 grid gap-4 lg:grid-cols-2">
+					<div class="space-y-3">
+						<h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Schedules</h3>
+						{#each data.cronJobs as job}
+							<div class="rounded-md border border-gray-200 px-3 py-2">
+								<div class="flex items-center justify-between gap-3 text-sm">
+									<span class="font-medium">{job.jobname ?? `cron job ${job.jobid}`}</span>
+									<span class="text-xs text-gray-500">{job.schedule}</span>
+								</div>
+								<div class="mt-1 truncate text-xs text-gray-500">{job.command}</div>
+							</div>
+						{/each}
+						{#if data.cronJobs.length === 0}
+							<p class="text-sm text-gray-500">No cron jobs returned.</p>
+						{/if}
+					</div>
+
+					<div class="space-y-3">
+						<h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Recent runs</h3>
+						{#each data.cronRuns.slice(0, 5) as run}
+							<div class="rounded-md bg-gray-50 px-3 py-2">
+								<div class="flex items-center justify-between gap-3 text-sm">
+									<span class="font-medium">job {run.jobid}</span>
+									<span class="text-xs text-gray-500">{run.status ?? 'unknown'}</span>
+								</div>
+								<div class="mt-1 text-xs text-gray-500">{formatDate(run.start_time)}</div>
+								{#if run.return_message}
+									<div class="mt-1 line-clamp-2 text-xs text-gray-500">{run.return_message}</div>
+								{/if}
+							</div>
+						{/each}
+						{#if data.cronRuns.length === 0}
+							<p class="text-sm text-gray-500">No recent cron runs returned.</p>
+						{/if}
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<div class="rounded-xl border border-gray-200 bg-white p-5">
+			<h2 class="text-lg font-semibold text-gray-950">3. Deterministic processing</h2>
+			<p class="mt-1 text-sm text-gray-500">
+				Run exact source, Wikidata, alias, website, and repeated-location decisions.
+			</p>
+			<form
+				method="POST"
+				action="?/processDeterministic"
+				class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto]"
+				use:enhance={enhancePipelineAction}
+			>
+				<label>
+					<span class="text-xs font-medium text-gray-600">Batch size</span>
+					<input
+						name="limit"
+						type="number"
+						min="1"
+						value="200"
+						class="mt-1 w-full rounded-md border-gray-300 px-3 py-2 text-sm"
+					/>
+				</label>
+				<label>
+					<span class="text-xs font-medium text-gray-600">Auto-create min locations</span>
+					<input
+						name="min_locations"
+						type="number"
+						min="2"
+						value="2"
+						class="mt-1 w-full rounded-md border-gray-300 px-3 py-2 text-sm"
+					/>
+				</label>
+				<button class="mt-5 rounded-md bg-gray-950 px-3 py-2 text-sm font-semibold text-white"
+					>Process</button
+				>
+			</form>
+
+			<div class="mt-5 grid grid-cols-3 gap-2 text-center text-xs">
+				<div class="rounded-md bg-gray-50 p-2">
+					pending<br /><b>{data.candidateStatusCounts.pending ?? 0}</b>
+				</div>
+				<div class="rounded-md bg-amber-50 p-2">
+					review<br /><b>{data.candidateStatusCounts.needs_review ?? 0}</b>
+				</div>
+				<div class="rounded-md bg-emerald-50 p-2">
+					approved<br /><b>{data.candidateStatusCounts.approved ?? 0}</b>
+				</div>
+				<div class="rounded-md bg-blue-50 p-2">
+					merged<br /><b>{data.candidateStatusCounts.merged ?? 0}</b>
+				</div>
+				<div class="rounded-md bg-rose-50 p-2">
+					blocked<br /><b>{data.candidateStatusCounts.blocked ?? 0}</b>
+				</div>
+				<div class="rounded-md bg-slate-50 p-2">
+					rejected<br /><b>{data.candidateStatusCounts.rejected ?? 0}</b>
+				</div>
+			</div>
+			<div class="mt-4 flex flex-wrap gap-2 text-xs">
+				{#each Object.entries(data.matchBucketCounts) as [bucket, count]}
+					<span class="rounded-full bg-gray-100 px-2.5 py-1 text-gray-700">{bucket}: {count}</span>
+				{/each}
+			</div>
+		</div>
+	</section>
+
+	<section id="llm-review" class="scroll-mt-28 rounded-xl border border-gray-200 bg-white p-5">
+		<div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+			<div>
+				<h2 class="text-lg font-semibold text-gray-950">4. LLM review</h2>
+				<p class="mt-1 text-sm text-gray-500">
+					Score remaining needs-review candidates, then apply only the high-confidence auto decisions.
+				</p>
+			</div>
+			<div class="flex flex-wrap gap-2">
+				<form
+					method="POST"
+					action="?/runLlmReview"
+					class="flex items-end gap-2"
+					use:enhance={enhancePipelineAction}
+				>
+					<label>
+						<span class="text-xs font-medium text-gray-600">Score batch</span>
+						<input
+							name="limit"
+							type="number"
+							min="1"
+							max="10"
+							value="5"
+							class="mt-1 w-20 rounded-md border-gray-300 px-2 py-1.5 text-sm"
+						/>
+					</label>
+					<button class="rounded-md bg-gray-950 px-3 py-1.5 text-sm font-semibold text-white">
+						Run
+					</button>
+				</form>
+				<form
+					method="POST"
+					action="?/resetLlmReview"
+					class="flex items-end gap-2"
+					use:enhance={enhancePipelineAction}
+				>
+					<label>
+						<span class="text-xs font-medium text-gray-600">Reset after min</span>
+						<input
+							name="minutes"
+							type="number"
+							min="1"
+							max="1440"
+							value="30"
+							class="mt-1 w-24 rounded-md border-gray-300 px-2 py-1.5 text-sm"
+						/>
+					</label>
+					<button class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-semibold">
+						Reset stuck
+					</button>
+				</form>
+				<form
+					method="POST"
+					action="?/applyAutoLlmReviews"
+					class="flex items-end gap-2"
+					use:enhance={enhancePipelineAction}
+				>
+					<label>
+						<span class="text-xs font-medium text-gray-600">Apply limit</span>
+						<input
+							name="limit"
+							type="number"
+							min="1"
+							max="250"
+							value="25"
+							class="mt-1 w-24 rounded-md border-gray-300 px-2 py-1.5 text-sm"
+						/>
+					</label>
+					<button class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white">
+						Apply auto
+					</button>
+				</form>
+			</div>
+		</div>
+
+		<div class="mt-5 grid grid-cols-2 gap-2 text-center text-xs md:grid-cols-4">
+			<div class="rounded-md bg-gray-50 p-2">
+				LLM pending<br /><b>{data.llmReviewStatusCounts.pending ?? 0}</b>
+			</div>
+			<div class="rounded-md bg-blue-50 p-2">
+				processing<br /><b>{data.llmReviewStatusCounts.processing ?? 0}</b>
+			</div>
+			<div class="rounded-md bg-emerald-50 p-2">
+				reviewed<br /><b>{data.llmReviewStatusCounts.reviewed ?? 0}</b>
+			</div>
+			<div class="rounded-md bg-rose-50 p-2">
+				failed<br /><b>{data.llmReviewStatusCounts.failed ?? 0}</b>
+			</div>
+		</div>
+
+		<div class="mt-4 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+			<div class="space-y-4">
+				<div>
+					<h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Auto decisions</h3>
+					<div class="mt-2 flex flex-wrap gap-2 text-xs">
+						{#each Object.entries(data.llmAutoDecisionCounts) as [decision, count]}
+							<span class="rounded-full bg-gray-100 px-2.5 py-1 text-gray-700"
+								>{decision}: {count}</span
+							>
+						{/each}
+						{#if Object.keys(data.llmAutoDecisionCounts).length === 0}
+							<span class="text-gray-500">No reviews yet.</span>
+						{/if}
+					</div>
+				</div>
+				<div>
+					<h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Actions</h3>
+					<div class="mt-2 flex flex-wrap gap-2 text-xs">
+						{#each Object.entries(data.llmActionCounts) as [action, count]}
+							<span class="rounded-full bg-gray-100 px-2.5 py-1 text-gray-700"
+								>{action}: {count}</span
+							>
+						{/each}
+						{#if Object.keys(data.llmActionCounts).length === 0}
+							<span class="text-gray-500">No scored candidates yet.</span>
+						{/if}
+					</div>
+				</div>
+				<div>
+					<h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Top blockers</h3>
+					<div class="mt-2 space-y-2">
+						{#each data.processReasonCounts.slice(0, 5) as reason}
+							<div class="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2 text-sm">
+								<span class="truncate">{reason.status}: {reason.reason}</span>
+								<span class="font-semibold">{reason.count}</span>
+							</div>
+						{/each}
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Recent reviews</h3>
+				<div class="mt-2 divide-y rounded-lg border border-gray-200">
+					{#each data.llmReviews as review}
+						<article class="p-3">
+							<div class="flex flex-wrap items-center justify-between gap-2">
 								<div class="min-w-0">
 									<div class="flex flex-wrap items-center gap-2">
-										<h3 class="truncate text-sm font-medium">{c.name}</h3>
-
-										{#if c.matched_brand_slug}
-											<span
-												class="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700"
-											>
-												match {c.matched_brand_slug} ({(c.match_score ?? 0).toFixed(2)})
+										<span class="font-mono text-xs text-gray-500">{shortId(review.candidate_id)}</span>
+										<span class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-700">
+											{review.auto_decision ?? 'manual_review'}
+										</span>
+										<span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">
+											{review.action ?? 'needs_review'}
+										</span>
+										{#if review.confidence !== null}
+											<span class="text-[11px] text-gray-500">
+												{Math.round(review.confidence * 100)}%
 											</span>
-										{:else}
-											<span class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700"
-												>new brand?</span
-											>
-										{/if}
-
-										{#if c.blocked_brand}
-											<span class="rounded-full bg-red-100 px-2 py-0.5 text-[11px] text-red-700"
-												>blocked</span
-											>
-										{/if}
-
-										{#if c.staging_id}
-											<span
-												class="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] text-indigo-700"
-												>pending staging</span
-											>
 										{/if}
 									</div>
-
-									<div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-600">
-										<span class="truncate">{locLabel(c)}</span>
-										{#if osmLink(c)}
-											<a
-												class="text-blue-600 underline hover:text-blue-800"
-												target="_blank"
-												rel="noreferrer"
-												href={osmLink(c)}>map</a
-											>
-										{/if}
-									</div>
-
-									{#if c.tags && Object.keys(c.tags).length}
-										<div
-											class="mt-2 grid gap-1.5 text-[11px] text-gray-700 sm:grid-cols-2 lg:grid-cols-3"
-										>
-											{#each Object.entries(c.tags).slice(0, 6) as [k, v]}
-												<div class="truncate">
-													<span class="font-medium text-gray-500">{k}:</span>
-													{String(v)}
-												</div>
-											{/each}
-											{#if Object.keys(c.tags).length > 6}
-												<div class="text-gray-500">… and {Object.keys(c.tags).length - 6} more</div>
-											{/if}
+									{#if review.proposed_display || review.proposed_brand_slug}
+										<div class="mt-1 truncate text-xs text-gray-700">
+											{review.proposed_display ?? review.proposed_brand_slug}
 										</div>
 									{/if}
 								</div>
-
 								<div class="text-[11px] whitespace-nowrap text-gray-500">
-									{new Date(c.created_at).toLocaleString()}
+									{formatDate(review.created_at)}
 								</div>
 							</div>
-						</div>
-
-						<!-- RIGHT: actions -->
-						<div class="mt-3 md:mt-0 md:w-[560px] md:shrink-0">
-							<div class="space-y-2">
-								<!-- APPROVE -->
-								<form
-									method="POST"
-									action="?/approve"
-									class="grid items-center gap-2 overflow-x-auto sm:grid-cols-[1fr_1fr_auto]"
-								>
-									<input type="hidden" name="candidate_id" value={c.id} />
-									<input
-										name="force_display"
-										class="w-full rounded-lg border px-3 py-2 text-xs"
-										placeholder={`Force display (e.g. ${c.name})`}
-									/>
-									<input
-										name="note"
-										class="w-full rounded-lg border px-3 py-2 text-xs"
-										placeholder="note (optional)"
-									/>
-									<button class="h-9 rounded-lg bg-blue-600 px-3 text-xs text-white">Approve</button
-									>
-								</form>
-
-								<!-- MERGE -->
-								<form
-									method="POST"
-									action="?/merge"
-									class="grid items-center gap-2 overflow-x-auto sm:grid-cols-[1fr_1fr_auto]"
-								>
-									<input type="hidden" name="candidate_id" value={c.id} />
-									<input
-										name="brand_slug"
-										required
-										class="w-full rounded-lg border px-3 py-2 text-xs"
-										placeholder="brand_slug"
-										value={c.matched_brand_slug ?? ''}
-									/>
-									<input
-										name="note"
-										class="w-full rounded-lg border px-3 py-2 text-xs"
-										placeholder="note (optional)"
-									/>
-									<button class="h-9 rounded-lg bg-amber-600 px-3 text-xs text-white">Merge</button>
-								</form>
-
-								<!-- REJECT -->
-								<form
-									method="POST"
-									action="?/reject"
-									class="grid items-center gap-2 overflow-x-auto sm:grid-cols-[1fr_auto]"
-								>
-									<input type="hidden" name="candidate_id" value={c.id} />
-									<input
-										name="note"
-										class="w-full rounded-lg border px-3 py-2 text-xs"
-										placeholder="reason / note (optional)"
-									/>
-									<button class="h-9 rounded-lg bg-gray-200 px-3 text-xs text-gray-900"
-										>Reject</button
-									>
-								</form>
-							</div>
-						</div>
-					</div>
-				</article>
-			{/each}
-			{#if data.candidates.length === 0}
-				<div class="px-4 py-10 text-center">
-					<p class="text-sm font-medium text-gray-900">No OSM candidates match this view.</p>
-					<p class="mt-1 text-sm text-gray-500">
-						Try the All filter or clear the search term if candidates were imported under another
-						status.
-					</p>
+							{#if review.reason}
+								<p class="mt-2 line-clamp-2 text-xs text-gray-600">{review.reason}</p>
+							{/if}
+							{#if review.sources?.length}
+								<div class="mt-2 flex flex-wrap gap-2 text-[11px]">
+									{#each review.sources.slice(0, 3) as source, index}
+										<a class="text-blue-600 underline" href={source} target="_blank" rel="noreferrer">
+											source {index + 1}
+										</a>
+									{/each}
+								</div>
+							{/if}
+						</article>
+					{/each}
+					{#if data.llmReviews.length === 0}
+						<div class="p-4 text-sm text-gray-500">No LLM reviews have been recorded yet.</div>
+					{/if}
 				</div>
-			{/if}
-		</div>
-	</section>
-
-	<!-- Staging Rows -->
-	<section class="rounded-xl border bg-white">
-		<div class="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
-			<div class="flex items-center gap-3">
-				<h2 class="text-lg font-semibold">Staging Rows</h2>
-				<span class="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-700"
-					>{data.stagingRows.length}</span
-				>
 			</div>
 		</div>
-
-		<div class="divide-y">
-			{#each data.stagingRows as s}
-				<article class="p-4">
-					<div class="md:flex md:items-start md:justify-between md:gap-4">
-						<div class="min-w-0 md:flex-1">
-							<div class="flex flex-wrap items-center gap-2">
-								<h3 class="truncate text-sm font-medium">{s.suggested_name}</h3>
-								<span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] text-indigo-700"
-									>{s.status}</span
-								>
-								{#if s.duplicates && s.duplicates > 1}
-									<span
-										class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-700"
-										title="Duplicate count">dupes {s.duplicates}</span
-									>
-								{/if}
-							</div>
-
-							<div class="mt-1 truncate text-[11px] text-gray-600">
-								{s.location ?? '—'}
-							</div>
-							{#if s.normalized_name}
-								<div class="mt-1 truncate text-[11px] text-gray-500">
-									normalized: {s.normalized_name}
-								</div>
-							{/if}
-							{#if s.approved_slug}
-								<div class="mt-1 truncate text-[11px] text-gray-500">
-									approved: {s.approved_slug}
-								</div>
-							{/if}
-						</div>
-
-						<div class="mt-2 text-[11px] whitespace-nowrap text-gray-500 md:mt-0 md:shrink-0">
-							{new Date(s.created_at).toLocaleString()}
-						</div>
-					</div>
-				</article>
-			{/each}
-		</div>
 	</section>
+
+	<div class="flex flex-col gap-3 border-t border-gray-200 pt-6 sm:flex-row sm:items-center sm:justify-between">
+		<div>
+			<h2 class="text-sm font-semibold text-gray-950">Unresolved candidates are reviewed separately</h2>
+			<p class="mt-1 text-sm text-gray-500">The review queue stays available after an import has finished and can include other submission sources.</p>
+		</div>
+		<a class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-gray-950 px-4 text-sm font-semibold text-white hover:bg-black" href="/admin/reviews">
+			Open review queue
+		</a>
+	</div>
 </main>
+
+{#if importDetailsOpen}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+		role="presentation"
+		on:click={(event) => event.currentTarget === event.target && (importDetailsOpen = false)}
+	>
+		<div
+			class="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="import-details-title"
+		>
+			<header class="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+				<div>
+					<h2 id="import-details-title" class="text-lg font-semibold text-gray-950">Import details</h2>
+					<p class="mt-1 text-sm text-gray-500">Region configuration and operational job history.</p>
+				</div>
+				<button
+					type="button"
+					class="grid h-8 w-8 place-items-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-950"
+					aria-label="Close import details"
+					on:click={() => (importDetailsOpen = false)}
+				>
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+						<path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+					</svg>
+				</button>
+			</header>
+
+			<div class="grid grid-cols-2 gap-3 border-b border-gray-200 bg-gray-50 px-5 py-4 sm:grid-cols-4">
+				<div>
+					<div class="text-xs text-gray-500">Region</div>
+					<div class="mt-1 text-sm font-semibold text-gray-950">{selectedRegion?.region_name ?? selectedRegionCode}</div>
+				</div>
+				<div>
+					<div class="text-xs text-gray-500">Grid</div>
+					<div class="mt-1 text-sm font-semibold text-gray-950">{selectedBounds?.grid_rows ?? 0} × {selectedBounds?.grid_cols ?? 0}</div>
+				</div>
+				<div>
+					<div class="text-xs text-gray-500">Jobs loaded</div>
+					<div class="mt-1 text-sm font-semibold text-gray-950">{formatNumber(data.jobs.length)}</div>
+				</div>
+				<div>
+					<div class="text-xs text-gray-500">Failed</div>
+					<div class="mt-1 text-sm font-semibold text-rose-700">{formatNumber(data.jobStatusCounts.failed)}</div>
+				</div>
+			</div>
+
+			<div class="min-h-0 overflow-auto" bind:this={jobsContainer} on:scroll={onJobsScroll}>
+				<table class="w-full min-w-[56rem] text-sm">
+					<thead class="sticky top-0 z-10 bg-gray-50">
+						<tr>
+							<th class="px-4 py-2 text-left">Created</th>
+							<th class="px-4 py-2 text-left">Status</th>
+							<th class="px-4 py-2 text-left">Note</th>
+							<th class="px-4 py-2 text-left">Stats</th>
+							<th class="px-4 py-2 text-left">Actions</th>
+						</tr>
+					</thead>
+					<tbody class="divide-y divide-gray-100">
+						{#each visibleJobs as job}
+							<tr>
+								<td class="px-4 py-2 whitespace-nowrap">{new Date(job.created_at).toLocaleString()}</td>
+								<td class="px-4 py-2">
+									<span class={`inline-flex rounded-full px-2 py-0.5 text-xs ${job.status === 'succeeded' ? 'bg-emerald-100 text-emerald-800' : job.status === 'failed' ? 'bg-rose-100 text-rose-800' : job.status === 'running' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'}`}>
+										{job.status}
+									</span>
+								</td>
+								<td class="max-w-64 px-4 py-2">
+									<div class="truncate">{job.note ?? '—'}</div>
+									{#if job.error_text}<div class="mt-1 line-clamp-2 text-xs text-rose-600">{job.error_text}</div>{/if}
+								</td>
+								<td class="px-4 py-2">
+									{#if job.stats}
+										<div class="flex flex-wrap gap-1 text-xs">
+											<span class="rounded-full bg-gray-100 px-2 py-0.5">seen {job.stats.total_elements ?? 0}</span>
+											<span class="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-800">+{job.stats.inserted_or_updated ?? 0}</span>
+											<span class="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">skip {job.stats.skipped ?? 0}</span>
+										</div>
+									{:else}—{/if}
+								</td>
+								<td class="px-4 py-2">
+									<div class="flex items-center gap-2">
+										<form method="POST" action="/admin/imports/process">
+											<input type="hidden" name="job_id" value={job.id} />
+											<button class="rounded-md bg-gray-900 px-3 py-1.5 text-xs text-white disabled:opacity-50" disabled={job.status === 'running'}>
+												{job.status === 'running' ? 'Processing…' : 'Process'}
+											</button>
+										</form>
+										<form method="POST" action="/admin/imports/_api/dequeue">
+											<input type="hidden" name="job_id" value={job.id} />
+											<button class="rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50">Delete</button>
+										</form>
+									</div>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+				{#if visibleJobsCount < data.jobs.length}
+					<div class="border-t px-4 py-2 text-xs text-gray-500">Loading more jobs as you scroll… ({visibleJobsCount}/{data.jobs.length})</div>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}

@@ -2,6 +2,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ReportsTable from './ReportsTable.svelte';
+  import ReviewTabs from '$lib/ReviewTabs.svelte';
 
   export let data: {
     reports: Array<{
@@ -114,6 +115,7 @@
 
 <main class="mx-auto max-w-6xl px-4 py-6 space-y-6">
   <h1 class="text-2xl font-bold">Reports</h1>
+  <ReviewTabs active="reports" />
 
   <!-- Pending (always visible) -->
   <div class="rounded-xl border overflow-hidden">

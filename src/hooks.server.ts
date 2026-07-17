@@ -1,10 +1,10 @@
 // src/hooks.server.ts
 import type { Handle } from '@sveltejs/kit';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { env as privateEnv } from '$env/dynamic/private';
 import { env as publicEnv } from '$env/dynamic/public';
+import { ACCESS_COOKIE, REFRESH_COOKIE, clearAuthCookies, setAuthCookies } from '$lib/auth.server';
 
-type Jwt = { sub?: string; user_id?: string; exp?: number };
+type Jwt = { sub?: string; user_id?: string; exp?: number; iss?: string; ref?: string };
 
 function decodeJwt(token: string | undefined): Jwt | null {
   if (!token) return null;
@@ -17,11 +17,19 @@ function decodeJwt(token: string | undefined): Jwt | null {
     return {
       sub: typeof obj.sub === 'string' ? obj.sub : undefined,
       user_id: typeof obj.user_id === 'string' ? obj.user_id : undefined,
-      exp: typeof obj.exp === 'number' ? obj.exp : undefined
+      exp: typeof obj.exp === 'number' ? obj.exp : undefined,
+      iss: typeof obj.iss === 'string' ? obj.iss : undefined,
+      ref: typeof obj.ref === 'string' ? obj.ref : undefined
     };
   } catch {
     return null;
   }
+}
+
+function belongsToProject(token: string, supabaseUrl: string) {
+  const jwt = decodeJwt(token);
+  const projectRef = new URL(supabaseUrl).hostname.split('.')[0];
+  return jwt?.ref === projectRef || jwt?.iss?.startsWith(`${supabaseUrl}/auth/v1`) === true;
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -30,53 +38,62 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   if (!url || !anon) throw new Error('Missing PUBLIC_SUPABASE_URL or PUBLIC_SUPABASE_ANON_KEY');
 
-  // Read auth cookies we set at login
-  const access = event.cookies.get('sb-access-token') ?? '';
-  const refresh = event.cookies.get('sb-refresh-token') ?? '';
+  const access = event.cookies.get(ACCESS_COOKIE) ?? '';
+  const refresh = event.cookies.get(REFRESH_COOKIE) ?? '';
+
+  let sessionAccess = '';
+  let uid: string | null = null;
+
+  if (access && refresh && belongsToProject(access, url)) {
+    const authClient = createClient(url, anon, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+    });
+    const { data, error } = await authClient.auth.setSession({
+      access_token: access,
+      refresh_token: refresh
+    });
+
+    if (!error && data.session && belongsToProject(data.session.access_token, url)) {
+      sessionAccess = data.session.access_token;
+      uid = data.session.user.id;
+      if (
+        data.session.access_token !== access ||
+        data.session.refresh_token !== refresh
+      ) {
+        setAuthCookies(event.cookies, data.session);
+      }
+    } else {
+      clearAuthCookies(event.cookies);
+    }
+  } else if (access || refresh) {
+    clearAuthCookies(event.cookies);
+  }
 
   // ONE server client for the whole request.
   // We forward the bearer via global.headers so PostgREST (db/rpc) sees auth.uid().
   const supabase: SupabaseClient = createClient(url, anon, {
-    global: access ? { headers: { Authorization: `Bearer ${access}` } } : {},
+    global: sessionAccess ? { headers: { Authorization: `Bearer ${sessionAccess}` } } : {},
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
   });
-
-  // Optional but helpful: let supabase-js know the session too (so other modules
-  // besides PostgREST will also send the bearer automatically).
-  if (access && refresh) {
-    try {
-      await supabase.auth.setSession({ access_token: access, refresh_token: refresh });
-    } catch {
-      // ignore — we already pass Authorization via global.headers
-    }
-  }
 
   // Fill locals
   event.locals.supabase = supabase;
   event.locals.userId = null;
   event.locals.isAdmin = false;
 
-  // Derive uid from JWT (no network)
-  const jwt = decodeJwt(access);
-  const notExpired = jwt?.exp ? jwt.exp * 1000 > Date.now() : false;
-  const uid = notExpired ? (jwt?.sub ?? jwt?.user_id ?? null) : null;
   event.locals.userId = uid;
 
-  // Admin check (RLS will see auth.uid() because of Authorization header above)
+  // Check membership through the security-definer RPC. The underlying mod table
+  // intentionally is not selectable by authenticated clients.
   let isAdmin = false;
   if (uid) {
-    const { data, error } = await supabase
-      .schema('mod')
-      .from('admin_users')
-      .select('user_id')
-      .eq('user_id', uid)
-      .maybeSingle();
+    const { data, error } = await supabase.rpc('is_admin');
     
     if (error) {
-      console.error('mod.admin_users query failed', error);
-      throw new Error(`mod.admin_users query failed: ${error.message}`);
+      console.error('public.is_admin RPC failed', error);
+    } else {
+      isAdmin = data === true;
     }
-    isAdmin = !!data;
   }
   
   event.locals.isAdmin = isAdmin;

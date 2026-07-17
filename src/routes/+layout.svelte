@@ -7,17 +7,14 @@
 </script>
 
 {#if $page.url.pathname.startsWith('/admin')}
-  <AdminHeader />
+  <AdminHeader reviewCount={$page.data.manualReviewCount ?? 0} />
 {/if}
 
 <slot />
 <Toaster />
 
 {#if $navigating}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-    <div class="flex flex-col items-center gap-3">
-      <div class="h-10 w-10 animate-spin rounded-full border-4 border-white/30 border-t-white"></div>
-      <p class="text-white/90 text-sm">Updating…</p>
-    </div>
-  </div>
+	<div class="fixed inset-x-0 top-0 z-50 h-0.5 overflow-hidden bg-blue-100" aria-label="Loading">
+		<div class="h-full w-1/2 animate-pulse bg-blue-600"></div>
+	</div>
 {/if}

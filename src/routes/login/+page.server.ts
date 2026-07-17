@@ -3,8 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
 import { createClient } from '@supabase/supabase-js';
 import { env } from '$env/dynamic/public';
-
-const PROD = process.env.NODE_ENV === 'production';
+import { clearAuthCookies, setAuthCookies } from '$lib/auth.server';
 
 export const load: PageServerLoad = async ({ locals }) => {
   // Optional: if the user is already allowed into /admin, bounce them there
@@ -27,34 +26,15 @@ export const actions: Actions = {
       auth: { persistSession: false, detectSessionInUrl: false }
     });
 
-    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    const { data, error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
     if (error || !data?.session) {
-      return fail(400, { message: 'Invalid credentials' });
+      clearAuthCookies(cookies);
+      return fail(400, { message: error?.message ?? 'Invalid credentials', email: email.trim() });
     } 
 
-    // Set BOTH cookies so future requests have auth context
-    const { access_token, refresh_token, expires_in } = data.session;
-
-    const accessMaxAge = Math.min(expires_in ?? 3600, 8 * 3600); // up to 8h
-    cookies.set('sb-access-token', access_token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: PROD,
-      maxAge: accessMaxAge
-    });
-
-    // Give the server something to refresh with later if you add refresh logic
-    cookies.set('sb-refresh-token', refresh_token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: PROD,
-      // Supabase refresh tokens are long-lived; 60 days is typical
-      maxAge: 60 * 24 * 60 * 60
-    });
+    setAuthCookies(cookies, data.session);
 
     // Don’t do the admin check here—let the /admin guard handle it
-    throw redirect(302, '/admin');
+    throw redirect(303, '/admin');
   }
 };
