@@ -14,8 +14,15 @@
 		| 'blocked'
 		| 'rejected';
 	type LlmReviewStatus = 'pending' | 'processing' | 'reviewed' | 'failed';
-	type ManualReviewState = 'waiting_manual_review' | 'waiting_manual_review_after_skip';
-	type ManualReviewFilter = 'all' | ManualReviewState;
+	type PipelineState =
+		| 'applied_approved'
+		| 'applied_blocked'
+		| 'applied_merged'
+		| 'awaiting_current_llm_review'
+		| 'not_reviewed_yet'
+		| 'waiting_manual_review'
+		| 'waiting_region_reconciliation';
+	type ReviewTab = 'manual' | 'region' | 'awaiting' | 'not_reviewed' | 'history';
 
 	type Candidate = {
 		id: string;
@@ -32,7 +39,11 @@
 		process_status: OsmCandidateStatus;
 		llm_review_status: LlmReviewStatus | null;
 		llm_review_error: string | null;
-		pipeline_state: ManualReviewState;
+		pipeline_state: PipelineState;
+		region_key: string | null;
+		detected_region_key: string | null;
+		region_consistency_status: string | null;
+		llm_primary_business_type: string | null;
 		created_at: string;
 	};
 
@@ -75,18 +86,30 @@
 
 	export let data: {
 		candidates: Candidate[];
-		manualReviewStates: ManualReviewState[];
-		pipelineStateCounts: Partial<Record<ManualReviewState, number>>;
+		reviewTabs: Array<{ id: ReviewTab; states: PipelineState[] }>;
+		pipelineStateCounts: Partial<Record<PipelineState, number>>;
 		latestReviewByCandidate: Record<string, LatestReview>;
 		similarAliasesByCandidate: Record<string, AliasSuggestion[]>;
-		reviewState: ManualReviewFilter;
+		reviewTab: ReviewTab;
 		q: string;
 	};
 
-	const reviewStateLabels: Record<ManualReviewFilter, string> = {
-		all: 'All manual',
-		waiting_manual_review: 'Model requested manual',
-		waiting_manual_review_after_skip: 'After skipped auto action'
+	const reviewTabLabels: Record<ReviewTab, string> = {
+		manual: 'Manual Review',
+		region: 'Region Reconciliation',
+		awaiting: 'Awaiting Current LLM',
+		not_reviewed: 'Not Reviewed',
+		history: 'Applied / History'
+	};
+
+	const pipelineStateLabels: Record<PipelineState, string> = {
+		applied_approved: 'Applied approved',
+		applied_blocked: 'Applied blocked',
+		applied_merged: 'Applied merged',
+		awaiting_current_llm_review: 'Awaiting current LLM',
+		not_reviewed_yet: 'Not reviewed',
+		waiting_manual_review: 'Manual review',
+		waiting_region_reconciliation: 'Region reconciliation'
 	};
 
 	let searchTerm = data.q;
@@ -105,21 +128,21 @@
 		lastSyncedQ = data.q;
 	}
 
-	function reviewUrl(state = data.reviewState, q = searchTerm) {
-		const params = new URLSearchParams({ state });
+	function reviewUrl(tab = data.reviewTab, q = searchTerm) {
+		const params = new URLSearchParams({ tab });
 		if (q.trim()) params.set('q', q.trim());
 		return `/admin/reviews?${params.toString()}`;
 	}
 
-	function applyFilters(state = data.reviewState, q = searchTerm, replaceState = false) {
-		return goto(reviewUrl(state, q), { keepFocus: true, noScroll: true, replaceState });
+	function applyFilters(tab = data.reviewTab, q = searchTerm, replaceState = false) {
+		return goto(reviewUrl(tab, q), { keepFocus: true, noScroll: true, replaceState });
 	}
 
 	function scheduleCandidateSearch() {
 		if (searchTimer) clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			searchTimer = null;
-			void applyFilters(data.reviewState, searchTerm, true);
+			void applyFilters(data.reviewTab, searchTerm, true);
 		}, 250);
 	}
 
@@ -259,6 +282,10 @@
 		return new Intl.NumberFormat().format(value ?? 0);
 	}
 
+	function tabCount(tab: { states: PipelineState[] }) {
+		return tab.states.reduce((total, state) => total + (data.pipelineStateCounts[state] ?? 0), 0);
+	}
+
 	onMount(() => {
 		const closeLookup = (event: MouseEvent) => {
 			if (brandSearchBox && !brandSearchBox.contains(event.target as Node)) brandOpen = false;
@@ -272,7 +299,7 @@
 
 <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6">
 	<header class="border-b border-zinc-200 pb-5">
-		<p class="text-xs font-semibold text-teal-700 uppercase">Manual review</p>
+		<p class="text-xs font-semibold text-teal-700 uppercase">Location pipeline</p>
 		<h1 class="mt-1 text-2xl font-semibold text-zinc-950">Review queue</h1>
 		<p class="mt-2 max-w-3xl text-sm text-zinc-600">
 			Compare source evidence, model inferences, and existing aliases before taking action.
@@ -280,11 +307,11 @@
 		<div class="mt-5"><ReviewTabs active="candidates" /></div>
 	</header>
 
-	<section class="mt-5 grid gap-3 sm:grid-cols-3" aria-label="Manual review states">
-		{#each ['all', ...data.manualReviewStates] as state}
-			<button type="button" class={`rounded-lg border p-3 text-left ${data.reviewState === state ? 'border-zinc-950 bg-zinc-50' : 'border-zinc-200 bg-white hover:bg-zinc-50'}`} on:click={() => applyFilters(state as ManualReviewFilter, searchTerm)}>
-				<div class="text-xs text-zinc-500">{reviewStateLabels[state as ManualReviewFilter]}</div>
-				<div class="mt-1 text-xl font-semibold text-zinc-950">{formatNumber(state === 'all' ? data.manualReviewStates.reduce((total, item) => total + (data.pipelineStateCounts[item] ?? 0), 0) : data.pipelineStateCounts[state as ManualReviewState])}</div>
+	<section class="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-5" aria-label="Location pipeline states">
+		{#each data.reviewTabs as tab}
+			<button type="button" class={`rounded-lg border p-3 text-left ${data.reviewTab === tab.id ? 'border-zinc-950 bg-zinc-50' : 'border-zinc-200 bg-white hover:bg-zinc-50'}`} on:click={() => applyFilters(tab.id, searchTerm)}>
+				<div class="text-xs text-zinc-500">{reviewTabLabels[tab.id]}</div>
+				<div class="mt-1 text-xl font-semibold text-zinc-950">{formatNumber(tabCount(tab))}</div>
 			</button>
 		{/each}
 	</section>
@@ -323,10 +350,9 @@
 				{/if}
 			</div>
 
-			<form method="GET" class="flex items-center gap-2" on:submit|preventDefault={() => applyFilters(data.reviewState, searchTerm)}>
-				<select name="state" aria-label="Manual review state" class="rounded-md border-zinc-300 py-2 text-sm" value={data.reviewState} on:change={(event) => applyFilters((event.currentTarget as HTMLSelectElement).value as ManualReviewFilter, searchTerm)}>
-					<option value="all">All manual reviews</option>
-					{#each data.manualReviewStates as state}<option value={state}>{reviewStateLabels[state]}</option>{/each}
+			<form method="GET" class="flex items-center gap-2" on:submit|preventDefault={() => applyFilters(data.reviewTab, searchTerm)}>
+				<select name="tab" aria-label="Location pipeline state" class="rounded-md border-zinc-300 py-2 text-sm" value={data.reviewTab} on:change={(event) => applyFilters((event.currentTarget as HTMLSelectElement).value as ReviewTab, searchTerm)}>
+					{#each data.reviewTabs as tab}<option value={tab.id}>{reviewTabLabels[tab.id]}</option>{/each}
 				</select>
 				<input name="q" aria-label="Search candidates" class="min-w-0 rounded-md border-zinc-300 py-2 text-sm lg:w-56" placeholder="Filter candidates" bind:value={searchTerm} on:input={scheduleCandidateSearch} />
 			</form>
@@ -342,12 +368,13 @@
 		{#each data.candidates as candidate}
 			{@const latestReview = data.latestReviewByCandidate[candidate.id]}
 			{@const aliasSuggestions = data.similarAliasesByCandidate[candidate.id] ?? []}
+			{@const canAct = candidate.pipeline_state === 'waiting_manual_review' || candidate.pipeline_state === 'waiting_region_reconciliation'}
 			<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
 				<header class="flex flex-col gap-3 border-b border-zinc-200 bg-zinc-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
 					<div class="min-w-0">
 						<div class="flex flex-wrap items-center gap-2">
 							<h3 class="truncate text-base font-semibold text-zinc-950">{candidate.name ?? 'Unnamed candidate'}</h3>
-							<span class="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">{reviewStateLabels[candidate.pipeline_state]}</span>
+							<span class="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">{pipelineStateLabels[candidate.pipeline_state]}</span>
 							<span class="rounded bg-zinc-200/70 px-2 py-0.5 text-[11px] text-zinc-700">OSM</span>
 						</div>
 						<p class="mt-1 truncate text-xs text-zinc-500">{candidate.normalized_name ?? 'No normalized name'} · {locationLabel(candidate)}</p>
@@ -367,6 +394,10 @@
 							<dt class="text-zinc-500">Match target</dt><dd class="font-medium text-zinc-900">{candidate.matched_brand_slug ?? 'None'}</dd>
 							<dt class="text-zinc-500">Match score</dt><dd class="text-zinc-900">{candidate.match_score !== null ? `${Math.round(candidate.match_score * 100)}%` : 'None'}</dd>
 							<dt class="text-zinc-500">OSM category</dt><dd class="text-zinc-900">{candidate.tags?.amenity ?? candidate.tags?.shop ?? candidate.tags?.cuisine ?? 'Unspecified'}</dd>
+							<dt class="text-zinc-500">Business type</dt><dd class="text-zinc-900">{candidate.llm_primary_business_type?.replaceAll('_', ' ') ?? 'Unknown'}</dd>
+							<dt class="text-zinc-500">OSM region</dt><dd class="text-zinc-900">{candidate.region_key ?? 'Missing'}</dd>
+							<dt class="text-zinc-500">Detected region</dt><dd class="text-zinc-900">{candidate.detected_region_key ?? 'Missing'}</dd>
+							<dt class="text-zinc-500">Region check</dt><dd class="text-zinc-900">{candidate.region_consistency_status?.replaceAll('_', ' ') ?? 'Unknown'}</dd>
 						</dl>
 						{#if candidate.blocked_reason || candidate.llm_review_error}
 							<p class="mt-3 border-l-2 border-red-400 bg-red-50 px-3 py-2 text-xs text-red-700">{candidate.blocked_reason ?? candidate.llm_review_error}</p>
@@ -450,10 +481,11 @@
 					</section>
 
 					<aside class="space-y-4 bg-zinc-50/50 p-4">
+						{#if canAct}
 						<div>
 							<h4 class="text-xs font-semibold text-zinc-500 uppercase">Create new brand</h4>
 							<form method="POST" action="?/approve" class="mt-2 space-y-2" use:enhance={enhanceAction}>
-								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_state" value={data.reviewState} /><input type="hidden" name="filter_q" value={searchTerm} />
+								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
 								<label class="block"><span class="sr-only">Display name</span><input name="force_display" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Brand display name" value={latestReview?.proposed_display ?? candidate.name ?? ''} /></label>
 								<label class="block"><span class="sr-only">Approval note</span><input name="note" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Approval note" /></label>
 								<button class="h-9 w-full rounded-md bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800">Approve new brand</button>
@@ -463,7 +495,7 @@
 						<div class="border-t border-zinc-200 pt-4">
 							<h4 class="text-xs font-semibold text-zinc-500 uppercase">Merge existing</h4>
 							<form method="POST" action="?/merge" class="mt-2 space-y-2" use:enhance={enhanceAction}>
-								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_state" value={data.reviewState} /><input type="hidden" name="filter_q" value={searchTerm} />
+								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
 								<label class="block"><span class="sr-only">Brand slug</span><input name="brand_slug" required class="w-full rounded-md border-zinc-300 px-3 py-2 font-mono text-xs" placeholder="Existing brand slug" value={mergeSlugs[candidate.id] ?? latestReview?.proposed_brand_slug ?? candidate.matched_brand_slug ?? ''} on:input={(event) => setMergeSlug(candidate.id, event.currentTarget.value)} /></label>
 								<label class="block"><span class="sr-only">Merge note</span><input name="note" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Merge note" /></label>
 								<button class="h-9 w-full rounded-md bg-amber-600 px-3 text-xs font-semibold text-white hover:bg-amber-700">Merge into brand</button>
@@ -472,11 +504,18 @@
 
 						<div class="border-t border-zinc-200 pt-4">
 							<form method="POST" action="?/reject" class="space-y-2" use:enhance={enhanceAction}>
-								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_state" value={data.reviewState} /><input type="hidden" name="filter_q" value={searchTerm} />
+								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
 								<label class="block"><span class="sr-only">Rejection reason</span><input name="note" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Rejection reason" /></label>
 								<button class="h-9 w-full rounded-md border border-zinc-300 bg-white px-3 text-xs font-semibold text-zinc-800 hover:bg-zinc-100">Reject candidate</button>
 							</form>
 						</div>
+						{:else}
+							<div>
+								<h4 class="text-xs font-semibold text-zinc-500 uppercase">Pipeline status</h4>
+								<p class="mt-2 text-sm font-medium text-zinc-900">{pipelineStateLabels[candidate.pipeline_state]}</p>
+								<p class="mt-1 text-xs leading-5 text-zinc-500">This state is informational. Decisions are available only for manual review and region reconciliation.</p>
+							</div>
+						{/if}
 					</aside>
 				</div>
 			</article>

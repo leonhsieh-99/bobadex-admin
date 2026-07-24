@@ -9,8 +9,15 @@ type OsmCandidateStatus =
 	| 'blocked'
 	| 'rejected';
 type LlmReviewStatus = 'pending' | 'processing' | 'reviewed' | 'failed';
-type ManualReviewState = 'waiting_manual_review' | 'waiting_manual_review_after_skip';
-type ManualReviewFilter = 'all' | ManualReviewState;
+type PipelineState =
+	| 'applied_approved'
+	| 'applied_blocked'
+	| 'applied_merged'
+	| 'awaiting_current_llm_review'
+	| 'not_reviewed_yet'
+	| 'waiting_manual_review'
+	| 'waiting_region_reconciliation';
+type ReviewTab = 'manual' | 'region' | 'awaiting' | 'not_reviewed' | 'history';
 
 type CandidateRow = {
 	id: string;
@@ -41,9 +48,13 @@ type CandidateRow = {
 	llm_evidence_flags: Record<string, unknown> | null;
 	llm_risk_flags: Record<string, unknown> | null;
 	llm_review_created_at: string | null;
-	pipeline_state: ManualReviewState;
+	pipeline_state: PipelineState;
 	llm_is_boba_or_tea_business: boolean | null;
 	llm_appears_currently_open: boolean | null;
+	llm_primary_business_type: string | null;
+	region_key: string | null;
+	detected_region_key: string | null;
+	region_consistency_status: string | null;
 	created_at: string;
 };
 
@@ -98,9 +109,17 @@ type ApproveResult = {
 	op?: 'created_new' | 'merged_existing';
 };
 
-const manualReviewStates: ManualReviewState[] = [
+const reviewTabs: Array<{ id: ReviewTab; states: PipelineState[] }> = [
+	{ id: 'manual', states: ['waiting_manual_review'] },
+	{ id: 'region', states: ['waiting_region_reconciliation'] },
+	{ id: 'awaiting', states: ['awaiting_current_llm_review'] },
+	{ id: 'not_reviewed', states: ['not_reviewed_yet'] },
+	{ id: 'history', states: ['applied_approved', 'applied_blocked', 'applied_merged'] }
+];
+
+const actionableStates: PipelineState[] = [
 	'waiting_manual_review',
-	'waiting_manual_review_after_skip'
+	'waiting_region_reconciliation'
 ];
 
 function increment<T extends string>(record: Record<T, number>, key: T) {
@@ -154,13 +173,9 @@ function aliasSimilarity(left: string, right: string) {
 
 function reviewsRedirect(form: FormData, params: Record<string, string | null | undefined>) {
 	const searchParams = new URLSearchParams();
-	const requestedState = form.get('filter_state');
-	const state =
-		typeof requestedState === 'string' &&
-		(manualReviewStates.includes(requestedState as ManualReviewState) || requestedState === 'all')
-			? requestedState
-			: 'all';
-	searchParams.set('state', state);
+	const requestedTab = form.get('filter_tab');
+	const tab = reviewTabs.some((item) => item.id === requestedTab) ? String(requestedTab) : 'manual';
+	searchParams.set('tab', tab);
 
 	const q = form.get('filter_q');
 	if (typeof q === 'string' && q.trim()) searchParams.set('q', q.trim());
@@ -172,27 +187,49 @@ function reviewsRedirect(form: FormData, params: Record<string, string | null | 
 	return `/admin/reviews?${searchParams.toString()}`;
 }
 
+async function requireActionableCandidate(
+	locals: App.Locals,
+	candidateId: string,
+	form: FormData,
+	toast: string
+) {
+	const { data, error: stateError } = await locals.supabase
+		.schema('ingest')
+		.from('osm_candidate_pipeline_states')
+		.select('pipeline_state')
+		.eq('id', candidateId)
+		.maybeSingle<{ pipeline_state: PipelineState }>();
+
+	if (stateError || !data || !actionableStates.includes(data.pipeline_state)) {
+		throw redirect(
+			303,
+			reviewsRedirect(form, {
+				toast,
+				msg: stateError?.message ?? `candidate_not_actionable:${data?.pipeline_state ?? 'missing'}`
+			})
+		);
+	}
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
-	const requestedState = url.searchParams.get('state');
-	const reviewState: ManualReviewFilter = manualReviewStates.includes(
-		requestedState as ManualReviewState
-	)
-		? (requestedState as ManualReviewState)
-		: 'all';
+	const requestedTab = url.searchParams.get('tab');
+	const reviewTab = reviewTabs.find((item) => item.id === requestedTab)?.id ?? 'manual';
+	const selectedStates = reviewTabs.find((item) => item.id === reviewTab)?.states ?? [
+		'waiting_manual_review'
+	];
 	const q = url.searchParams.get('q')?.trim() ?? '';
 
 	let candidateQuery = locals.supabase
 		.schema('ingest')
 		.from('osm_candidate_pipeline_states')
 		.select(
-			'id,name,normalized_name,lat,lon,tags,matched_brand_slug,match_score,blocked_brand,blocked_reason,staging_id,process_status,llm_review_status,llm_review_error,llm_review_id,llm_model,llm_reviewer_version,llm_action,auto_decision,llm_confidence,llm_proposed_brand_slug,llm_proposed_display,llm_reason,llm_evidence,llm_sources,llm_evidence_flags,llm_risk_flags,llm_review_created_at,pipeline_state,llm_is_boba_or_tea_business,llm_appears_currently_open,created_at'
+			'id,name,normalized_name,lat,lon,tags,matched_brand_slug,match_score,blocked_brand,blocked_reason,staging_id,process_status,llm_review_status,llm_review_error,llm_review_id,llm_model,llm_reviewer_version,llm_action,auto_decision,llm_confidence,llm_proposed_brand_slug,llm_proposed_display,llm_reason,llm_evidence,llm_sources,llm_evidence_flags,llm_risk_flags,llm_review_created_at,pipeline_state,llm_is_boba_or_tea_business,llm_appears_currently_open,llm_primary_business_type,detected_region_key,region_consistency_status,region_key,created_at'
 		)
-		.in('pipeline_state', manualReviewStates)
+		.in('pipeline_state', selectedStates)
 		.order('llm_confidence', { ascending: false, nullsFirst: false })
 		.order('created_at', { ascending: false })
 		.limit(50);
 
-	if (reviewState !== 'all') candidateQuery = candidateQuery.eq('pipeline_state', reviewState);
 	if (q) candidateQuery = candidateQuery.ilike('name', `%${q}%`);
 
 	const [candidateResult, summaryResult, aliasResult, brandResult] = await Promise.all([
@@ -201,7 +238,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.schema('ingest')
 			.from('osm_candidate_pipeline_states')
 			.select('pipeline_state')
-			.in('pipeline_state', manualReviewStates)
 			.limit(10000),
 		locals.supabase
 			.from('brand_aliases')
@@ -225,8 +261,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	}
 
 	const candidates = (candidateResult.data ?? []) as CandidateRow[];
-	const pipelineStateCounts = {} as Record<ManualReviewState, number>;
-	for (const row of (summaryResult.data ?? []) as Array<{ pipeline_state: ManualReviewState }>) {
+	const pipelineStateCounts = {} as Record<PipelineState, number>;
+	for (const row of (summaryResult.data ?? []) as Array<{ pipeline_state: PipelineState }>) {
 		increment(pipelineStateCounts, row.pipeline_state);
 	}
 
@@ -287,11 +323,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	return {
 		candidates,
-		manualReviewStates,
+		reviewTabs,
 		pipelineStateCounts,
 		latestReviewByCandidate,
 		similarAliasesByCandidate,
-		reviewState,
+		reviewTab,
 		q
 	};
 };
@@ -308,6 +344,7 @@ export const actions: Actions = {
 		if (!candidateId) {
 			throw redirect(303, reviewsRedirect(form, { toast: 'approve_failed', msg: 'missing_candidate_id' }));
 		}
+		await requireActionableCandidate(locals, candidateId, form, 'approve_failed');
 
 		const { data, error: rpcError } = await locals.supabase
 			.rpc('approve_osm_candidate', {
@@ -339,6 +376,7 @@ export const actions: Actions = {
 		if (!candidateId || !brandSlug) {
 			throw redirect(303, reviewsRedirect(form, { toast: 'merge_failed', msg: 'missing_params' }));
 		}
+		await requireActionableCandidate(locals, candidateId, form, 'merge_failed');
 
 		const { error: rpcError } = await locals.supabase.rpc('admin_merge_candidate_to_brand', {
 			p_candidate_id: candidateId,
@@ -363,6 +401,7 @@ export const actions: Actions = {
 		if (!candidateId) {
 			throw redirect(303, reviewsRedirect(form, { toast: 'reject_failed', msg: 'missing_candidate_id' }));
 		}
+		await requireActionableCandidate(locals, candidateId, form, 'reject_failed');
 
 		const { error: rpcError } = await locals.supabase.rpc('reject_osm_candidate', {
 			p_candidate_id: candidateId,

@@ -9,7 +9,7 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 		.schema('ingest')
 		.from('osm_candidate_pipeline_states')
 		.select('*', { count: 'exact', head: true })
-		.in('pipeline_state', ['waiting_manual_review', 'waiting_manual_review_after_skip']);
+		.eq('pipeline_state', 'waiting_manual_review');
 
 	if (countError) console.error('[admin layout] failed to count manual reviews', countError);
 

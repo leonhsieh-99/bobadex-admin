@@ -67,6 +67,7 @@
 		<nav class="ml-auto flex min-w-0 items-center gap-1 overflow-x-auto" aria-label="Admin navigation">
 			<a href={withBase('/admin')} class={navLink}>Dashboard</a>
 			<a href={withBase('/admin/imports')} class={navLink}>Imports</a>
+			<a href={withBase('/admin/enrichment')} class={navLink}>Enrichment</a>
 			<a href={withBase('/admin/reviews')} class={navLink}>
 				Reviews
 				{#if reviewCount > 0}

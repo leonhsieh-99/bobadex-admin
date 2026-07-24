@@ -338,7 +338,7 @@
 		</div>
 	</section>
 
-	<section class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+	<section id="automation" class="grid grid-cols-1 gap-6 lg:grid-cols-2">
 		<div class="rounded-xl border border-gray-200 bg-white p-5">
 			<div class="flex items-start justify-between gap-4">
 				<div>
@@ -369,7 +369,7 @@
 
 			{#if data.cronError}
 				<p class="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
-					Cron tables are not visible to this app role: {data.cronError}
+					Protected cron status is unavailable: {data.cronError}
 				</p>
 			{:else}
 				<div class="mt-4 grid gap-4 lg:grid-cols-2">

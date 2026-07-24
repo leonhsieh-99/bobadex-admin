@@ -56,6 +56,23 @@ type ReportRow = {
 	created_at: string;
 };
 
+type EnrichmentJobSummaryRow = {
+	status: string;
+};
+
+type CronStatusPayload = {
+	jobs?: Array<{ jobname?: string | null; command?: string | null }>;
+};
+
+const expectedCronSignals = [
+	'drain-osm-import-queue',
+	'process_osm_candidates_batch',
+	'score-osm-candidates-batch',
+	'admin_apply_auto_osm_llm_reviews',
+	'process-brand-enrichment-jobs',
+	'enqueue_due_brand_refreshes'
+];
+
 function increment(record: Record<string, number>, key: string) {
 	record[key] = (record[key] ?? 0) + 1;
 }
@@ -70,7 +87,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 		stagingResult,
 		reportsResult,
 		brandCountResult,
-		newBrandCountResult
+		newBrandCountResult,
+		enrichmentJobsResult,
+		dossiersResult,
+		profilesResult,
+		dueRefreshesResult,
+		integrityFlagsResult,
+		cronStatusResult
 	] = await Promise.all([
 		locals.supabase
 			.schema('ingest')
@@ -89,7 +112,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.schema('ingest')
 			.from('osm_candidate_pipeline_states')
 			.select('id,name,process_status,llm_review_status,match_score,region_key,pipeline_state,created_at')
-			.in('pipeline_state', ['waiting_manual_review', 'waiting_manual_review_after_skip'])
+			.in('pipeline_state', ['waiting_manual_review', 'waiting_region_reconciliation'])
 			.order('created_at', { ascending: false })
 			.limit(6),
 		locals.supabase
@@ -110,7 +133,30 @@ export const load: PageServerLoad = async ({ locals }) => {
 		locals.supabase
 			.from('brands')
 			.select('*', { count: 'exact', head: true })
-			.gte('created_at', sevenDaysAgo)
+			.gte('created_at', sevenDaysAgo),
+		locals.supabase
+			.schema('ingest')
+			.from('brand_enrichment_jobs')
+			.select('status')
+			.limit(10000),
+		locals.supabase
+			.schema('mod')
+			.from('brand_dossiers')
+			.select('*', { count: 'exact', head: true })
+			.eq('approval_status', 'needs_review'),
+		locals.supabase.from('brand_profiles').select('*', { count: 'exact', head: true }),
+		locals.supabase
+			.schema('mod')
+			.from('brand_dossiers')
+			.select('*', { count: 'exact', head: true })
+			.lte('refresh_after', new Date().toISOString()),
+		locals.supabase
+			.schema('mod')
+			.from('brand_integrity_flags')
+			.select('*', { count: 'exact', head: true })
+			.neq('status', 'resolved')
+			.neq('status', 'closed'),
+		locals.supabase.rpc('admin_pipeline_cron_status')
 	]);
 
 	const sourceErrors = [
@@ -118,7 +164,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 		['Candidates', candidateSummaryResult.error ?? reviewCandidatesResult.error],
 		['Brand submissions', stagingResult.error],
 		['Reports', reportsResult.error],
-		['Brands', brandCountResult.error ?? newBrandCountResult.error]
+		['Brands', brandCountResult.error ?? newBrandCountResult.error],
+		['Enrichment jobs', enrichmentJobsResult.error],
+		['Brand dossiers', dossiersResult.error],
+		['Brand profiles', profilesResult.error],
+		['Due refreshes', dueRefreshesResult.error],
+		['Integrity flags', integrityFlagsResult.error]
 	]
 		.filter((entry) => entry[1])
 		.map(([source]) => String(source));
@@ -130,7 +181,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 		stagingResult,
 		reportsResult,
 		brandCountResult,
-		newBrandCountResult
+		newBrandCountResult,
+		enrichmentJobsResult,
+		dossiersResult,
+		profilesResult,
+		dueRefreshesResult,
+		integrityFlagsResult
 	]) {
 		if (result.error) console.error('[dashboard]', result.error);
 	}
@@ -145,12 +201,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	for (const row of candidates) {
 		increment(candidateStatusCounts, row.process_status);
 		increment(pipelineStateCounts, row.pipeline_state);
-		if (
-			row.pipeline_state === 'waiting_manual_review' ||
-			row.pipeline_state === 'waiting_manual_review_after_skip'
-		) {
-			increment(llmStatusCounts, row.llm_review_status ?? 'unassigned');
-		}
+		increment(llmStatusCounts, row.llm_review_status ?? 'unassigned');
 	}
 	for (const job of jobs) increment(jobStatusCounts, job.status);
 
@@ -164,14 +215,30 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	const stagingRows = (stagingResult.data ?? []) as StagingRow[];
 	const reportRows = (reportsResult.data ?? []) as ReportRow[];
+	const enrichmentJobStatusCounts: Record<string, number> = {};
+	for (const row of (enrichmentJobsResult.data ?? []) as EnrichmentJobSummaryRow[]) {
+		increment(enrichmentJobStatusCounts, row.status);
+	}
+	const cronPayload =
+		cronStatusResult.data &&
+		typeof cronStatusResult.data === 'object' &&
+		!Array.isArray(cronStatusResult.data)
+			? (cronStatusResult.data as CronStatusPayload)
+			: null;
+	const cronSearchText = (cronPayload?.jobs ?? [])
+		.map((job) => `${job.jobname ?? ''} ${job.command ?? ''}`.toLowerCase())
+		.join('\n');
+	const missingCrons = cronStatusResult.error
+		? null
+		: expectedCronSignals.filter((signal) => !cronSearchText.includes(signal.toLowerCase())).length;
 
 	return {
 		metrics: {
 			reviewQueue:
 				(pipelineStateCounts.waiting_manual_review ?? 0) +
-				(pipelineStateCounts.waiting_manual_review_after_skip ?? 0),
+				(pipelineStateCounts.waiting_region_reconciliation ?? 0),
 			needsReview: pipelineStateCounts.waiting_manual_review ?? 0,
-			blocked: pipelineStateCounts.waiting_manual_review_after_skip ?? 0,
+			regionReconciliation: pipelineStateCounts.waiting_region_reconciliation ?? 0,
 			activeJobs:
 				(jobStatusCounts.queued ?? 0) +
 				(jobStatusCounts.running ?? 0) +
@@ -182,7 +249,16 @@ export const load: PageServerLoad = async ({ locals }) => {
 			pendingReports: reportsResult.count ?? 0,
 			brandCount: brandCountResult.count ?? 0,
 			newBrands: newBrandCountResult.count ?? 0,
-			totalCandidates: candidates.length
+			totalCandidates: candidates.length,
+			enrichmentQueue:
+				(enrichmentJobStatusCounts.queued ?? 0) +
+				(enrichmentJobStatusCounts.running ?? 0),
+			failedEnrichmentJobs: enrichmentJobStatusCounts.failed ?? 0,
+			dossiersNeedingReview: dossiersResult.count ?? 0,
+			publishedProfiles: profilesResult.count ?? 0,
+			dueRefreshes: dueRefreshesResult.count ?? 0,
+			openIntegrityFlags: integrityFlagsResult.count ?? 0,
+			missingCrons
 		},
 		pipeline: {
 			candidateStatusCounts,

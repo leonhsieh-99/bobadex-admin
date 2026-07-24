@@ -5,7 +5,7 @@
 		metrics: {
 			reviewQueue: number;
 			needsReview: number;
-			blocked: number;
+			regionReconciliation: number;
 			activeJobs: number;
 			failedJobs: number;
 			pendingIntake: number;
@@ -14,6 +14,13 @@
 			brandCount: number;
 			newBrands: number;
 			totalCandidates: number;
+			enrichmentQueue: number;
+			failedEnrichmentJobs: number;
+			dossiersNeedingReview: number;
+			publishedProfiles: number;
+			dueRefreshes: number;
+			openIntegrityFlags: number;
+			missingCrons: number | null;
 		};
 		pipeline: {
 			candidateStatusCounts: Record<string, number>;
@@ -45,6 +52,7 @@
 			llm_review_status: string | null;
 			match_score: number | null;
 			region_key: string | null;
+			pipeline_state: string;
 			created_at: string;
 		}>;
 		stagingRows: Array<{
@@ -131,7 +139,7 @@
 				<span class="h-2.5 w-2.5 rounded-full bg-amber-400"></span>
 			</div>
 			<p class="mt-3 text-3xl font-semibold text-zinc-950">{number.format(data.metrics.reviewQueue)}</p>
-			<p class="mt-1 text-xs text-zinc-500">{data.metrics.needsReview} model requested · {data.metrics.blocked} after skip</p>
+			<p class="mt-1 text-xs text-zinc-500">{data.metrics.needsReview} manual · {data.metrics.regionReconciliation} region reconciliation</p>
 		</a>
 
 		<a href="/admin/imports" class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-zinc-300 hover:shadow">
@@ -159,6 +167,46 @@
 			</div>
 			<p class="mt-3 text-3xl font-semibold text-zinc-950">{number.format(data.metrics.brandCount)}</p>
 			<p class="mt-1 text-xs text-zinc-500">+{data.metrics.newBrands} in the last 7 days</p>
+		</div>
+	</section>
+
+	<section>
+		<div class="mb-3 flex items-end justify-between gap-4">
+			<div>
+				<h3 class="text-lg font-semibold text-zinc-950">Brand enrichment</h3>
+				<p class="mt-1 text-sm text-zinc-500">Research queue health, publication coverage, and evidence quality.</p>
+			</div>
+			<a href="/admin/enrichment" class="text-sm font-medium text-zinc-700 hover:text-zinc-950">Manage enrichment</a>
+		</div>
+		<div class="grid border-y border-zinc-200 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+			{#each [
+				['Queue depth', data.metrics.enrichmentQueue, 'text-zinc-950'],
+				['Failed jobs', data.metrics.failedEnrichmentJobs, data.metrics.failedEnrichmentJobs ? 'text-red-700' : 'text-zinc-950'],
+				['Dossiers', data.metrics.dossiersNeedingReview, data.metrics.dossiersNeedingReview ? 'text-amber-700' : 'text-zinc-950'],
+				['Published', data.metrics.publishedProfiles, 'text-emerald-700'],
+				['Due refreshes', data.metrics.dueRefreshes, 'text-zinc-950'],
+				['Open flags', data.metrics.openIntegrityFlags, data.metrics.openIntegrityFlags ? 'text-red-700' : 'text-zinc-950']
+			] as metric}
+				<a href="/admin/enrichment" class="border-b border-zinc-200 px-4 py-5 last:border-b-0 hover:bg-zinc-50 sm:border-r sm:[&:nth-child(2n)]:border-r-0 lg:[&:nth-child(2n)]:border-r lg:[&:nth-child(3n)]:border-r-0 xl:border-b-0 xl:[&:nth-child(3n)]:border-r xl:last:border-r-0">
+					<p class="text-xs font-medium text-zinc-500">{metric[0]}</p>
+					<p class="mt-2 text-2xl font-semibold {metric[2]}">{number.format(Number(metric[1]))}</p>
+				</a>
+			{/each}
+		</div>
+	</section>
+
+	<section>
+		<div class="mb-3">
+			<h3 class="text-lg font-semibold text-zinc-950">What needs attention</h3>
+			<p class="mt-1 text-sm text-zinc-500">Work waiting on an admin decision or a failed pipeline step.</p>
+		</div>
+		<div class="divide-y divide-zinc-200 border-y border-zinc-200">
+			<a href="/admin/reviews?tab=manual" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Location manual reviews</span><strong class="tabular-nums text-zinc-950">{data.metrics.needsReview}</strong></a>
+			<a href="/admin/reviews?tab=region" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Region reconciliation</span><strong class="tabular-nums text-zinc-950">{data.metrics.regionReconciliation}</strong></a>
+			<a href="/admin/enrichment" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Brand dossiers</span><strong class="tabular-nums text-zinc-950">{data.metrics.dossiersNeedingReview}</strong></a>
+			<a href="/admin/imports" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Failed pipeline jobs</span><strong class="tabular-nums {data.metrics.failedJobs + data.metrics.failedEnrichmentJobs ? 'text-red-700' : 'text-zinc-950'}">{data.metrics.failedJobs + data.metrics.failedEnrichmentJobs}</strong></a>
+			<a href="/admin/brands" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Brand submissions and reports</span><strong class="tabular-nums text-zinc-950">{data.metrics.pendingIntake}</strong></a>
+			<a href="/admin/imports#automation" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Missing worker schedules</span>{#if data.metrics.missingCrons == null}<span class="text-xs font-medium text-zinc-500">Status unavailable</span>{:else}<strong class="tabular-nums {data.metrics.missingCrons ? 'text-amber-700' : 'text-zinc-950'}">{data.metrics.missingCrons}</strong>{/if}</a>
 		</div>
 	</section>
 
@@ -227,7 +275,7 @@
 			</div>
 			<div class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
 				{#each data.reviewCandidates as candidate}
-					<a href={`/admin/reviews?status=${candidate.process_status}&q=${encodeURIComponent(candidate.name ?? '')}`} class="flex items-center justify-between gap-4 border-b border-zinc-100 px-4 py-3 last:border-b-0 hover:bg-zinc-50">
+					<a href={`/admin/reviews?tab=${candidate.pipeline_state === 'waiting_region_reconciliation' ? 'region' : 'manual'}&q=${encodeURIComponent(candidate.name ?? '')}`} class="flex items-center justify-between gap-4 border-b border-zinc-100 px-4 py-3 last:border-b-0 hover:bg-zinc-50">
 						<div class="min-w-0">
 							<p class="truncate text-sm font-medium text-zinc-900">{candidate.name ?? 'Unnamed candidate'}</p>
 							<p class="mt-0.5 text-xs text-zinc-500">{candidate.region_key ?? 'Unknown region'} · LLM {candidate.llm_review_status ?? 'unassigned'} · {relativeDate(candidate.created_at)}</p>

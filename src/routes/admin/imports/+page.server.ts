@@ -124,8 +124,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		{ data: regionBounds },
 		{ data: processSummaryRows, error: processSummaryErr },
 		{ data: llmReviews, error: llmReviewsErr },
-		{ data: cronJobs, error: cronJobsErr },
-		{ data: cronRuns, error: cronRunsErr }
+		{ data: cronStatus, error: cronStatusErr }
 	] = await Promise.all([
 		locals.supabase.from('region_codes').select('code,country_code,region_name').order('code', {
 			ascending: true
@@ -148,17 +147,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.not('llm_review_id', 'is', null)
 			.order('llm_review_created_at', { ascending: false })
 			.limit(250),
-		locals.supabase
-			.schema('cron')
-			.from('job')
-			.select('jobid,schedule,command,nodename,active,jobname')
-			.order('jobid', { ascending: true }),
-		locals.supabase
-			.schema('cron')
-			.from('job_run_details')
-			.select('jobid,status,start_time,end_time,return_message')
-			.order('start_time', { ascending: false })
-			.limit(20)
+		locals.supabase.rpc('admin_pipeline_cron_status')
 	]);
 
 	if (processSummaryErr) {
@@ -201,7 +190,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}
 	}
 
-	const cronError = cronJobsErr?.message ?? cronRunsErr?.message ?? null;
+	const cronPayload =
+		cronStatus && typeof cronStatus === 'object' && !Array.isArray(cronStatus)
+			? (cronStatus as { jobs?: CronJobRow[]; runs?: CronRunRow[] })
+			: null;
+	const cronJobs = cronPayload?.jobs ?? [];
+	const cronRuns = cronPayload?.runs ?? [];
+	const cronError = cronStatusErr?.message ?? null;
 
 	return {
 		jobs: jobRows,
@@ -218,8 +213,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		llmReviews: reviewRows.slice(0, 12),
 		llmActionCounts,
 		llmAutoDecisionCounts,
-		cronJobs: (cronJobs ?? []) as CronJobRow[],
-		cronRuns: (cronRuns ?? []) as CronRunRow[],
+		cronJobs,
+		cronRuns,
 		cronError
 	};
 };
