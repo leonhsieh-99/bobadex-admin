@@ -31,6 +31,8 @@
 		lat: number | null;
 		lon: number | null;
 		tags: Record<string, string> | null;
+		source: string | null;
+		source_key: string | null;
 		matched_brand_slug: string | null;
 		match_score: number | null;
 		blocked_brand: boolean;
@@ -369,6 +371,8 @@
 			{@const latestReview = data.latestReviewByCandidate[candidate.id]}
 			{@const aliasSuggestions = data.similarAliasesByCandidate[candidate.id] ?? []}
 			{@const canAct = candidate.pipeline_state === 'waiting_manual_review' || candidate.pipeline_state === 'waiting_region_reconciliation'}
+			{@const sameNameExists = aliasSuggestions.some((suggestion) => suggestion.score === 1)}
+			{@const canMove = (candidate.pipeline_state === 'applied_approved' || candidate.pipeline_state === 'applied_merged') && candidate.matched_brand_slug}
 			<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
 				<header class="flex flex-col gap-3 border-b border-zinc-200 bg-zinc-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
 					<div class="min-w-0">
@@ -391,6 +395,7 @@
 						<h4 class="text-xs font-semibold text-zinc-500 uppercase">Source evidence</h4>
 						<dl class="mt-3 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs">
 							<dt class="text-zinc-500">Location</dt><dd class="text-zinc-900">{locationLabel(candidate)}</dd>
+							<dt class="text-zinc-500">Provider ID</dt><dd class="break-all font-mono text-zinc-900">{candidate.source ?? 'OSM'}:{candidate.source_key ?? candidate.id}</dd>
 							<dt class="text-zinc-500">Match target</dt><dd class="font-medium text-zinc-900">{candidate.matched_brand_slug ?? 'None'}</dd>
 							<dt class="text-zinc-500">Match score</dt><dd class="text-zinc-900">{candidate.match_score !== null ? `${Math.round(candidate.match_score * 100)}%` : 'None'}</dd>
 							<dt class="text-zinc-500">OSM category</dt><dd class="text-zinc-900">{candidate.tags?.amenity ?? candidate.tags?.shop ?? candidate.tags?.cuisine ?? 'Unspecified'}</dd>
@@ -483,12 +488,13 @@
 					<aside class="space-y-4 bg-zinc-50/50 p-4">
 						{#if canAct}
 						<div>
-							<h4 class="text-xs font-semibold text-zinc-500 uppercase">Create new brand</h4>
+							<h4 class="text-xs font-semibold text-zinc-500 uppercase">{sameNameExists ? 'Keep as separate brand' : 'Create new brand'}</h4>
+							{#if sameNameExists}<p class="mt-1 text-xs leading-5 text-zinc-500">An identical name already exists. This creates a separate canonical ID and keeps the shared name manual-only.</p>{/if}
 							<form method="POST" action="?/approve" class="mt-2 space-y-2" use:enhance={enhanceAction}>
 								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
 								<label class="block"><span class="sr-only">Display name</span><input name="force_display" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Brand display name" value={latestReview?.proposed_display ?? candidate.name ?? ''} /></label>
 								<label class="block"><span class="sr-only">Approval note</span><input name="note" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Approval note" /></label>
-								<button class="h-9 w-full rounded-md bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800">Approve new brand</button>
+								<button class="h-9 w-full rounded-md bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800">{sameNameExists ? 'Create separate brand' : 'Approve new brand'}</button>
 							</form>
 						</div>
 
@@ -513,8 +519,21 @@
 							<div>
 								<h4 class="text-xs font-semibold text-zinc-500 uppercase">Pipeline status</h4>
 								<p class="mt-2 text-sm font-medium text-zinc-900">{pipelineStateLabels[candidate.pipeline_state]}</p>
-								<p class="mt-1 text-xs leading-5 text-zinc-500">This state is informational. Decisions are available only for manual review and region reconciliation.</p>
 							</div>
+							{#if canMove}
+								<div class="border-t border-zinc-200 pt-4">
+									<h4 class="text-xs font-semibold text-zinc-500 uppercase">Move location</h4>
+									<p class="mt-1 text-xs leading-5 text-zinc-500">Reassign this provider location from <span class="font-mono">{candidate.matched_brand_slug}</span> to another canonical brand.</p>
+									<form method="POST" action="?/move" class="mt-2 space-y-2" use:enhance={enhanceAction}>
+										<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
+										<label class="block"><span class="sr-only">Target brand slug</span><input name="brand_slug" required class="w-full rounded-md border-zinc-300 px-3 py-2 font-mono text-xs" placeholder="Target brand slug" /></label>
+										<label class="block"><span class="sr-only">Move note</span><input name="note" required class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Why this location belongs elsewhere" /></label>
+										<button class="h-9 w-full rounded-md bg-amber-600 px-3 text-xs font-semibold text-white hover:bg-amber-700">Move to brand</button>
+									</form>
+								</div>
+							{:else}
+								<p class="text-xs leading-5 text-zinc-500">This state is informational. Decisions are available for manual review, region reconciliation, and applied locations that can be reassigned.</p>
+							{/if}
 						{/if}
 					</aside>
 				</div>
