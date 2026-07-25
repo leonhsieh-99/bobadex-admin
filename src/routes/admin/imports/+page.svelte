@@ -753,16 +753,14 @@
 								</td>
 								<td class="px-4 py-2">
 									<div class="flex items-center gap-2">
-										<form method="POST" action="/admin/imports/process">
-											<input type="hidden" name="job_id" value={job.id} />
-											<button class="rounded-md bg-gray-900 px-3 py-1.5 text-xs text-white disabled:opacity-50" disabled={job.status === 'running'}>
-												{job.status === 'running' ? 'Processing…' : 'Process'}
-											</button>
-										</form>
-										<form method="POST" action="/admin/imports/_api/dequeue">
-											<input type="hidden" name="job_id" value={job.id} />
-											<button class="rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50">Delete</button>
-										</form>
+										{#if ['queued', 'failed', 'cancelled', 'retry_waiting'].includes(job.status)}
+											<form method="POST" action="/admin/imports/_api/dequeue">
+												<input type="hidden" name="job_id" value={job.id} />
+												<button class="rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50">Delete</button>
+											</form>
+										{:else}
+											<span class="text-xs text-gray-400">History preserved</span>
+										{/if}
 									</div>
 								</td>
 							</tr>
