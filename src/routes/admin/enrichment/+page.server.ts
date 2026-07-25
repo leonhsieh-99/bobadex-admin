@@ -70,7 +70,7 @@ type IntegrityFlagRow = {
 	severity: string;
 	status: string;
 	title: string;
-	details: string | null;
+	details: unknown;
 	recommended_action: string | null;
 	last_seen_at: string;
 };
