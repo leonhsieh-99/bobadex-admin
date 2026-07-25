@@ -26,6 +26,8 @@ type CandidateRow = {
 	lat: number | null;
 	lon: number | null;
 	tags: Record<string, string> | null;
+	source: string | null;
+	source_key: string | null;
 	matched_brand_slug: string | null;
 	match_score: number | null;
 	blocked_brand: boolean;
@@ -211,6 +213,39 @@ async function requireActionableCandidate(
 	}
 }
 
+async function requireMovableCandidate(
+	locals: App.Locals,
+	candidateId: string,
+	form: FormData
+) {
+	const { data, error: stateError } = await locals.supabase
+		.schema('ingest')
+		.from('osm_candidate_pipeline_states')
+		.select('pipeline_state,matched_brand_slug')
+		.eq('id', candidateId)
+		.maybeSingle<{ pipeline_state: PipelineState; matched_brand_slug: string | null }>();
+
+	const movableStates: PipelineState[] = [
+		'applied_approved',
+		'applied_merged'
+	];
+
+	if (
+		stateError ||
+		!data ||
+		!data.matched_brand_slug ||
+		!movableStates.includes(data.pipeline_state)
+	) {
+		throw redirect(
+			303,
+			reviewsRedirect(form, {
+				toast: 'move_failed',
+				msg: stateError?.message ?? `candidate_not_movable:${data?.pipeline_state ?? 'missing'}`
+			})
+		);
+	}
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const requestedTab = url.searchParams.get('tab');
 	const reviewTab = reviewTabs.find((item) => item.id === requestedTab)?.id ?? 'manual';
@@ -223,7 +258,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		.schema('ingest')
 		.from('osm_candidate_pipeline_states')
 		.select(
-			'id,name,normalized_name,lat,lon,tags,matched_brand_slug,match_score,blocked_brand,blocked_reason,staging_id,process_status,llm_review_status,llm_review_error,llm_review_id,llm_model,llm_reviewer_version,llm_action,auto_decision,llm_confidence,llm_proposed_brand_slug,llm_proposed_display,llm_reason,llm_evidence,llm_sources,llm_evidence_flags,llm_risk_flags,llm_review_created_at,pipeline_state,llm_is_boba_or_tea_business,llm_appears_currently_open,llm_primary_business_type,detected_region_key,region_consistency_status,region_key,created_at'
+			'id,name,normalized_name,lat,lon,tags,source,source_key,matched_brand_slug,match_score,blocked_brand,blocked_reason,staging_id,process_status,llm_review_status,llm_review_error,llm_review_id,llm_model,llm_reviewer_version,llm_action,auto_decision,llm_confidence,llm_proposed_brand_slug,llm_proposed_display,llm_reason,llm_evidence,llm_sources,llm_evidence_flags,llm_risk_flags,llm_review_created_at,pipeline_state,llm_is_boba_or_tea_business,llm_appears_currently_open,llm_primary_business_type,detected_region_key,region_consistency_status,region_key,created_at'
 		)
 		.in('pipeline_state', selectedStates)
 		.order('llm_confidence', { ascending: false, nullsFirst: false })
@@ -389,6 +424,32 @@ export const actions: Actions = {
 		}
 
 		throw redirect(303, reviewsRedirect(form, { toast: 'merged' }));
+	},
+
+	move: async ({ request, locals }) => {
+		if (!locals.isAdmin) throw error(403, 'Forbidden');
+
+		const form = await request.formData();
+		const candidateId = String(form.get('candidate_id') ?? '');
+		const brandSlug = String(form.get('brand_slug') ?? '');
+		const note = String(form.get('note') ?? '');
+
+		if (!candidateId || !brandSlug || !note.trim()) {
+			throw redirect(303, reviewsRedirect(form, { toast: 'move_failed', msg: 'missing_params' }));
+		}
+		await requireMovableCandidate(locals, candidateId, form);
+
+		const { error: rpcError } = await locals.supabase.rpc('admin_move_candidate_to_brand', {
+			p_candidate_id: candidateId,
+			p_brand_slug: brandSlug,
+			p_note: note
+		});
+
+		if (rpcError) {
+			throw redirect(303, reviewsRedirect(form, { toast: 'move_failed', msg: rpcError.message }));
+		}
+
+		throw redirect(303, reviewsRedirect(form, { toast: 'moved', brand: brandSlug }));
 	},
 
 	reject: async ({ request, locals }) => {
