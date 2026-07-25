@@ -52,7 +52,7 @@
 			id: string;
 			severity: string;
 			title: string;
-			details: string | null;
+			details: unknown;
 			recommended_action: string | null;
 		}>;
 		profile: {
@@ -112,6 +112,21 @@
 		if (value == null) return 'Not provided';
 		if (typeof value === 'string') return value;
 		return JSON.stringify(value, null, 2);
+	}
+
+	function flagDescription(details: unknown) {
+		if (typeof details === 'string') return details;
+		if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+		const description = (details as Record<string, unknown>).description;
+		return typeof description === 'string' ? description : null;
+	}
+
+	function flagSourceUrls(details: unknown) {
+		if (!details || typeof details !== 'object' || Array.isArray(details)) return [];
+		const sourceUrls = (details as Record<string, unknown>).source_urls;
+		return Array.isArray(sourceUrls)
+			? sourceUrls.filter((url): url is string => typeof url === 'string')
+			: [];
 	}
 
 	function actionEnhance(action: string): SubmitFunction {
@@ -418,9 +433,21 @@
 												class="border-l-2 border-red-400 bg-red-50 px-3 py-2"
 											>
 												<p class="text-sm font-medium text-red-900">{flag.title}</p>
-												{#if flag.details}<p class="mt-1 text-xs text-red-800">
-														{flag.details}
-													</p>{/if}{#if flag.recommended_action}<p
+												{#if flagDescription(flag.details)}<p class="mt-1 text-xs text-red-800">
+														{flagDescription(flag.details)}
+													</p>{/if}
+												{#if flagSourceUrls(flag.details).length}<div
+														class="mt-1 flex flex-wrap gap-x-3 gap-y-1"
+													>
+														{#each flagSourceUrls(flag.details) as url}<a
+																href={url}
+																target="_blank"
+																rel="noreferrer"
+																class="text-xs text-red-800 underline hover:text-red-950"
+																>Source</a
+															>{/each}
+													</div>{/if}
+												{#if flag.recommended_action}<p
 														class="mt-1 text-xs font-medium text-red-900"
 													>
 														{flag.recommended_action}
