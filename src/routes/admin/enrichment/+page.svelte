@@ -1000,6 +1000,7 @@
 									</form>
 								</div>
 								<div class="flex flex-wrap justify-end gap-2">
+									<a href={`/admin/brands/catalog?q=${encodeURIComponent(dossier.brand_slug)}`} class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100">Edit identity</a>
 									<button type="button" onclick={() => openCorrection(dossier)} class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100">Correct fields</button>
 									<button
 										type="button"
