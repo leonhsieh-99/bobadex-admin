@@ -935,6 +935,11 @@
 														>
 															{flag.recommended_action}
 														</p>{/if}
+												<form method="post" action="?/resolveFlag" use:enhance={actionEnhance('resolveFlag')} class="mt-2 flex gap-2">
+													<input type="hidden" name="flag_id" value={flag.id} />
+													<input name="note" required placeholder="Resolution note" class="min-w-0 flex-1 rounded border-red-200 bg-white px-2 py-1 text-xs" />
+													<button name="resolution" value="dismissed" disabled={Boolean(pendingAction)} class="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100">Dismiss</button>
+												</form>
 												</div>{/each}
 										</div>
 									</section>
