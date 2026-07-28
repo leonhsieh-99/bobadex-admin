@@ -855,25 +855,37 @@
 									</div>
 								</section>
 
-							{#if dossier.integrityFlags.length}
-								<section>
-									<h5 class="text-xs font-semibold text-red-700 uppercase">Integrity flags</h5>
-									<div class="mt-2 space-y-2">
-										{#each dossier.integrityFlags as flag}<div
-												class="border-l-2 border-red-400 bg-red-50 px-3 py-2"
-											>
-												<p class="text-sm font-medium text-red-900">{flag.title}</p>
-												{#if flag.details}<p class="mt-1 text-xs text-red-800">
-														{flag.details}
-													</p>{/if}{#if flag.recommended_action}<p
-														class="mt-1 text-xs font-medium text-red-900"
-													>
-														{flag.recommended_action}
-													</p>{/if}
-											</div>{/each}
-									</div>
-								</section>
-							{/if}
+								{#if dossier.integrityFlags.length}
+									<section>
+										<h5 class="text-xs font-semibold text-red-700 uppercase">Integrity flags</h5>
+										<div class="mt-2 space-y-2">
+											{#each dossier.integrityFlags as flag}<div
+													class="border-l-2 border-red-400 bg-red-50 px-3 py-2"
+												>
+													<p class="text-sm font-medium text-red-900">{flag.title}</p>
+													{#if flagDescription(flag.details)}<p class="mt-1 text-xs text-red-800">
+															{flagDescription(flag.details)}
+														</p>{/if}
+													{#if flagSourceUrls(flag.details).length}<div
+															class="mt-1 flex flex-wrap gap-x-3 gap-y-1"
+														>
+															{#each flagSourceUrls(flag.details) as url}<a
+																	href={url}
+																	target="_blank"
+																	rel="noreferrer"
+																	class="text-xs text-red-800 underline hover:text-red-950"
+																	>Source</a
+																>{/each}
+														</div>{/if}
+													{#if flag.recommended_action}<p
+															class="mt-1 text-xs font-medium text-red-900"
+														>
+															{flag.recommended_action}
+														</p>{/if}
+												</div>{/each}
+										</div>
+									</section>
+								{/if}
 
 								<section>
 									<h5 class="text-xs font-semibold text-zinc-500 uppercase">Published profile</h5>
