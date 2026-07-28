@@ -9,6 +9,7 @@ type DossierRow = {
 	approval_status: string;
 	customer_summary: string | null;
 	creative_brief: JsonRecord | string | null;
+	profile_facts: JsonRecord;
 	last_researched_at: string | null;
 	refresh_after: string | null;
 	updated_at: string;
@@ -143,7 +144,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				.schema('mod')
 				.from('brand_dossiers')
 				.select(
-					'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method'
+					'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method'
 				)
 				.order('updated_at', { ascending: false }),
 			locals.supabase
@@ -532,6 +533,90 @@ export const actions: Actions = {
 			'approve',
 			`Approved ${slug}.`
 		);
+	},
+	correctEnrichment: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, { ok: false, action: 'correctEnrichment', message: 'Admin access required.' });
+		}
+		const form = await request.formData();
+		const slug = String(form.get('brand_slug') ?? '').trim();
+		const summary = String(form.get('summary') ?? '').trim();
+		const note = String(form.get('note') ?? '').trim();
+		const rawFacts = String(form.get('profile_facts_json') ?? '').trim();
+		let profileFacts: JsonRecord;
+		try {
+			const parsed = JSON.parse(rawFacts);
+			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				throw new Error('Profile facts must be an object.');
+			}
+			profileFacts = parsed as JsonRecord;
+		} catch (parseError) {
+			return fail(400, {
+				ok: false,
+				action: 'correctEnrichment',
+				brandSlug: slug,
+				message: parseError instanceof Error ? parseError.message : 'Profile facts are invalid.'
+			});
+		}
+		if (!slug || !summary || !note) {
+			return fail(400, {
+				ok: false,
+				action: 'correctEnrichment',
+				brandSlug: slug,
+				message: 'Brand, summary, and correction note are required.'
+			});
+		}
+		const { data, error } = await locals.supabase.rpc('admin_correct_brand_enrichment', {
+			p_brand_slug: slug,
+			p_summary: summary,
+			p_profile_facts: profileFacts,
+			p_note: note
+		});
+		if (error) {
+			return fail(400, {
+				ok: false,
+				action: 'correctEnrichment',
+				brandSlug: slug,
+				message: error.message
+			});
+		}
+		return {
+			ok: true,
+			action: 'correctEnrichment',
+			brandSlug: slug,
+			data,
+			message: `Saved audited enrichment corrections for ${slug}. Review and approve when ready.`
+		};
+	},
+	resolveFlag: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, { ok: false, action: 'resolveFlag', message: 'Admin access required.' });
+		}
+		const form = await request.formData();
+		const flagId = String(form.get('flag_id') ?? '').trim();
+		const note = String(form.get('note') ?? '').trim();
+		const resolution = String(form.get('resolution') ?? 'dismissed');
+		if (!flagId || !note || !['resolved', 'dismissed'].includes(resolution)) {
+			return fail(400, {
+				ok: false,
+				action: 'resolveFlag',
+				message: 'Flag, note, and a valid resolution are required.'
+			});
+		}
+		const { data, error } = await locals.supabase.rpc('admin_resolve_brand_integrity_flag', {
+			p_flag_id: flagId,
+			p_note: note,
+			p_resolution: resolution
+		});
+		if (error) {
+			return fail(400, { ok: false, action: 'resolveFlag', message: error.message });
+		}
+		return {
+			ok: true,
+			action: 'resolveFlag',
+			data,
+			message: `Integrity flag ${resolution}.`
+		};
 	},
 	markClosed: async ({ request, locals }) => {
 		const form = await request.formData();
