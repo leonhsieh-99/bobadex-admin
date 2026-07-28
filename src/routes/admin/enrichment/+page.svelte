@@ -123,17 +123,14 @@
 		cron: CronState;
 	};
 
-	let correcting: Dossier | null = null;
-	let correctionSummary = '';
-	let correctionNote = '';
-	let correctionFacts: Record<string, unknown> = {};
-	let correctionError = '';
 	let deleting: Dossier | null = null;
 	let deleteConfirmation = '';
 	let deleteNote = '';
 	let deleteError = '';
 	let rerunning: Dossier | null = null;
 	let rerunError = '';
+	let publishing: Dossier | null = null;
+	let publishError = '';
 	let pendingAction = '';
 	let activeTab: 'review' | 'queue' | 'published' = 'review';
 	let refreshing = false;
@@ -149,47 +146,18 @@
 	}
 
 	function identityEvidence(dossier: Dossier) {
-		return dossier.claims.find((claim) =>
-			['brand_identity', 'identity', 'brand_name', 'official_name'].includes(claim.claim_key)
-		) ?? null;
+		return (
+			dossier.claims.find((claim) =>
+				['brand_identity', 'identity', 'brand_name', 'official_name'].includes(claim.claim_key)
+			) ?? null
+		);
 	}
+
 	function identityLabel(dossier: Dossier) {
 		const claim = identityEvidence(dossier);
 		return claim?.confidence != null
 			? `${percent(claim.confidence)} · ${claim.evidence_assessment ?? 'unassessed'}`
 			: percent(dossier.metrics.identityConfidence);
-	}
-	function factString(key: string) {
-		const value = correctionFacts[key];
-		return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '';
-	}
-	function factList(key: string) {
-		const value = correctionFacts[key];
-		return Array.isArray(value) ? value.filter((item) => typeof item === 'string').join('\n') : '';
-	}
-	function updateFact(key: string, value: string) {
-		correctionFacts = { ...correctionFacts, [key]: value.trim() || null };
-	}
-	function updateListFact(key: string, value: string) {
-		correctionFacts = { ...correctionFacts, [key]: value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean) };
-	}
-	function updateYear(value: string) {
-		const normalized = value.trim();
-		correctionFacts = { ...correctionFacts, founded_year: normalized ? Number(normalized) : null };
-	}
-	function openCorrection(dossier: Dossier) {
-		correcting = dossier;
-		correctionSummary = dossier.run?.customer_summary_draft ?? dossier.customer_summary ?? '';
-		correctionFacts = structuredClone(dossier.profile_facts ?? {});
-		correctionNote = '';
-		correctionError = '';
-	}
-	function closeCorrection() {
-		correcting = null;
-		correctionSummary = '';
-		correctionFacts = {};
-		correctionNote = '';
-		correctionError = '';
 	}
 
 	function relativeDate(value: string | null) {
@@ -230,7 +198,6 @@
 			}
 			pendingAction = action;
 			deleteError = '';
-			correctionError = '';
 			return async ({ result }) => {
 				pendingAction = '';
 				const resultData =
@@ -246,7 +213,7 @@
 					toasts.success(message);
 					if (action === 'deleteFalsePositive') closeDelete();
 					if (action === 'rerunBrand') closeRerun();
-					if (action === 'correctEnrichment') closeCorrection();
+					if (action === 'reviewAndPublish') closePublish();
 					await invalidateAll();
 					if (action === 'configureCron' || action === 'disableCron') {
 						await refreshCron();
@@ -255,7 +222,7 @@
 				}
 				if (action === 'deleteFalsePositive') deleteError = message;
 				if (action === 'rerunBrand') rerunError = message;
-				if (action === 'correctEnrichment') correctionError = message;
+				if (action === 'reviewAndPublish') publishError = message;
 				toasts.error(message);
 				await applyAction(result);
 			};
@@ -284,6 +251,43 @@
 	function closeRerun() {
 		rerunning = null;
 		rerunError = '';
+	}
+
+	function openPublish(dossier: Dossier) {
+		publishing = dossier;
+		publishError = '';
+	}
+
+	function closePublish() {
+		publishing = null;
+		publishError = '';
+	}
+
+	function factText(dossier: Dossier, key: string) {
+		const value = dossier.profile_facts?.[key];
+		return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+	}
+
+	function factList(dossier: Dossier, key: string) {
+		const value = dossier.profile_facts?.[key];
+		return Array.isArray(value)
+			? value.filter((item): item is string => typeof item === 'string').join('\n')
+			: '';
+	}
+
+	function factSocials(dossier: Dossier) {
+		const value = dossier.profile_facts?.official_socials;
+		if (!Array.isArray(value)) return '';
+		return value
+			.filter(
+				(item): item is { platform: string; url: string } =>
+					Boolean(item) &&
+					typeof item === 'object' &&
+					typeof (item as Record<string, unknown>).platform === 'string' &&
+					typeof (item as Record<string, unknown>).url === 'string'
+			)
+			.map((item) => `${item.platform} | ${item.url}`)
+			.join('\n');
 	}
 
 	function statusClasses(status: string) {
@@ -381,6 +385,7 @@
 		if (event.key !== 'Escape') return;
 		if (deleting) closeDelete();
 		if (rerunning) closeRerun();
+		if (publishing) closePublish();
 	}}
 />
 
@@ -935,11 +940,33 @@
 														>
 															{flag.recommended_action}
 														</p>{/if}
-												<form method="post" action="?/resolveFlag" use:enhance={actionEnhance('resolveFlag')} class="mt-2 flex gap-2">
-													<input type="hidden" name="flag_id" value={flag.id} />
-													<input name="note" required placeholder="Resolution note" class="min-w-0 flex-1 rounded border-red-200 bg-white px-2 py-1 text-xs" />
-													<button name="resolution" value="resolved" disabled={Boolean(pendingAction)} class="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100">Resolve</button><button name="resolution" value="dismissed" disabled={Boolean(pendingAction)} class="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100">Dismiss</button>
-												</form>
+													<form
+														method="post"
+														action="?/resolveFlag"
+														use:enhance={actionEnhance('resolveFlag')}
+														class="mt-2 flex gap-2"
+													>
+														<input type="hidden" name="flag_id" value={flag.id} />
+														<input
+															name="note"
+															required
+															placeholder="Resolution note"
+															class="min-w-0 flex-1 rounded border-red-200 bg-white px-2 py-1 text-xs"
+														/>
+														<button
+															name="resolution"
+															value="resolved"
+															disabled={Boolean(pendingAction)}
+															class="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100"
+															>Resolve</button
+														><button
+															name="resolution"
+															value="dismissed"
+															disabled={Boolean(pendingAction)}
+															class="rounded border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-100"
+															>Dismiss</button
+														>
+													</form>
 												</div>{/each}
 										</div>
 									</section>
@@ -966,22 +993,14 @@
 						<footer class="border-t border-zinc-200 bg-zinc-50 px-5 py-4">
 							<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
 								<div class="grid gap-2 sm:grid-cols-2">
-									<form
-										method="post"
-										action="?/approve"
-										use:enhance={actionEnhance('approve')}
-										class="flex gap-2"
+									<button
+										type="button"
+										onclick={() => openPublish(dossier)}
+										class="rounded bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+										disabled={Boolean(pendingAction)}
 									>
-										<input type="hidden" name="brand_slug" value={dossier.brand_slug} /><input
-											name="note"
-											required
-											placeholder="Approval note"
-											class="min-w-0 flex-1 rounded border-zinc-300 text-sm"
-										/><button
-											class="rounded bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
-											disabled={Boolean(pendingAction)}>Approve</button
-										>
-									</form>
+										Approve
+									</button>
 									<form
 										method="post"
 										action="?/markClosed"
@@ -1000,8 +1019,11 @@
 									</form>
 								</div>
 								<div class="flex flex-wrap justify-end gap-2">
-									<a href={`/admin/brands/catalog?q=${encodeURIComponent(dossier.brand_slug)}`} class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100">Edit identity</a>
-									<button type="button" onclick={() => openCorrection(dossier)} class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100">Correct fields</button>
+									<a
+										href={`/admin/brands/catalog?q=${encodeURIComponent(dossier.brand_slug)}`}
+										class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
+										>Edit identity</a
+									>
 									<button
 										type="button"
 										onclick={() => openRerun(dossier)}
@@ -1143,42 +1165,358 @@
 	{/if}
 </main>
 
-{#if correcting}
-	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="presentation" onclick={(event) => event.currentTarget === event.target && closeCorrection()}>
-		<div class="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-lg bg-white shadow-xl" role="dialog" aria-modal="true" aria-labelledby="correction-title">
-			<div class="sticky top-0 z-10 border-b border-zinc-200 bg-white px-5 py-4">
-				<h3 id="correction-title" class="text-lg font-semibold text-zinc-950">Correct enrichment fields</h3>
-				<p class="mt-1 text-sm text-zinc-600">Edits preserve the research run, create an audit snapshot, and return the dossier to review before approval.</p>
+{#if publishing}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-5"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closePublish()}
+	>
+		<div
+			class="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="publish-title"
+		>
+			<div class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+				<div>
+					<h3 id="publish-title" class="text-lg font-semibold text-zinc-950">Review and publish</h3>
+					<p class="mt-1 text-sm text-zinc-600">
+						{publishing.brand_slug} · Current enrichment values are prefilled.
+					</p>
+				</div>
+				<button
+					type="button"
+					onclick={closePublish}
+					aria-label="Close review and publish"
+					class="text-xl leading-none text-zinc-400 hover:text-zinc-800"
+				>
+					×
+				</button>
 			</div>
-			<form method="post" action="?/correctEnrichment" use:enhance={actionEnhance('correctEnrichment')} class="space-y-5 px-5 py-5">
-				<input type="hidden" name="brand_slug" value={correcting.brand_slug} />
-				<input type="hidden" name="profile_facts_json" value={JSON.stringify(correctionFacts)} />
-				<p class="text-sm font-medium text-zinc-900">{correcting.brand_slug}</p>
-				<label class="block"><span class="text-sm font-medium text-zinc-800">Public summary</span><textarea name="summary" bind:value={correctionSummary} rows="4" required class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
-				<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Business type</span><select value={factString('business_type')} onchange={(e) => updateFact('business_type', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="tea_focused">Tea focused</option><option value="dessert_bakery_hybrid">Dessert / bakery hybrid</option><option value="restaurant_with_boba">Restaurant with boba</option><option value="boba_secondary">Boba secondary</option><option value="other">Other</option></select></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Boba relevance</span><select value={factString('boba_relevance')} onchange={(e) => updateFact('boba_relevance', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="primary">Primary</option><option value="substantial">Substantial</option><option value="secondary">Secondary</option><option value="incidental">Incidental</option><option value="none">None</option><option value="unknown">Explicitly unknown</option></select></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Brand status</span><select value={factString('brand_status')} onchange={(e) => updateFact('brand_status', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="active">Active</option><option value="dormant">Dormant</option><option value="acquired">Acquired</option><option value="rebranded">Rebranded</option><option value="closed">Closed</option><option value="unknown">Explicitly unknown</option></select></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Ownership</span><select value={factString('ownership_model')} onchange={(e) => updateFact('ownership_model', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="independent">Independent</option><option value="franchise">Franchise</option><option value="company_operated">Company operated</option><option value="mixed">Mixed</option><option value="subsidiary">Subsidiary</option><option value="unknown">Explicitly unknown</option></select></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Price positioning</span><select value={factString('price_positioning')} onchange={(e) => updateFact('price_positioning', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="budget">Budget</option><option value="mid_range">Mid range</option><option value="premium">Premium</option><option value="luxury">Luxury</option></select></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Founded year</span><input type="number" min="1800" max={new Date().getFullYear()} value={factString('founded_year')} onchange={(e) => updateYear(e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Official website</span><input type="url" value={factString('official_website')} onchange={(e) => updateFact('official_website', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Ordering URL</span><input type="url" value={factString('official_ordering_url')} onchange={(e) => updateFact('official_ordering_url', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Founded place</span><input value={factString('founded_place')} onchange={(e) => updateFact('founded_place', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Parent company</span><input value={factString('parent_company')} onchange={(e) => updateFact('parent_company', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Store count statement</span><input value={factString('store_count_statement')} onchange={(e) => updateFact('store_count_statement', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Store count as of</span><input value={factString('store_count_as_of')} onchange={(e) => updateFact('store_count_as_of', e.currentTarget.value)} placeholder="2026 or 2026-07" class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+
+			<form
+				method="post"
+				action="?/reviewAndPublish"
+				use:enhance={actionEnhance('reviewAndPublish')}
+				class="flex min-h-0 flex-1 flex-col"
+			>
+				<input type="hidden" name="brand_slug" value={publishing.brand_slug} />
+				<input
+					type="hidden"
+					name="original_profile_facts"
+					value={JSON.stringify(publishing.profile_facts ?? {})}
+				/>
+
+				<div class="min-h-0 flex-1 space-y-7 overflow-y-auto px-5 py-5">
+					<section>
+						<h4 class="text-sm font-semibold text-zinc-950">Customer summary</h4>
+						<label class="mt-3 block">
+							<span class="sr-only">Customer summary</span>
+							<textarea
+								name="summary"
+								rows="5"
+								required
+								value={publishing.customer_summary ?? publishing.run?.customer_summary_draft ?? ''}
+								class="block w-full rounded border-zinc-300 text-sm leading-6 focus:border-zinc-500 focus:ring-zinc-500"
+							></textarea>
+						</label>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<h4 class="text-sm font-semibold text-zinc-950">Official presence</h4>
+						<div class="mt-3 grid gap-4 md:grid-cols-2">
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Official website</span>
+								<input
+									name="fact_official_website"
+									type="url"
+									value={factText(publishing, 'official_website')}
+									placeholder="https://…"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Official ordering URL</span>
+								<input
+									name="fact_official_ordering_url"
+									type="url"
+									value={factText(publishing, 'official_ordering_url')}
+									placeholder="https://…"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label class="md:col-span-2">
+								<span class="text-xs font-medium text-zinc-600">Official social accounts</span>
+								<textarea
+									name="fact_official_socials"
+									rows="3"
+									value={factSocials(publishing)}
+									placeholder={'Instagram | https://instagram.com/brand\nTikTok | https://tiktok.com/@brand'}
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+								<span class="mt-1 block text-xs text-zinc-500">One per line: Platform | URL</span>
+							</label>
+						</div>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<h4 class="text-sm font-semibold text-zinc-950">Identity and origin</h4>
+						<div class="mt-3 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Founded year</span>
+								<input
+									name="fact_founded_year"
+									type="number"
+									min="1800"
+									max={new Date().getFullYear()}
+									value={factText(publishing, 'founded_year')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Founded place</span>
+								<input
+									name="fact_founded_place"
+									value={factText(publishing, 'founded_place')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Parent company</span>
+								<input
+									name="fact_parent_company"
+									value={factText(publishing, 'parent_company')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Ownership model</span>
+								<select
+									name="fact_ownership_model"
+									value={factText(publishing, 'ownership_model')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								>
+									<option value="">Not provided</option>
+									<option value="independent">Independent</option>
+									<option value="franchise">Franchise</option>
+									<option value="company_operated">Company operated</option>
+									<option value="mixed">Mixed</option>
+									<option value="subsidiary">Subsidiary</option>
+									<option value="unknown">Unknown</option>
+								</select>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Native names</span>
+								<textarea
+									name="fact_native_names"
+									rows="3"
+									value={factList(publishing, 'native_names')}
+									placeholder="One per line"
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Former names</span>
+								<textarea
+									name="fact_former_names"
+									rows="3"
+									value={factList(publishing, 'former_names')}
+									placeholder="One per line"
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+							</label>
+						</div>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<h4 class="text-sm font-semibold text-zinc-950">Classification</h4>
+						<div class="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Business type</span>
+								<select
+									name="fact_business_type"
+									value={factText(publishing, 'business_type')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								>
+									<option value="">Not provided</option>
+									<option value="tea_focused">Tea focused</option>
+									<option value="dessert_bakery_hybrid">Dessert/bakery hybrid</option>
+									<option value="restaurant_with_boba">Restaurant with boba</option>
+									<option value="boba_secondary">Boba secondary</option>
+									<option value="other">Other</option>
+								</select>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Boba relevance</span>
+								<select
+									name="fact_boba_relevance"
+									value={factText(publishing, 'boba_relevance')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								>
+									<option value="">Not provided</option>
+									<option value="primary">Primary</option>
+									<option value="substantial">Substantial</option>
+									<option value="secondary">Secondary</option>
+									<option value="incidental">Incidental</option>
+									<option value="none">None</option>
+									<option value="unknown">Unknown</option>
+								</select>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Price positioning</span>
+								<select
+									name="fact_price_positioning"
+									value={factText(publishing, 'price_positioning')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								>
+									<option value="">Not provided</option>
+									<option value="budget">Budget</option>
+									<option value="mid_range">Mid range</option>
+									<option value="premium">Premium</option>
+									<option value="luxury">Luxury</option>
+								</select>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Brand status</span>
+								<select
+									name="fact_brand_status"
+									value={factText(publishing, 'brand_status')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								>
+									<option value="">Not provided</option>
+									<option value="active">Active</option>
+									<option value="dormant">Dormant</option>
+									<option value="acquired">Acquired</option>
+									<option value="rebranded">Rebranded</option>
+									<option value="closed">Closed</option>
+									<option value="unknown">Unknown</option>
+								</select>
+							</label>
+						</div>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<h4 class="text-sm font-semibold text-zinc-950">Products and footprint</h4>
+						<div class="mt-3 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Product categories</span>
+								<textarea
+									name="fact_product_categories"
+									rows="4"
+									value={factList(publishing, 'product_categories')}
+									placeholder="One per line"
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Signature products</span>
+								<textarea
+									name="fact_signature_products"
+									rows="4"
+									value={factList(publishing, 'signature_products')}
+									placeholder="One per line"
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Known for</span>
+								<textarea
+									name="fact_known_for"
+									rows="4"
+									value={factList(publishing, 'known_for')}
+									placeholder="One per line"
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Markets</span>
+								<textarea
+									name="fact_markets"
+									rows="4"
+									value={factList(publishing, 'markets')}
+									placeholder="One per line"
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Store count statement</span>
+								<input
+									name="fact_store_count_statement"
+									value={factText(publishing, 'store_count_statement')}
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Store count as of</span>
+								<input
+									name="fact_store_count_as_of"
+									value={factText(publishing, 'store_count_as_of')}
+									placeholder="2026-07"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+						</div>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<h4 class="text-sm font-semibold text-zinc-950">History and review</h4>
+						<div class="mt-3 grid gap-4 md:grid-cols-2">
+							<label class="md:col-span-2">
+								<span class="text-xs font-medium text-zinc-600">History summary</span>
+								<textarea
+									name="fact_history_summary"
+									rows="4"
+									value={factText(publishing, 'history_summary')}
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								></textarea>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Observed at</span>
+								<input
+									name="fact_observed_at"
+									value={factText(publishing, 'observed_at')}
+									placeholder="2026-07-27"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Review note (optional)</span>
+								<input
+									name="note"
+									placeholder="Why you changed or approved this result"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+						</div>
+					</section>
+
+					{#if publishError}
+						<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+							{publishError}
+						</div>
+					{/if}
 				</div>
-				<div class="grid gap-4 md:grid-cols-2">
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Product categories</span><textarea value={factList('product_categories')} onchange={(e) => updateListFact('product_categories', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Signature products</span><textarea value={factList('signature_products')} onchange={(e) => updateListFact('signature_products', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Known for</span><textarea value={factList('known_for')} onchange={(e) => updateListFact('known_for', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
-					<label class="block"><span class="text-sm font-medium text-zinc-800">Markets</span><textarea value={factList('markets')} onchange={(e) => updateListFact('markets', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+
+				<div
+					class="flex items-center justify-between gap-4 border-t border-zinc-200 bg-zinc-50 px-5 py-4"
+				>
+					<p class="text-xs text-zinc-500">Only changed fields are recorded in the audit.</p>
+					<div class="flex shrink-0 gap-2">
+						<button
+							type="button"
+							onclick={closePublish}
+							class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+						>
+							Cancel
+						</button>
+						<button
+							class="rounded bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+							disabled={Boolean(pendingAction)}
+						>
+							{pendingAction === 'reviewAndPublish' ? 'Publishing…' : 'Confirm and publish'}
+						</button>
+					</div>
 				</div>
-				<label class="block"><span class="text-sm font-medium text-zinc-800">History summary</span><textarea value={factString('history_summary')} onchange={(e) => updateFact('history_summary', e.currentTarget.value)} rows="3" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
-				<label class="block"><span class="text-sm font-medium text-zinc-800">Correction note</span><textarea name="note" bind:value={correctionNote} rows="3" required placeholder="What was wrong and how it was verified…" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
-				{#if correctionError}<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{correctionError}</div>{/if}
-				<div class="flex justify-end gap-2"><button type="button" onclick={closeCorrection} class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50">Cancel</button><button disabled={!correctionSummary.trim() || !correctionNote.trim() || Boolean(pendingAction)} class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{pendingAction === 'correctEnrichment' ? 'Saving…' : 'Save corrections'}</button></div>
 			</form>
 		</div>
 	</div>

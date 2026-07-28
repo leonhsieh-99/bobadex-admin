@@ -346,6 +346,101 @@ function integerField(form: FormData, key: string, min: number, max: number) {
 	return Number.isInteger(value) && value >= min && value <= max ? value : null;
 }
 
+const scalarProfileFactKeys = [
+	'official_website',
+	'official_ordering_url',
+	'founded_year',
+	'founded_place',
+	'parent_company',
+	'ownership_model',
+	'business_type',
+	'boba_relevance',
+	'price_positioning',
+	'history_summary',
+	'store_count_statement',
+	'store_count_as_of',
+	'brand_status',
+	'observed_at'
+] as const;
+
+const listProfileFactKeys = [
+	'native_names',
+	'former_names',
+	'product_categories',
+	'signature_products',
+	'markets',
+	'known_for'
+] as const;
+
+function parseProfileFacts(form: FormData) {
+	let original: JsonRecord = {};
+	try {
+		const parsed = JSON.parse(String(form.get('original_profile_facts') ?? '{}'));
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+			original = parsed as JsonRecord;
+		}
+	} catch {
+		return { error: 'The original profile facts could not be read.' } as const;
+	}
+
+	const facts: JsonRecord = { ...original };
+	for (const key of scalarProfileFactKeys) {
+		const value = String(form.get(`fact_${key}`) ?? '').trim();
+		if (value) {
+			facts[key] = key === 'founded_year' ? Number(value) : value;
+		} else if (key in original) {
+			facts[key] = null;
+		} else {
+			delete facts[key];
+		}
+	}
+
+	for (const key of listProfileFactKeys) {
+		const values = String(form.get(`fact_${key}`) ?? '')
+			.split('\n')
+			.map((value) => value.trim())
+			.filter((value, index, rows) => value && rows.indexOf(value) === index);
+		if (values.length || key in original) {
+			facts[key] = values;
+		} else {
+			delete facts[key];
+		}
+	}
+
+	const socialRows = String(form.get('fact_official_socials') ?? '')
+		.split('\n')
+		.map((value) => value.trim())
+		.filter(Boolean);
+	const socials: Array<{ platform: string; url: string }> = [];
+	for (const row of socialRows) {
+		const separator = row.indexOf('|');
+		const platform = separator >= 0 ? row.slice(0, separator).trim() : '';
+		const url = separator >= 0 ? row.slice(separator + 1).trim() : '';
+		if (!platform || !/^https?:\/\/\S+$/i.test(url)) {
+			return {
+				error: `Invalid social entry "${row}". Use Platform | https://example.com/profile.`
+			} as const;
+		}
+		socials.push({ platform, url });
+	}
+	if (socials.length || 'official_socials' in original) {
+		facts.official_socials = socials;
+	} else {
+		delete facts.official_socials;
+	}
+
+	if (
+		typeof facts.founded_year === 'number' &&
+		(!Number.isInteger(facts.founded_year) ||
+			facts.founded_year < 1800 ||
+			facts.founded_year > new Date().getFullYear())
+	) {
+		return { error: 'Founded year must be a reasonable four-digit year.' } as const;
+	}
+
+	return { facts } as const;
+}
+
 async function invokeEnrichment(
 	locals: App.Locals,
 	body: JsonRecord,
@@ -520,73 +615,33 @@ export const actions: Actions = {
 			`Queued a fresh enrichment audit for ${slug}.`
 		);
 	},
-	approve: async ({ request, locals }) => {
-		const form = await request.formData();
-		const slug = String(form.get('brand_slug') ?? '');
-		return invokeEnrichment(
-			locals,
-			{
-				action: 'approve_brand_review',
-				brand_slug: slug,
-				note: String(form.get('note') ?? '').trim()
-			},
-			'approve',
-			`Approved ${slug}.`
-		);
-	},
-	correctEnrichment: async ({ request, locals }) => {
-		if (!locals.isAdmin) {
-			return fail(403, { ok: false, action: 'correctEnrichment', message: 'Admin access required.' });
-		}
+	reviewAndPublish: async ({ request, locals }) => {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
 		const summary = String(form.get('summary') ?? '').trim();
-		const note = String(form.get('note') ?? '').trim();
-		const rawFacts = String(form.get('profile_facts_json') ?? '').trim();
-		let profileFacts: JsonRecord;
-		try {
-			const parsed = JSON.parse(rawFacts);
-			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-				throw new Error('Profile facts must be an object.');
-			}
-			profileFacts = parsed as JsonRecord;
-		} catch (parseError) {
+		const parsed = parseProfileFacts(form);
+		if (!slug || !summary || 'error' in parsed) {
 			return fail(400, {
 				ok: false,
-				action: 'correctEnrichment',
-				brandSlug: slug,
-				message: parseError instanceof Error ? parseError.message : 'Profile facts are invalid.'
+				action: 'reviewAndPublish',
+				message:
+					'error' in parsed
+						? parsed.error
+						: 'A brand slug and non-empty customer summary are required.'
 			});
 		}
-		if (!slug || !summary || !note) {
-			return fail(400, {
-				ok: false,
-				action: 'correctEnrichment',
-				brandSlug: slug,
-				message: 'Brand, summary, and correction note are required.'
-			});
-		}
-		const { data, error } = await locals.supabase.rpc('admin_correct_brand_enrichment', {
-			p_brand_slug: slug,
-			p_summary: summary,
-			p_profile_facts: profileFacts,
-			p_note: note
-		});
-		if (error) {
-			return fail(400, {
-				ok: false,
-				action: 'correctEnrichment',
-				brandSlug: slug,
-				message: error.message
-			});
-		}
-		return {
-			ok: true,
-			action: 'correctEnrichment',
-			brandSlug: slug,
-			data,
-			message: `Saved audited enrichment corrections for ${slug}. Review and approve when ready.`
-		};
+		return invokeEnrichment(
+			locals,
+			{
+				action: 'review_and_publish_brand_enrichment',
+				brand_slug: slug,
+				summary,
+				profile_facts: parsed.facts,
+				note: String(form.get('note') ?? '').trim()
+			},
+			'reviewAndPublish',
+			`Published ${slug}.`
+		);
 	},
 	resolveFlag: async ({ request, locals }) => {
 		if (!locals.isAdmin) {
