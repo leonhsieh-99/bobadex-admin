@@ -22,6 +22,7 @@
 		approval_status: string;
 		customer_summary: string | null;
 		creative_brief: Record<string, unknown> | string | null;
+		profile_facts: Record<string, unknown>;
 		last_researched_at: string | null;
 		updated_at: string;
 		review_reasons: string[] | null;
@@ -122,6 +123,11 @@
 		cron: CronState;
 	};
 
+	let correcting: Dossier | null = null;
+	let correctionSummary = '';
+	let correctionNote = '';
+	let correctionFacts: Record<string, unknown> = {};
+	let correctionError = '';
 	let deleting: Dossier | null = null;
 	let deleteConfirmation = '';
 	let deleteNote = '';
@@ -140,6 +146,50 @@
 	function percent(value: number | null) {
 		if (value == null) return 'Unknown';
 		return `${Math.round(value * 100)}%`;
+	}
+
+	function identityEvidence(dossier: Dossier) {
+		return dossier.claims.find((claim) =>
+			['brand_identity', 'identity', 'brand_name', 'official_name'].includes(claim.claim_key)
+		) ?? null;
+	}
+	function identityLabel(dossier: Dossier) {
+		const claim = identityEvidence(dossier);
+		return claim?.confidence != null
+			? `${percent(claim.confidence)} · ${claim.evidence_assessment ?? 'unassessed'}`
+			: percent(dossier.metrics.identityConfidence);
+	}
+	function factString(key: string) {
+		const value = correctionFacts[key];
+		return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '';
+	}
+	function factList(key: string) {
+		const value = correctionFacts[key];
+		return Array.isArray(value) ? value.filter((item) => typeof item === 'string').join('\n') : '';
+	}
+	function updateFact(key: string, value: string) {
+		correctionFacts = { ...correctionFacts, [key]: value.trim() || null };
+	}
+	function updateListFact(key: string, value: string) {
+		correctionFacts = { ...correctionFacts, [key]: value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean) };
+	}
+	function updateYear(value: string) {
+		const normalized = value.trim();
+		correctionFacts = { ...correctionFacts, founded_year: normalized ? Number(normalized) : null };
+	}
+	function openCorrection(dossier: Dossier) {
+		correcting = dossier;
+		correctionSummary = dossier.run?.customer_summary_draft ?? dossier.customer_summary ?? '';
+		correctionFacts = structuredClone(dossier.profile_facts ?? {});
+		correctionNote = '';
+		correctionError = '';
+	}
+	function closeCorrection() {
+		correcting = null;
+		correctionSummary = '';
+		correctionFacts = {};
+		correctionNote = '';
+		correctionError = '';
 	}
 
 	function relativeDate(value: string | null) {
@@ -180,6 +230,7 @@
 			}
 			pendingAction = action;
 			deleteError = '';
+			correctionError = '';
 			return async ({ result }) => {
 				pendingAction = '';
 				const resultData =
@@ -195,6 +246,7 @@
 					toasts.success(message);
 					if (action === 'deleteFalsePositive') closeDelete();
 					if (action === 'rerunBrand') closeRerun();
+					if (action === 'correctEnrichment') closeCorrection();
 					await invalidateAll();
 					if (action === 'configureCron' || action === 'disableCron') {
 						await refreshCron();
@@ -203,6 +255,7 @@
 				}
 				if (action === 'deleteFalsePositive') deleteError = message;
 				if (action === 'rerunBrand') rerunError = message;
+				if (action === 'correctEnrichment') correctionError = message;
 				toasts.error(message);
 				await applyAction(result);
 			};
@@ -748,9 +801,9 @@
 								</div>
 								<div>
 									<p class="font-semibold text-zinc-900">
-										{percent(dossier.metrics.identityConfidence)}
+										{identityLabel(dossier)}
 									</p>
-									<p class="text-zinc-500">identity</p>
+									<p class="text-zinc-500">identity evidence</p>
 								</div>
 								<div>
 									<p class="font-semibold text-zinc-900">
@@ -942,6 +995,7 @@
 									</form>
 								</div>
 								<div class="flex flex-wrap justify-end gap-2">
+									<button type="button" onclick={() => openCorrection(dossier)} class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100">Correct fields</button>
 									<button
 										type="button"
 										onclick={() => openRerun(dossier)}
@@ -1082,6 +1136,47 @@
 		</section>
 	{/if}
 </main>
+
+{#if correcting}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="presentation" onclick={(event) => event.currentTarget === event.target && closeCorrection()}>
+		<div class="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-lg bg-white shadow-xl" role="dialog" aria-modal="true" aria-labelledby="correction-title">
+			<div class="sticky top-0 z-10 border-b border-zinc-200 bg-white px-5 py-4">
+				<h3 id="correction-title" class="text-lg font-semibold text-zinc-950">Correct enrichment fields</h3>
+				<p class="mt-1 text-sm text-zinc-600">Edits preserve the research run, create an audit snapshot, and return the dossier to review before approval.</p>
+			</div>
+			<form method="post" action="?/correctEnrichment" use:enhance={actionEnhance('correctEnrichment')} class="space-y-5 px-5 py-5">
+				<input type="hidden" name="brand_slug" value={correcting.brand_slug} />
+				<input type="hidden" name="profile_facts_json" value={JSON.stringify(correctionFacts)} />
+				<p class="text-sm font-medium text-zinc-900">{correcting.brand_slug}</p>
+				<label class="block"><span class="text-sm font-medium text-zinc-800">Public summary</span><textarea name="summary" bind:value={correctionSummary} rows="4" required class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+				<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Business type</span><select value={factString('business_type')} onchange={(e) => updateFact('business_type', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="tea_focused">Tea focused</option><option value="dessert_bakery_hybrid">Dessert / bakery hybrid</option><option value="restaurant_with_boba">Restaurant with boba</option><option value="boba_secondary">Boba secondary</option><option value="other">Other</option></select></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Boba relevance</span><select value={factString('boba_relevance')} onchange={(e) => updateFact('boba_relevance', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="primary">Primary</option><option value="substantial">Substantial</option><option value="secondary">Secondary</option><option value="incidental">Incidental</option><option value="none">None</option><option value="unknown">Explicitly unknown</option></select></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Brand status</span><select value={factString('brand_status')} onchange={(e) => updateFact('brand_status', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="active">Active</option><option value="dormant">Dormant</option><option value="acquired">Acquired</option><option value="rebranded">Rebranded</option><option value="closed">Closed</option><option value="unknown">Explicitly unknown</option></select></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Ownership</span><select value={factString('ownership_model')} onchange={(e) => updateFact('ownership_model', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="independent">Independent</option><option value="franchise">Franchise</option><option value="company_operated">Company operated</option><option value="mixed">Mixed</option><option value="subsidiary">Subsidiary</option><option value="unknown">Explicitly unknown</option></select></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Price positioning</span><select value={factString('price_positioning')} onchange={(e) => updateFact('price_positioning', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm"><option value="">Unknown</option><option value="budget">Budget</option><option value="mid_range">Mid range</option><option value="premium">Premium</option><option value="luxury">Luxury</option></select></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Founded year</span><input type="number" min="1800" max={new Date().getFullYear()} value={factString('founded_year')} onchange={(e) => updateYear(e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Official website</span><input type="url" value={factString('official_website')} onchange={(e) => updateFact('official_website', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Ordering URL</span><input type="url" value={factString('official_ordering_url')} onchange={(e) => updateFact('official_ordering_url', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Founded place</span><input value={factString('founded_place')} onchange={(e) => updateFact('founded_place', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Parent company</span><input value={factString('parent_company')} onchange={(e) => updateFact('parent_company', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Store count statement</span><input value={factString('store_count_statement')} onchange={(e) => updateFact('store_count_statement', e.currentTarget.value)} class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Store count as of</span><input value={factString('store_count_as_of')} onchange={(e) => updateFact('store_count_as_of', e.currentTarget.value)} placeholder="2026 or 2026-07" class="mt-1 block w-full rounded border-zinc-300 text-sm" /></label>
+				</div>
+				<div class="grid gap-4 md:grid-cols-2">
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Product categories</span><textarea value={factList('product_categories')} onchange={(e) => updateListFact('product_categories', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Signature products</span><textarea value={factList('signature_products')} onchange={(e) => updateListFact('signature_products', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Known for</span><textarea value={factList('known_for')} onchange={(e) => updateListFact('known_for', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+					<label class="block"><span class="text-sm font-medium text-zinc-800">Markets</span><textarea value={factList('markets')} onchange={(e) => updateListFact('markets', e.currentTarget.value)} rows="4" placeholder="One per line" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+				</div>
+				<label class="block"><span class="text-sm font-medium text-zinc-800">History summary</span><textarea value={factString('history_summary')} onchange={(e) => updateFact('history_summary', e.currentTarget.value)} rows="3" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+				<label class="block"><span class="text-sm font-medium text-zinc-800">Correction note</span><textarea name="note" bind:value={correctionNote} rows="3" required placeholder="What was wrong and how it was verified…" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea></label>
+				{#if correctionError}<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{correctionError}</div>{/if}
+				<div class="flex justify-end gap-2"><button type="button" onclick={closeCorrection} class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50">Cancel</button><button disabled={!correctionSummary.trim() || !correctionNote.trim() || Boolean(pendingAction)} class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{pendingAction === 'correctEnrichment' ? 'Saving…' : 'Save corrections'}</button></div>
+			</form>
+		</div>
+	</div>
+{/if}
 
 {#if rerunning}
 	<div
