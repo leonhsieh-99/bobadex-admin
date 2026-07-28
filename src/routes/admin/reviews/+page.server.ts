@@ -213,39 +213,6 @@ async function requireActionableCandidate(
 	}
 }
 
-async function requireMovableCandidate(
-	locals: App.Locals,
-	candidateId: string,
-	form: FormData
-) {
-	const { data, error: stateError } = await locals.supabase
-		.schema('ingest')
-		.from('osm_candidate_pipeline_states')
-		.select('pipeline_state,matched_brand_slug')
-		.eq('id', candidateId)
-		.maybeSingle<{ pipeline_state: PipelineState; matched_brand_slug: string | null }>();
-
-	const movableStates: PipelineState[] = [
-		'applied_approved',
-		'applied_merged'
-	];
-
-	if (
-		stateError ||
-		!data ||
-		!data.matched_brand_slug ||
-		!movableStates.includes(data.pipeline_state)
-	) {
-		throw redirect(
-			303,
-			reviewsRedirect(form, {
-				toast: 'move_failed',
-				msg: stateError?.message ?? `candidate_not_movable:${data?.pipeline_state ?? 'missing'}`
-			})
-		);
-	}
-}
-
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const requestedTab = url.searchParams.get('tab');
 	const reviewTab = reviewTabs.find((item) => item.id === requestedTab)?.id ?? 'manual';
@@ -424,32 +391,6 @@ export const actions: Actions = {
 		}
 
 		throw redirect(303, reviewsRedirect(form, { toast: 'merged' }));
-	},
-
-	move: async ({ request, locals }) => {
-		if (!locals.isAdmin) throw error(403, 'Forbidden');
-
-		const form = await request.formData();
-		const candidateId = String(form.get('candidate_id') ?? '');
-		const brandSlug = String(form.get('brand_slug') ?? '');
-		const note = String(form.get('note') ?? '');
-
-		if (!candidateId || !brandSlug || !note.trim()) {
-			throw redirect(303, reviewsRedirect(form, { toast: 'move_failed', msg: 'missing_params' }));
-		}
-		await requireMovableCandidate(locals, candidateId, form);
-
-		const { error: rpcError } = await locals.supabase.rpc('admin_move_candidate_to_brand', {
-			p_candidate_id: candidateId,
-			p_brand_slug: brandSlug,
-			p_note: note
-		});
-
-		if (rpcError) {
-			throw redirect(303, reviewsRedirect(form, { toast: 'move_failed', msg: rpcError.message }));
-		}
-
-		throw redirect(303, reviewsRedirect(form, { toast: 'moved', brand: brandSlug }));
 	},
 
 	reject: async ({ request, locals }) => {
