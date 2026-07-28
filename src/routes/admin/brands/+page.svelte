@@ -317,6 +317,13 @@
 				Review pending submissions by normalized name with OSM evidence, identity signals, and the
 				safest next action.
 			</p>
+			<a
+				href="/admin/brands/catalog"
+				class="mt-3 inline-flex items-center text-sm font-semibold text-gray-700 hover:text-gray-950"
+			>
+				Open canonical brand catalog
+				<span class="ml-1" aria-hidden="true">→</span>
+			</a>
 		</div>
 
 		<div class="grid grid-cols-3 gap-2 text-sm">

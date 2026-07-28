@@ -95,6 +95,28 @@ type EnrichmentJobRow = {
 	completed_at: string | null;
 };
 
+type CronJobRow = {
+	jobid: number;
+	jobname: string | null;
+	schedule: string;
+	active: boolean;
+};
+
+type CronRunRow = {
+	jobid: number;
+	status: string;
+	start_time: string;
+	end_time: string | null;
+	return_message: string | null;
+};
+
+type CronStatusPayload = {
+	server_time?: string;
+	configured?: boolean;
+	jobs?: CronJobRow[];
+	runs?: CronRunRow[];
+};
+
 function countByStatus(rows: EnrichmentJobRow[]) {
 	const counts: Record<string, number> = {};
 	for (const row of rows) counts[row.status] = (counts[row.status] ?? 0) + 1;
@@ -107,29 +129,33 @@ function readMetric(metrics: JsonRecord | null, key: string) {
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
-	const [jobsResult, dossiersResult, profilesResult, flagsResult] = await Promise.all([
-		locals.supabase
-			.schema('ingest')
-			.from('brand_enrichment_jobs')
-			.select('id,brand_slug,trigger_kind,status,attempt_count,last_error,created_at,completed_at')
-			.order('created_at', { ascending: false })
-			.limit(250),
-		locals.supabase
-			.schema('mod')
-			.from('brand_dossiers')
-			.select(
-				'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method'
-			)
-			.order('updated_at', { ascending: false }),
-		locals.supabase
-			.from('brand_profiles')
-			.select('brand_slug,summary,summary_confidence,publication_method,published_at,updated_at'),
-		locals.supabase
-			.schema('mod')
-			.from('brand_integrity_flags')
-			.select('id,brand_slug,severity,status,title,details,recommended_action,last_seen_at')
-			.order('last_seen_at', { ascending: false })
-	]);
+	const [jobsResult, dossiersResult, profilesResult, flagsResult, cronStatusResult] =
+		await Promise.all([
+			locals.supabase
+				.schema('ingest')
+				.from('brand_enrichment_jobs')
+				.select(
+					'id,brand_slug,trigger_kind,status,attempt_count,last_error,created_at,completed_at'
+				)
+				.order('created_at', { ascending: false })
+				.limit(250),
+			locals.supabase
+				.schema('mod')
+				.from('brand_dossiers')
+				.select(
+					'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method'
+				)
+				.order('updated_at', { ascending: false }),
+			locals.supabase
+				.from('brand_profiles')
+				.select('brand_slug,summary,summary_confidence,publication_method,published_at,updated_at'),
+			locals.supabase
+				.schema('mod')
+				.from('brand_integrity_flags')
+				.select('id,brand_slug,severity,status,title,details,recommended_action,last_seen_at')
+				.order('last_seen_at', { ascending: false }),
+			locals.supabase.rpc('admin_brand_enrichment_cron_status')
+		]);
 
 	const sourceResults = [
 		['Enrichment jobs', jobsResult],
@@ -148,6 +174,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const dossiers = (dossiersResult.data ?? []) as DossierRow[];
 	const profiles = (profilesResult.data ?? []) as ProfileRow[];
 	const flags = (flagsResult.data ?? []) as IntegrityFlagRow[];
+	const cronPayload =
+		cronStatusResult.data &&
+		typeof cronStatusResult.data === 'object' &&
+		!Array.isArray(cronStatusResult.data)
+			? (cronStatusResult.data as CronStatusPayload)
+			: null;
+	const enrichmentCronJobs = cronPayload?.jobs ?? [];
+	const enrichmentCronRuns = cronPayload?.runs ?? [];
 	const reviewDossiers = dossiers.filter((row) => row.approval_status === 'needs_review');
 	const runIds = reviewDossiers.flatMap((row) =>
 		row.research_run_id ? [row.research_run_id] : []
@@ -209,6 +243,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const profileByBrand = new Map(profiles.map((row) => [row.brand_slug, row]));
 	const openFlags = flags.filter((row) => row.status !== 'resolved' && row.status !== 'closed');
 	const jobStatusCounts = countByStatus(jobs);
+	const activeJobs = jobs.filter((row) => row.status === 'queued' || row.status === 'running');
+	const latestActiveJobByBrand = new Map<string, EnrichmentJobRow>();
+	for (const job of activeJobs) {
+		if (!latestActiveJobByBrand.has(job.brand_slug)) {
+			latestActiveJobByBrand.set(job.brand_slug, job);
+		}
+	}
 	const now = Date.now();
 
 	const enrichedDossiers = reviewDossiers
@@ -228,6 +269,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				claims: dossierClaims,
 				integrityFlags: openFlags.filter((flag) => flag.brand_slug === dossier.brand_slug),
 				profile: profileByBrand.get(dossier.brand_slug) ?? null,
+				activeJob: latestActiveJobByBrand.get(dossier.brand_slug) ?? null,
 				metrics: {
 					overallConfidence:
 						readMetric(dossier.quality_metrics, 'overall_confidence') ??
@@ -263,8 +305,30 @@ export const load: PageServerLoad = async ({ locals }) => {
 			openIntegrityFlags: openFlags.length
 		},
 		dossiers: enrichedDossiers,
+		activeJobs,
+		publishedProfiles: profiles.sort(
+			(a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+		),
 		recentJobs: jobs.slice(0, 20),
-		sourceErrors: [...new Set(sourceErrors)]
+		sourceErrors: [...new Set(sourceErrors)],
+		cron: {
+			serverTime: cronPayload?.server_time ?? null,
+			configured: cronPayload?.configured ?? enrichmentCronJobs.length > 0,
+			jobs: enrichmentCronJobs.map(({ jobid, jobname, schedule, active }) => ({
+				jobid,
+				jobname,
+				schedule,
+				active
+			})),
+			runs: enrichmentCronRuns.map(({ jobid, status, start_time, end_time, return_message }) => ({
+				jobid,
+				status,
+				start_time,
+				end_time,
+				return_message
+			})),
+			error: cronStatusResult.error?.message ?? null
+		}
 	};
 };
 
@@ -273,6 +337,12 @@ function brandSlugs(form: FormData) {
 		.split(/[\n,]/)
 		.map((value) => value.trim())
 		.filter((value, index, values) => value && values.indexOf(value) === index);
+}
+
+function integerField(form: FormData, key: string, min: number, max: number) {
+	const raw = String(form.get(key) ?? '').trim();
+	const value = Number(raw);
+	return Number.isInteger(value) && value >= min && value <= max ? value : null;
 }
 
 async function invokeEnrichment(
@@ -287,7 +357,7 @@ async function invokeEnrichment(
 		body
 	});
 	const responseError =
-		data && typeof data === 'object' && 'error' in data ? String(data.error) : null;
+		data && typeof data === 'object' && 'error' in data && data.error ? String(data.error) : null;
 	if (error || responseError) {
 		const message =
 			responseError ?? error?.message ?? 'The enrichment worker rejected the request.';
@@ -295,14 +365,90 @@ async function invokeEnrichment(
 		return fail(400, { ok: false, action, message });
 	}
 
+	const enqueued =
+		data && typeof data === 'object' && 'enqueued' in data && typeof data.enqueued === 'number'
+			? data.enqueued
+			: null;
+	const claimed =
+		data && typeof data === 'object' && 'claimed' in data && typeof data.claimed === 'number'
+			? data.claimed
+			: null;
+	const message =
+		action === 'drain' && claimed != null
+			? `Claimed ${claimed} queued enrichment job${claimed === 1 ? '' : 's'}.`
+			: action === 'rerunBrand' && enqueued != null && claimed != null
+				? `${enqueued === 1 ? successMessage : 'No new audit was queued; an active job may already exist.'} The worker claimed ${claimed} queued job${claimed === 1 ? '' : 's'}.`
+				: enqueued != null && claimed != null
+					? `Queued ${enqueued} brand${enqueued === 1 ? '' : 's'}; processing ${claimed} now.`
+					: successMessage;
+
+	return { ok: true, action, data, message };
+}
+
+async function setCronEnabled(
+	locals: App.Locals,
+	enabled: boolean,
+	action: string,
+	successMessage: string
+) {
+	if (!locals.isAdmin) return fail(403, { ok: false, action, message: 'Admin access required.' });
+
+	const { error } = await locals.supabase.rpc('admin_set_brand_enrichment_cron_enabled', {
+		p_enabled: enabled
+	});
+	if (error) {
+		console.error(`[enrichment] ${action}`, error);
+		return fail(400, {
+			ok: false,
+			action,
+			message: error.message || 'The enrichment cron could not be updated.'
+		});
+	}
+
 	return { ok: true, action, message: successMessage };
 }
 
 export const actions: Actions = {
+	campaign: async ({ request, locals }) => {
+		const form = await request.formData();
+		const count = integerField(form, 'count', 1, 500);
+		const limit = integerField(form, 'limit', 1, 5);
+		const requestedTrigger = String(form.get('trigger_kind') ?? '');
+		const triggerKind = ['backfill', 'audit', 'scheduled_refresh'].includes(requestedTrigger)
+			? requestedTrigger
+			: null;
+		if (!count || !limit || !triggerKind) {
+			return fail(400, {
+				ok: false,
+				action: 'campaign',
+				message: 'Choose a campaign type, a count from 1–500, and a batch limit from 1–5.'
+			});
+		}
+
+		const triggerLabel =
+			triggerKind === 'scheduled_refresh'
+				? 'scheduled refresh'
+				: triggerKind === 'audit'
+					? 'audit'
+					: 'backfill';
+		return invokeEnrichment(
+			locals,
+			{ count, trigger_kind: triggerKind, limit },
+			'campaign',
+			`Started a ${triggerLabel} campaign for up to ${count} brands; processing up to ${limit} now.`
+		);
+	},
 	backfill: async ({ request, locals }) => {
 		const slugs = brandSlugs(await request.formData());
 		if (!slugs.length) {
 			return fail(400, { ok: false, action: 'backfill', message: 'Select at least one brand.' });
+		}
+		if (slugs.length > 20) {
+			return fail(400, {
+				ok: false,
+				action: 'backfill',
+				message: 'Targeted campaigns support at most 20 brand slugs per request.'
+			});
 		}
 		return invokeEnrichment(
 			locals,
@@ -316,6 +462,13 @@ export const actions: Actions = {
 		if (!slugs.length) {
 			return fail(400, { ok: false, action: 'audit', message: 'Select at least one brand.' });
 		}
+		if (slugs.length > 20) {
+			return fail(400, {
+				ok: false,
+				action: 'audit',
+				message: 'Targeted campaigns support at most 20 brand slugs per request.'
+			});
+		}
 		return invokeEnrichment(
 			locals,
 			{ brand_slugs: slugs, trigger_kind: 'audit', limit: 5 },
@@ -323,8 +476,49 @@ export const actions: Actions = {
 			`Started audit for ${slugs.length} brand${slugs.length === 1 ? '' : 's'}.`
 		);
 	},
-	drain: async ({ locals }) =>
-		invokeEnrichment(locals, { limit: 5 }, 'drain', 'Queued enrichment work is draining.'),
+	drain: async ({ request, locals }) => {
+		const form = await request.formData();
+		const limit = integerField(form, 'limit', 1, 5);
+		if (!limit) {
+			return fail(400, {
+				ok: false,
+				action: 'drain',
+				message: 'Choose a worker batch limit from 1–5.'
+			});
+		}
+		return invokeEnrichment(
+			locals,
+			{ limit },
+			'drain',
+			`Processing up to ${limit} queued enrichment jobs.`
+		);
+	},
+	configureCron: async ({ locals }) =>
+		setCronEnabled(
+			locals,
+			true,
+			'configureCron',
+			'Enabled the enrichment queue worker every five minutes with a batch limit of five.'
+		),
+	disableCron: async ({ locals }) =>
+		setCronEnabled(locals, false, 'disableCron', 'Disabled the automatic enrichment queue worker.'),
+	rerunBrand: async ({ request, locals }) => {
+		const form = await request.formData();
+		const slug = String(form.get('brand_slug') ?? '').trim();
+		if (!slug) {
+			return fail(400, {
+				ok: false,
+				action: 'rerunBrand',
+				message: 'A brand slug is required.'
+			});
+		}
+		return invokeEnrichment(
+			locals,
+			{ brand_slugs: [slug], trigger_kind: 'audit', limit: 1 },
+			'rerunBrand',
+			`Queued a fresh enrichment audit for ${slug}.`
+		);
+	},
 	approve: async ({ request, locals }) => {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '');
