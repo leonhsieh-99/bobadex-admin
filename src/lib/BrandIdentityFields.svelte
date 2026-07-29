@@ -12,9 +12,12 @@
 	export let website: string;
 	export let wikidata: string;
 	export let aliases: IdentityAlias[];
+	export let hasAliasDraft = false;
 
 	let aliasDraft = '';
 	let removedPreviousCanonical = false;
+
+	$: hasAliasDraft = Boolean(pendingAlias());
 
 	function normalize(value: string) {
 		return value
@@ -52,6 +55,29 @@
 		return desiredAliases().filter((alias) => normalize(alias.display) !== canonical);
 	}
 
+	function pendingAlias() {
+		const value = aliasDraft.trim();
+		const normalized = normalize(value);
+		if (
+			!normalized ||
+			normalized === normalize(display) ||
+			desiredAliases().some((alias) => normalize(alias.display) === normalized)
+		) {
+			return null;
+		}
+		return {
+			id: null,
+			display: value,
+			normalized_name: normalized,
+			match_mode: 'exact'
+		} satisfies IdentityAlias;
+	}
+
+	function submittedAliases() {
+		const pending = pendingAlias();
+		return pending ? [...desiredAliases(), pending] : desiredAliases();
+	}
+
 	function aliasCount() {
 		const normalizedAliases = desiredAliases()
 			.map((alias) => normalize(alias.display))
@@ -70,16 +96,9 @@
 			aliasDraft = '';
 			return;
 		}
-		if (
-			!normalized ||
-			normalized === normalize(display) ||
-			desiredAliases().some((alias) => normalize(alias.display) === normalized)
-		)
-			return;
-		aliases = [
-			...aliases,
-			{ id: null, display: value, normalized_name: normalized, match_mode: 'exact' }
-		];
+		const pending = pendingAlias();
+		if (!pending) return;
+		aliases = [...aliases, pending];
 		aliasDraft = '';
 	}
 
@@ -94,7 +113,7 @@
 <input
 	type="hidden"
 	name="identity_aliases"
-	value={JSON.stringify(desiredAliases().map((alias) => alias.display))}
+	value={JSON.stringify(submittedAliases().map((alias) => alias.display))}
 />
 
 <section>
@@ -192,6 +211,7 @@
 				<span class="sr-only">Add alias</span>
 				<input
 					bind:value={aliasDraft}
+					onblur={addAlias}
 					onkeydown={(event) => {
 						if (event.key === 'Enter') {
 							event.preventDefault();

@@ -100,6 +100,7 @@
 	let identityWebsite = '';
 	let identityWikidata = '';
 	let identityNote = '';
+	let identityHasAliasDraft = false;
 	let identityAliases: Array<{
 		id: number | null;
 		display: string;
@@ -213,6 +214,7 @@
 		identityWebsite = '';
 		identityWikidata = '';
 		identityNote = '';
+		identityHasAliasDraft = false;
 		identityAliases = [];
 		originalIdentityAliases = [];
 		statusBrand = null;
@@ -243,6 +245,7 @@
 			identityDisplay.trim() !== editBrand.display ||
 			identityWebsite.trim() !== (editBrand.website ?? '') ||
 			identityWikidata.trim() !== (editBrand.wikidata ?? '') ||
+			identityHasAliasDraft ||
 			JSON.stringify(identityAliases.map((alias) => alias.display)) !==
 				JSON.stringify(originalIdentityAliases)
 		);
@@ -809,6 +812,7 @@
 						bind:website={identityWebsite}
 						bind:wikidata={identityWikidata}
 						bind:aliases={identityAliases}
+						bind:hasAliasDraft={identityHasAliasDraft}
 					/>
 
 					<section class="border-t border-zinc-200 pt-6">
