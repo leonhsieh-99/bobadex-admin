@@ -17,8 +17,23 @@
 	let aliasDraft = '';
 	let aliasFeedback: { kind: 'success' | 'info' | 'error'; message: string } | null = null;
 	let removedPreviousCanonical = false;
+	let desiredAliasRows: IdentityAlias[] = [];
+	let regularAliasRows: IdentityAlias[] = [];
+	let serializedAliases = '[]';
+	let totalAliasCount = 0;
 
 	$: hasAliasDraft = Boolean(aliasDraft.trim());
+	$: desiredAliasRows = buildDesiredAliases(
+		aliases,
+		originalDisplay,
+		display,
+		removedPreviousCanonical
+	);
+	$: regularAliasRows = desiredAliasRows.filter(
+		(alias) => normalize(alias.display) !== normalize(display)
+	);
+	$: serializedAliases = JSON.stringify(desiredAliasRows.map((alias) => alias.display));
+	$: totalAliasCount = countAliases(desiredAliasRows, display);
 
 	function normalize(value: string) {
 		return value
@@ -28,18 +43,23 @@
 			.replace(/[^a-z0-9]/g, '');
 	}
 
-	function desiredAliases() {
-		const original = originalDisplay.trim();
+	function buildDesiredAliases(
+		currentAliases: IdentityAlias[],
+		previousDisplay: string,
+		canonicalDisplay: string,
+		previousCanonicalRemoved: boolean
+	) {
+		const original = previousDisplay.trim();
 		const originalNormalized = normalize(original);
-		const canonicalNormalized = normalize(display);
+		const canonicalNormalized = normalize(canonicalDisplay);
 		if (
-			!removedPreviousCanonical &&
+			!previousCanonicalRemoved &&
 			originalNormalized &&
 			originalNormalized !== canonicalNormalized &&
-			!aliases.some((alias) => normalize(alias.display) === originalNormalized)
+			!currentAliases.some((alias) => normalize(alias.display) === originalNormalized)
 		) {
 			return [
-				...aliases,
+				...currentAliases,
 				{
 					id: null,
 					display: original,
@@ -48,19 +68,14 @@
 				}
 			];
 		}
-		return aliases;
+		return currentAliases;
 	}
 
-	function regularAliases() {
-		const canonical = normalize(display);
-		return desiredAliases().filter((alias) => normalize(alias.display) !== canonical);
-	}
-
-	function aliasCount() {
-		const normalizedAliases = desiredAliases()
+	function countAliases(currentAliases: IdentityAlias[], canonicalDisplay: string) {
+		const normalizedAliases = currentAliases
 			.map((alias) => normalize(alias.display))
 			.filter(Boolean);
-		const canonical = normalize(display);
+		const canonical = normalize(canonicalDisplay);
 		if (canonical) normalizedAliases.push(canonical);
 		return normalizedAliases.filter((value, index) => normalizedAliases.indexOf(value) === index)
 			.length;
@@ -89,7 +104,7 @@
 			};
 			return;
 		}
-		if (desiredAliases().some((alias) => normalize(alias.display) === normalized)) {
+		if (desiredAliasRows.some((alias) => normalize(alias.display) === normalized)) {
 			aliasFeedback = { kind: 'info', message: `${value} is already in the alias list.` };
 			return;
 		}
@@ -113,11 +128,7 @@
 	}
 </script>
 
-<input
-	type="hidden"
-	name="identity_aliases"
-	value={JSON.stringify(desiredAliases().map((alias) => alias.display))}
-/>
+<input type="hidden" name="identity_aliases" value={serializedAliases} />
 
 <section>
 	<div class="flex flex-wrap items-start justify-between gap-2">
@@ -126,7 +137,7 @@
 			<p class="mt-1 text-xs text-zinc-500">The slug remains unchanged: {slug}</p>
 		</div>
 		<span class="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600">
-			{aliasCount()} alias{aliasCount() === 1 ? '' : 'es'}
+			{totalAliasCount} alias{totalAliasCount === 1 ? '' : 'es'}
 		</span>
 	</div>
 
@@ -181,7 +192,7 @@
 					<span class="px-1 text-[10px] font-semibold text-zinc-400 uppercase">Canonical</span>
 				</div>
 			{/if}
-			{#each regularAliases() as alias (alias.id ?? `new-${alias.normalized_name}`)}
+			{#each regularAliasRows as alias (alias.id ?? `new-${alias.normalized_name}`)}
 				<div
 					class="inline-flex min-h-8 max-w-full items-center gap-1 rounded border border-zinc-200 bg-zinc-50 py-1 pr-1 pl-2"
 				>
@@ -204,7 +215,7 @@
 					</button>
 				</div>
 			{/each}
-			{#if regularAliases().length === 0}
+			{#if regularAliasRows.length === 0}
 				<p class="self-center text-sm text-zinc-500">No additional aliases.</p>
 			{/if}
 		</div>

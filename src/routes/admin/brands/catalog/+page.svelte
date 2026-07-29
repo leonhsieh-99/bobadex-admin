@@ -108,6 +108,7 @@
 		match_mode: string;
 	}> = [];
 	let originalIdentityAliases: string[] = [];
+	let identityIsChanged = false;
 	let statusBrand: Brand | null = null;
 	let mergeBrand: Brand | null = null;
 	let statusNote = '';
@@ -115,6 +116,15 @@
 	let pendingAction = '';
 
 	const number = new Intl.NumberFormat('en-US');
+
+	$: identityIsChanged = detectIdentityChanges(
+		editBrand,
+		identityDisplay,
+		identityWebsite,
+		identityWikidata,
+		identityAliases,
+		originalIdentityAliases
+	);
 
 	function catalogUrl(overrides: Record<string, string | number | boolean | null> = {}) {
 		const values = {
@@ -239,14 +249,20 @@
 		modalError = '';
 	}
 
-	function identityChanged() {
-		if (!editBrand) return false;
+	function detectIdentityChanges(
+		brand: Brand | null,
+		display: string,
+		website: string,
+		wikidata: string,
+		aliases: Array<{ display: string }>,
+		originalAliases: string[]
+	) {
+		if (!brand) return false;
 		return (
-			identityDisplay.trim() !== editBrand.display ||
-			identityWebsite.trim() !== (editBrand.website ?? '') ||
-			identityWikidata.trim() !== (editBrand.wikidata ?? '') ||
-			JSON.stringify(identityAliases.map((alias) => alias.display)) !==
-				JSON.stringify(originalIdentityAliases)
+			display.trim() !== brand.display ||
+			website.trim() !== (brand.website ?? '') ||
+			wikidata.trim() !== (brand.wikidata ?? '') ||
+			JSON.stringify(aliases.map((alias) => alias.display)) !== JSON.stringify(originalAliases)
 		);
 	}
 
@@ -838,7 +854,7 @@
 					class="flex items-center justify-between gap-4 border-t border-zinc-200 bg-zinc-50 px-5 py-4"
 				>
 					<p class="text-xs text-zinc-500">
-						{identityChanged()
+						{identityIsChanged
 							? 'Changes will be recorded in the admin audit log.'
 							: 'Change a field to enable confirmation.'}
 					</p>
@@ -851,7 +867,7 @@
 						><button
 							class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
 							disabled={!identityDisplay.trim() ||
-								!identityChanged() ||
+								!identityIsChanged ||
 								identityHasAliasDraft ||
 								Boolean(pendingAction)}
 							>{pendingAction === 'updateIdentity' ? 'Saving…' : 'Confirm changes'}</button
