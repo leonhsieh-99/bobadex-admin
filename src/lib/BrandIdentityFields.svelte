@@ -22,14 +22,28 @@
 			.replace(/[^a-z0-9]/g, '');
 	}
 
-	function isCanonical(alias: IdentityAlias) {
-		return normalize(alias.display) === normalize(display);
+	function regularAliases() {
+		const canonical = normalize(display);
+		return aliases.filter((alias) => normalize(alias.display) !== canonical);
+	}
+
+	function aliasCount() {
+		const normalizedAliases = aliases.map((alias) => normalize(alias.display)).filter(Boolean);
+		const canonical = normalize(display);
+		if (canonical) normalizedAliases.push(canonical);
+		return normalizedAliases.filter((value, index) => normalizedAliases.indexOf(value) === index)
+			.length;
 	}
 
 	function addAlias() {
 		const value = aliasDraft.trim();
 		const normalized = normalize(value);
-		if (!normalized || aliases.some((alias) => normalize(alias.display) === normalized)) return;
+		if (
+			!normalized ||
+			normalized === normalize(display) ||
+			aliases.some((alias) => normalize(alias.display) === normalized)
+		)
+			return;
 		aliases = [
 			...aliases,
 			{ id: null, display: value, normalized_name: normalized, match_mode: 'exact' }
@@ -38,7 +52,6 @@
 	}
 
 	function removeAlias(alias: IdentityAlias) {
-		if (isCanonical(alias)) return;
 		aliases = aliases.filter((item) => item !== alias);
 	}
 </script>
@@ -56,7 +69,7 @@
 			<p class="mt-1 text-xs text-zinc-500">The slug remains unchanged: {slug}</p>
 		</div>
 		<span class="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600">
-			{aliases.length} alias{aliases.length === 1 ? '' : 'es'}
+			{aliasCount()} alias{aliasCount() === 1 ? '' : 'es'}
 		</span>
 	</div>
 
@@ -70,7 +83,7 @@
 				class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
 			/>
 			<span class="mt-1 block text-xs text-zinc-500">
-				Changing this preserves the previous display name as an alias.
+				The previous name remains below as an alias until you remove it.
 			</span>
 		</label>
 
@@ -103,35 +116,39 @@
 		</div>
 
 		<div class="mt-2 flex flex-wrap gap-2">
-			{#each aliases as alias (alias.id ?? `new-${alias.normalized_name}`)}
+			{#if display.trim()}
+				<div
+					class="inline-flex min-h-8 max-w-full items-center gap-1 rounded border border-zinc-200 bg-zinc-50 py-1 pr-2 pl-2"
+				>
+					<span class="truncate text-xs font-medium text-zinc-700">{display.trim()}</span>
+					<span class="px-1 text-[10px] font-semibold text-zinc-400 uppercase">Canonical</span>
+				</div>
+			{/if}
+			{#each regularAliases() as alias (alias.id ?? `new-${alias.normalized_name}`)}
 				<div
 					class="inline-flex min-h-8 max-w-full items-center gap-1 rounded border border-zinc-200 bg-zinc-50 py-1 pr-1 pl-2"
 				>
 					<span class="truncate text-xs font-medium text-zinc-700">{alias.display}</span>
-					{#if isCanonical(alias)}
-						<span class="px-1 text-[10px] font-semibold text-zinc-400 uppercase">Canonical</span>
-					{:else}
-						<button
-							type="button"
-							onclick={() => removeAlias(alias)}
-							class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-700"
-							title={`Remove ${alias.display}`}
-							aria-label={`Remove alias ${alias.display}`}
-						>
-							<svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" aria-hidden="true">
-								<path
-									d="M6 6l12 12M18 6 6 18"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-								/>
-							</svg>
-						</button>
-					{/if}
+					<button
+						type="button"
+						onclick={() => removeAlias(alias)}
+						class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-700"
+						title={`Remove ${alias.display}`}
+						aria-label={`Remove alias ${alias.display}`}
+					>
+						<svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" aria-hidden="true">
+							<path
+								d="M6 6l12 12M18 6 6 18"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+							/>
+						</svg>
+					</button>
 				</div>
 			{/each}
-			{#if aliases.length === 0}
-				<p class="text-sm text-zinc-500">No aliases are currently recorded.</p>
+			{#if regularAliases().length === 0}
+				<p class="self-center text-sm text-zinc-500">No additional aliases.</p>
 			{/if}
 		</div>
 
