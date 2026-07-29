@@ -16,7 +16,10 @@ const json = (body: unknown, status = 200) =>
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	const rawQuery = (url.searchParams.get('q') ?? '').trim();
-	const query = rawQuery.replace(/[,%()]/g, ' ').replace(/\s+/g, ' ').trim();
+	const query = rawQuery
+		.replace(/[,%()]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
 	if (query.length < 2) return json([]);
 	const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
@@ -25,6 +28,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			.from('brands')
 			.select('slug,display,website,wikidata')
 			.or(`display.ilike.%${query}%,slug.ilike.%${query}%`)
+			.eq('status', 'active')
+			.eq('is_demo', false)
 			.order('display', { ascending: true })
 			.limit(12),
 		locals.supabase
@@ -51,7 +56,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		const { data: aliasBrands, error: aliasBrandError } = await locals.supabase
 			.from('brands')
 			.select('slug,display,website,wikidata')
-			.in('slug', missingSlugs);
+			.in('slug', missingSlugs)
+			.eq('status', 'active')
+			.eq('is_demo', false);
 		if (aliasBrandError) return json({ error: aliasBrandError.message }, 500);
 		for (const brand of aliasBrands ?? []) {
 			const alias = aliasRows.find((row) => row.brand_slug === brand.slug);

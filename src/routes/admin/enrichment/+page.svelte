@@ -2,6 +2,7 @@
 	import { applyAction, enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
+	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
 	import { toasts } from '$lib/toast';
 	import { onMount } from 'svelte';
 	import type { SubmitFunction } from './$types';
@@ -143,6 +144,8 @@
 	let rerunning: Dossier | null = null;
 	let rerunError = '';
 	let publishing: Dossier | null = null;
+	let merging: Dossier | null = null;
+	let mergeError = '';
 	let publishError = '';
 	let publishIdentityDisplay = '';
 	let publishIdentityWebsite = '';
@@ -236,6 +239,7 @@
 					if (action === 'deleteFalsePositive') closeDelete();
 					if (action === 'rerunBrand') closeRerun();
 					if (action === 'reviewAndPublish') closePublish();
+					if (action === 'mergeBrand') closeMerge();
 					await invalidateAll();
 					if (action === 'configureCron' || action === 'disableCron') {
 						await refreshCron();
@@ -245,6 +249,7 @@
 				if (action === 'deleteFalsePositive') deleteError = message;
 				if (action === 'rerunBrand') rerunError = message;
 				if (action === 'reviewAndPublish') publishError = message;
+				if (action === 'mergeBrand') mergeError = message;
 				toasts.error(message);
 				await applyAction(result);
 			};
@@ -268,6 +273,16 @@
 	function openRerun(dossier: Dossier) {
 		rerunning = dossier;
 		rerunError = '';
+	}
+
+	function openMerge(dossier: Dossier) {
+		merging = dossier;
+		mergeError = '';
+	}
+
+	function closeMerge() {
+		merging = null;
+		mergeError = '';
 	}
 
 	function closeRerun() {
@@ -1061,6 +1076,12 @@
 									>
 									<button
 										type="button"
+										onclick={() => openMerge(dossier)}
+										class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
+										>Merge with existing brand</button
+									>
+									<button
+										type="button"
 										onclick={() => openRerun(dossier)}
 										disabled={Boolean(dossier.activeJob)}
 										class="rounded border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1199,6 +1220,16 @@
 		</section>
 	{/if}
 </main>
+
+{#if merging}
+	<BrandMergeDialog
+		source={{ slug: merging.brand_slug, display: merging.identity.display }}
+		enhanceSubmit={actionEnhance('mergeBrand')}
+		busy={pendingAction === 'mergeBrand'}
+		error={mergeError}
+		onClose={closeMerge}
+	/>
+{/if}
 
 {#if publishing}
 	<div

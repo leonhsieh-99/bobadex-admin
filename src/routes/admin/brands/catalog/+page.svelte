@@ -2,10 +2,11 @@
 	import { applyAction, enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
+	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
 	import { toasts } from '$lib/toast';
 	import type { SubmitFunction } from './$types';
 
-	type BrandStatus = 'active' | 'retired';
+	type BrandStatus = 'active' | 'retired' | 'merged';
 	type Brand = {
 		slug: string;
 		display: string;
@@ -30,6 +31,11 @@
 		total_count: number;
 	};
 	type Detail = {
+		redirect: {
+			target_slug: string;
+			target_display: string;
+			merged_at: string | null;
+		} | null;
 		aliases: IdentityAlias[];
 		regions: Array<{
 			region_code: string;
@@ -102,6 +108,7 @@
 	}> = [];
 	let originalIdentityAliases: string[] = [];
 	let statusBrand: Brand | null = null;
+	let mergeBrand: Brand | null = null;
 	let statusNote = '';
 	let modalError = '';
 	let pendingAction = '';
@@ -209,6 +216,7 @@
 		identityAliases = [];
 		originalIdentityAliases = [];
 		statusBrand = null;
+		mergeBrand = null;
 		statusNote = '';
 		modalError = '';
 	}
@@ -362,6 +370,7 @@
 				<option value="">All statuses</option>
 				<option value="active">Active</option>
 				<option value="retired">Retired</option>
+				<option value="merged">Merged</option>
 			</select>
 			<select
 				value={data.filters.region}
@@ -482,7 +491,9 @@
 								><span
 									class="rounded px-2 py-1 text-xs font-medium {brand.status === 'active'
 										? 'bg-emerald-50 text-emerald-700'
-										: 'bg-zinc-200 text-zinc-700'}">{brand.status}</span
+										: brand.status === 'merged'
+											? 'bg-blue-50 text-blue-700'
+											: 'bg-zinc-200 text-zinc-700'}">{brand.status}</span
 								>{#if brand.is_demo}<span
 										class="ml-1 rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">demo</span
 									>{/if}</td
@@ -548,6 +559,19 @@
 										</p>
 									{:else if details[brand.slug]}
 										{@const detail = details[brand.slug]}
+										{#if detail.redirect}
+											<div class="mb-5 border-l-2 border-blue-500 bg-blue-50 px-4 py-3">
+												<p class="text-sm font-semibold text-blue-950">
+													Redirects to {detail.redirect.target_display}
+												</p>
+												<p class="mt-1 text-xs text-blue-800">
+													<code>{detail.redirect.target_slug}</code>
+													{#if detail.redirect.merged_at}
+														· merged {relativeDate(detail.redirect.merged_at)}
+													{/if}
+												</p>
+											</div>
+										{/if}
 										<div class="grid gap-6 xl:grid-cols-[1fr_1fr_1.2fr]">
 											<div class="space-y-5">
 												<section>
@@ -674,21 +698,35 @@
 											<button
 												type="button"
 												onclick={() => openIdentityEditor(brand, detail.aliases)}
+												disabled={brand.status === 'merged'}
 												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
 												>Edit identity</button
 											>
-											<button
-												type="button"
-												onclick={() => {
-													statusBrand = brand;
-													statusNote = '';
-													modalError = '';
-												}}
-												class="rounded px-3 py-2 text-sm font-medium {brand.status === 'active'
-													? 'border border-red-200 bg-white text-red-700 hover:bg-red-50'
-													: 'bg-zinc-950 text-white hover:bg-zinc-800'}"
-												>{brand.status === 'active' ? 'Mark closed' : 'Reopen brand'}</button
-											>
+											{#if brand.status !== 'merged' && !brand.is_demo}
+												<button
+													type="button"
+													onclick={() => {
+														mergeBrand = brand;
+														modalError = '';
+													}}
+													class="rounded border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+													>Merge into another brand</button
+												>
+											{/if}
+											{#if brand.status !== 'merged'}
+												<button
+													type="button"
+													onclick={() => {
+														statusBrand = brand;
+														statusNote = '';
+														modalError = '';
+													}}
+													class="rounded px-3 py-2 text-sm font-medium {brand.status === 'active'
+														? 'border border-red-200 bg-white text-red-700 hover:bg-red-50'
+														: 'bg-zinc-950 text-white hover:bg-zinc-800'}"
+													>{brand.status === 'active' ? 'Mark closed' : 'Reopen brand'}</button
+												>
+											{/if}
 										</div>
 									{/if}
 								</td>
@@ -817,6 +855,16 @@
 			</form>
 		</div>
 	</div>
+{/if}
+
+{#if mergeBrand}
+	<BrandMergeDialog
+		source={{ slug: mergeBrand.slug, display: mergeBrand.display }}
+		enhanceSubmit={actionEnhance('mergeBrand')}
+		busy={pendingAction === 'mergeBrand'}
+		error={modalError}
+		onClose={closeModal}
+	/>
 {/if}
 
 {#if statusBrand}

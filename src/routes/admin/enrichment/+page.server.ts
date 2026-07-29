@@ -1,4 +1,5 @@
 import { fail } from '@sveltejs/kit';
+import { mergeBrands } from '$lib/server/brand-merge.server';
 import type { Actions, PageServerLoad } from './$types';
 
 type JsonRecord = Record<string, unknown>;
@@ -90,6 +91,8 @@ type BrandIdentityRow = {
 	display: string;
 	website: string | null;
 	wikidata: string | null;
+	status: 'active' | 'retired' | 'merged';
+	is_demo: boolean;
 };
 
 type BrandAliasRow = {
@@ -215,7 +218,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const [identitiesResult, aliasesResult] = await Promise.all([
 			locals.supabase
 				.from('brands')
-				.select('slug,display,website,wikidata')
+				.select('slug,display,website,wikidata,status,is_demo')
 				.in('slug', reviewBrandSlugs),
 			locals.supabase
 				.from('brand_aliases')
@@ -296,7 +299,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 	}
 	const now = Date.now();
 
-	const enrichedDossiers = reviewDossiers
+	const activeReviewDossiers = reviewDossiers.filter((dossier) => {
+		const identity = identityByBrand.get(dossier.brand_slug);
+		return identity && identity.status !== 'merged';
+	});
+	const enrichedDossiers = activeReviewDossiers
 		.map((dossier) => {
 			const run = dossier.research_run_id ? (runById.get(dossier.research_run_id) ?? null) : null;
 			const dossierClaims = claims
@@ -351,7 +358,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			running: jobStatusCounts.running ?? 0,
 			failed: jobStatusCounts.failed ?? 0,
 			publishedProfiles: profiles.length,
-			dossiersNeedingReview: reviewDossiers.length,
+			dossiersNeedingReview: activeReviewDossiers.length,
 			dueRefreshes: dossiers.filter(
 				(row) => row.refresh_after && new Date(row.refresh_after).getTime() <= now
 			).length,
@@ -743,6 +750,39 @@ export const actions: Actions = {
 			'reviewAndPublish',
 			`Published ${slug}.`
 		);
+	},
+	mergeBrand: async ({ request, locals }) => {
+		const form = await request.formData();
+		const sourceSlug = String(form.get('source_slug') ?? '').trim();
+		const targetSlug = String(form.get('target_slug') ?? '').trim();
+		const reason = String(form.get('reason') ?? '').trim();
+		if (!sourceSlug || !targetSlug || !reason) {
+			return fail(400, {
+				ok: false,
+				action: 'mergeBrand',
+				message: 'Source, target, and merge reason are required.'
+			});
+		}
+		try {
+			const data = await mergeBrands(locals, {
+				sourceSlug,
+				targetSlug,
+				reason,
+				markTargetForReview: String(form.get('mark_target_for_review') ?? '') === 'true'
+			});
+			return {
+				ok: true,
+				action: 'mergeBrand',
+				data,
+				message: `Merged ${sourceSlug} into ${data.target_display}.`
+			};
+		} catch (error) {
+			return fail(400, {
+				ok: false,
+				action: 'mergeBrand',
+				message: error instanceof Error ? error.message : 'Could not merge these brands.'
+			});
+		}
 	},
 	resolveFlag: async ({ request, locals }) => {
 		if (!locals.isAdmin) {

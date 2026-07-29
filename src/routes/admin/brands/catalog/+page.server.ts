@@ -1,7 +1,8 @@
 import { fail } from '@sveltejs/kit';
+import { mergeBrands } from '$lib/server/brand-merge.server';
 import type { Actions, PageServerLoad } from './$types';
 
-type BrandStatus = 'active' | 'retired';
+type BrandStatus = 'active' | 'retired' | 'merged';
 
 type CatalogRow = {
 	slug: string;
@@ -49,7 +50,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const q = cleanSearch(url.searchParams.get('q'));
 	const requestedStatus = url.searchParams.get('status');
 	const status: BrandStatus | null =
-		requestedStatus === 'active' || requestedStatus === 'retired' ? requestedStatus : null;
+		requestedStatus === 'active' || requestedStatus === 'retired' || requestedStatus === 'merged'
+			? requestedStatus
+			: null;
 	const region = cleanSearch(url.searchParams.get('region'));
 	const attentionOnly = url.searchParams.get('attention') === '1';
 	const page = Math.max(1, Number.parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
@@ -216,5 +219,43 @@ export const actions: Actions = {
 			data,
 			message: `Reopened ${slug} and queued an audit.`
 		};
+	},
+
+	mergeBrand: async ({ request, locals }) => {
+		const form = await request.formData();
+		const sourceSlug = formValue(form, 'source_slug');
+		const targetSlug = formValue(form, 'target_slug');
+		const reason = formValue(form, 'reason');
+		if (!sourceSlug || !targetSlug || !reason) {
+			return fail(400, {
+				ok: false,
+				action: 'mergeBrand',
+				brandSlug: sourceSlug,
+				message: 'Source, target, and merge reason are required.'
+			});
+		}
+
+		try {
+			const data = await mergeBrands(locals, {
+				sourceSlug,
+				targetSlug,
+				reason,
+				markTargetForReview: formValue(form, 'mark_target_for_review') === 'true'
+			});
+			return {
+				ok: true,
+				action: 'mergeBrand',
+				brandSlug: sourceSlug,
+				data,
+				message: `Merged ${sourceSlug} into ${data.target_display}.`
+			};
+		} catch (error) {
+			return fail(400, {
+				ok: false,
+				action: 'mergeBrand',
+				brandSlug: sourceSlug,
+				message: error instanceof Error ? error.message : 'Could not merge these brands.'
+			});
+		}
 	}
 };
