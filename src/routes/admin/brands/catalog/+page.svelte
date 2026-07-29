@@ -245,7 +245,6 @@
 			identityDisplay.trim() !== editBrand.display ||
 			identityWebsite.trim() !== (editBrand.website ?? '') ||
 			identityWikidata.trim() !== (editBrand.wikidata ?? '') ||
-			identityHasAliasDraft ||
 			JSON.stringify(identityAliases.map((alias) => alias.display)) !==
 				JSON.stringify(originalIdentityAliases)
 		);
@@ -851,7 +850,10 @@
 							>Cancel</button
 						><button
 							class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-							disabled={!identityDisplay.trim() || !identityChanged() || Boolean(pendingAction)}
+							disabled={!identityDisplay.trim() ||
+								!identityChanged() ||
+								identityHasAliasDraft ||
+								Boolean(pendingAction)}
 							>{pendingAction === 'updateIdentity' ? 'Saving…' : 'Confirm changes'}</button
 						>
 					</div>

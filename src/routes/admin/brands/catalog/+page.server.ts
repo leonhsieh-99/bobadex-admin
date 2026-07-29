@@ -145,12 +145,26 @@ export const actions: Actions = {
 				message: error.message
 			});
 		}
+		const identityResult =
+			data && typeof data === 'object' && !Array.isArray(data)
+				? (data as {
+						before?: { aliases?: unknown[] };
+						after?: { aliases?: unknown[] };
+					})
+				: null;
+		const aliasesAdded = Math.max(
+			0,
+			(identityResult?.after?.aliases?.length ?? 0) - (identityResult?.before?.aliases?.length ?? 0)
+		);
 		return {
 			ok: true,
 			action: 'updateIdentity',
 			brandSlug: slug,
 			data,
-			message: `Updated ${display}.`
+			message:
+				aliasesAdded > 0
+					? `Saved ${aliasesAdded} new alias${aliasesAdded === 1 ? '' : 'es'} for ${display}.`
+					: `Updated ${display}.`
 		};
 	},
 

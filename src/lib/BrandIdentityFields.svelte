@@ -15,9 +15,10 @@
 	export let hasAliasDraft = false;
 
 	let aliasDraft = '';
+	let aliasFeedback: { kind: 'success' | 'info' | 'error'; message: string } | null = null;
 	let removedPreviousCanonical = false;
 
-	$: hasAliasDraft = Boolean(pendingAlias());
+	$: hasAliasDraft = Boolean(aliasDraft.trim());
 
 	function normalize(value: string) {
 		return value
@@ -55,29 +56,6 @@
 		return desiredAliases().filter((alias) => normalize(alias.display) !== canonical);
 	}
 
-	function pendingAlias() {
-		const value = aliasDraft.trim();
-		const normalized = normalize(value);
-		if (
-			!normalized ||
-			normalized === normalize(display) ||
-			desiredAliases().some((alias) => normalize(alias.display) === normalized)
-		) {
-			return null;
-		}
-		return {
-			id: null,
-			display: value,
-			normalized_name: normalized,
-			match_mode: 'exact'
-		} satisfies IdentityAlias;
-	}
-
-	function submittedAliases() {
-		const pending = pendingAlias();
-		return pending ? [...desiredAliases(), pending] : desiredAliases();
-	}
-
 	function aliasCount() {
 		const normalizedAliases = desiredAliases()
 			.map((alias) => normalize(alias.display))
@@ -91,15 +69,39 @@
 	function addAlias() {
 		const value = aliasDraft.trim();
 		const normalized = normalize(value);
+		if (!normalized) {
+			aliasFeedback = { kind: 'error', message: 'Enter a valid alias.' };
+			return;
+		}
 		if (normalized === normalize(originalDisplay)) {
 			removedPreviousCanonical = false;
 			aliasDraft = '';
+			aliasFeedback = {
+				kind: 'info',
+				message: `${value} is already covered by the previous canonical name.`
+			};
 			return;
 		}
-		const pending = pendingAlias();
-		if (!pending) return;
-		aliases = [...aliases, pending];
+		if (normalized === normalize(display)) {
+			aliasFeedback = {
+				kind: 'info',
+				message: `${value} normalizes to the canonical name and does not need a separate alias.`
+			};
+			return;
+		}
+		if (desiredAliases().some((alias) => normalize(alias.display) === normalized)) {
+			aliasFeedback = { kind: 'info', message: `${value} is already in the alias list.` };
+			return;
+		}
+		aliases = [
+			...aliases,
+			{ id: null, display: value, normalized_name: normalized, match_mode: 'exact' }
+		];
 		aliasDraft = '';
+		aliasFeedback = {
+			kind: 'success',
+			message: `${value} is ready to save.`
+		};
 	}
 
 	function removeAlias(alias: IdentityAlias) {
@@ -107,13 +109,14 @@
 			removedPreviousCanonical = true;
 		}
 		aliases = aliases.filter((item) => item !== alias);
+		aliasFeedback = null;
 	}
 </script>
 
 <input
 	type="hidden"
 	name="identity_aliases"
-	value={JSON.stringify(submittedAliases().map((alias) => alias.display))}
+	value={JSON.stringify(desiredAliases().map((alias) => alias.display))}
 />
 
 <section>
@@ -211,7 +214,7 @@
 				<span class="sr-only">Add alias</span>
 				<input
 					bind:value={aliasDraft}
-					onblur={addAlias}
+					oninput={() => (aliasFeedback = null)}
 					onkeydown={(event) => {
 						if (event.key === 'Enter') {
 							event.preventDefault();
@@ -227,18 +230,31 @@
 				onclick={addAlias}
 				disabled={!aliasDraft.trim()}
 				class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
-				title="Add alias"
-				aria-label="Add alias"
+				title="Confirm alias"
+				aria-label="Confirm alias"
 			>
 				<svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" aria-hidden="true">
 					<path
-						d="M12 5v14M5 12h14"
+						d="m5 12 4 4L19 6"
 						stroke="currentColor"
 						stroke-width="2"
 						stroke-linecap="round"
+						stroke-linejoin="round"
 					/>
 				</svg>
 			</button>
 		</div>
+		{#if aliasFeedback}
+			<p
+				class="mt-2 text-xs {aliasFeedback.kind === 'success'
+					? 'text-emerald-700'
+					: aliasFeedback.kind === 'error'
+						? 'text-red-700'
+						: 'text-amber-700'}"
+				role="status"
+			>
+				{aliasFeedback.message}
+			</p>
+		{/if}
 	</div>
 </section>

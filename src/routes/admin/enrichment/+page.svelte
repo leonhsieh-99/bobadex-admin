@@ -150,6 +150,7 @@
 	let publishIdentityDisplay = '';
 	let publishIdentityWebsite = '';
 	let publishIdentityWikidata = '';
+	let publishHasAliasDraft = false;
 	let publishIdentityAliases: Array<{
 		id: number | null;
 		display: string;
@@ -296,6 +297,7 @@
 		publishIdentityDisplay = dossier.identity.display;
 		publishIdentityWebsite = dossier.identity.website ?? '';
 		publishIdentityWikidata = dossier.identity.wikidata ?? '';
+		publishHasAliasDraft = false;
 		publishIdentityAliases = dossier.identity.aliases.map((alias) => ({
 			id: alias.id,
 			display: alias.alias_display ?? alias.normalized_name,
@@ -1281,6 +1283,7 @@
 						bind:website={publishIdentityWebsite}
 						bind:wikidata={publishIdentityWikidata}
 						bind:aliases={publishIdentityAliases}
+						bind:hasAliasDraft={publishHasAliasDraft}
 					/>
 
 					<section>
@@ -1580,7 +1583,7 @@
 						</button>
 						<button
 							class="rounded bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
-							disabled={Boolean(pendingAction)}
+							disabled={publishHasAliasDraft || Boolean(pendingAction)}
 						>
 							{pendingAction === 'reviewAndPublish' ? 'Publishing…' : 'Confirm and publish'}
 						</button>
