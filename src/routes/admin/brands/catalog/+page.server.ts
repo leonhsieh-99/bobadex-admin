@@ -100,21 +100,38 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const slug = formValue(form, 'brand_slug');
 		const display = formValue(form, 'display');
-		const note = formValue(form, 'note');
-		if (!slug || !display || !note) {
+		const website = formValue(form, 'website');
+		const wikidata = formValue(form, 'wikidata');
+		const changedFields = [
+			display !== formValue(form, 'original_display') ? 'display name' : null,
+			website !== formValue(form, 'original_website') ? 'website' : null,
+			wikidata !== formValue(form, 'original_wikidata') ? 'Wikidata' : null
+		].filter((field): field is string => Boolean(field));
+		if (!slug || !display) {
 			return fail(400, {
 				ok: false,
 				action: 'updateIdentity',
 				brandSlug: slug,
-				message: 'Display name and edit note are required.'
+				message: 'A display name is required.'
 			});
 		}
+		if (!changedFields.length) {
+			return fail(400, {
+				ok: false,
+				action: 'updateIdentity',
+				brandSlug: slug,
+				message: 'Change at least one identity field before confirming.'
+			});
+		}
+		const note =
+			formValue(form, 'note') ||
+			`Updated canonical ${changedFields.join(', ')} from the brand catalog.`;
 
 		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity', {
 			p_brand_slug: slug,
 			p_display: display,
-			p_website: formValue(form, 'website') || null,
-			p_wikidata: formValue(form, 'wikidata') || null,
+			p_website: website || null,
+			p_wikidata: wikidata || null,
 			p_note: note
 		});
 		if (error) {

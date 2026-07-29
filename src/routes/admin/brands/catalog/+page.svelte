@@ -87,6 +87,10 @@
 	let detailErrors: Record<string, string> = {};
 	let detailLoading = '';
 	let editBrand: Brand | null = null;
+	let identityDisplay = '';
+	let identityWebsite = '';
+	let identityWikidata = '';
+	let identityNote = '';
 	let statusBrand: Brand | null = null;
 	let statusNote = '';
 	let modalError = '';
@@ -188,9 +192,31 @@
 
 	function closeModal() {
 		editBrand = null;
+		identityDisplay = '';
+		identityWebsite = '';
+		identityWikidata = '';
+		identityNote = '';
 		statusBrand = null;
 		statusNote = '';
 		modalError = '';
+	}
+
+	function openIdentityEditor(brand: Brand) {
+		editBrand = brand;
+		identityDisplay = brand.display;
+		identityWebsite = brand.website ?? '';
+		identityWikidata = brand.wikidata ?? '';
+		identityNote = '';
+		modalError = '';
+	}
+
+	function identityChanged() {
+		if (!editBrand) return false;
+		return (
+			identityDisplay.trim() !== editBrand.display ||
+			identityWebsite.trim() !== (editBrand.website ?? '') ||
+			identityWikidata.trim() !== (editBrand.wikidata ?? '')
+		);
 	}
 
 	function relativeDate(value: string | null) {
@@ -626,10 +652,7 @@
 											>
 											<button
 												type="button"
-												onclick={() => {
-													editBrand = brand;
-													modalError = '';
-												}}
+												onclick={() => openIdentityEditor(brand)}
 												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
 												>Edit identity</button
 											>
@@ -684,79 +707,139 @@
 
 {#if editBrand}
 	<div
-		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-5"
 		role="presentation"
 		onclick={(event) => event.currentTarget === event.target && closeModal()}
 	>
 		<div
-			class="w-full max-w-lg rounded-lg bg-white shadow-xl"
+			class="flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="edit-title"
 		>
-			<div class="border-b border-zinc-200 px-5 py-4">
-				<h2 id="edit-title" class="text-lg font-semibold text-zinc-950">Edit brand identity</h2>
-				<p class="mt-1 text-sm text-zinc-500">
-					The slug remains immutable. Changes are recorded in the admin audit log.
-				</p>
+			<div class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+				<div>
+					<h2 id="edit-title" class="text-lg font-semibold text-zinc-950">
+						Review and save identity
+					</h2>
+					<p class="mt-1 text-sm text-zinc-600">
+						{editBrand.slug} · Current canonical values are prefilled.
+					</p>
+				</div>
+				<button
+					type="button"
+					onclick={closeModal}
+					aria-label="Close identity editor"
+					class="text-xl leading-none text-zinc-400 hover:text-zinc-800"
+				>
+					×
+				</button>
 			</div>
 			<form
 				method="post"
 				action="?/updateIdentity"
 				use:enhance={actionEnhance('updateIdentity')}
-				class="space-y-4 px-5 py-5"
+				class="flex min-h-0 flex-1 flex-col"
 			>
 				<input type="hidden" name="brand_slug" value={editBrand.slug} />
-				<label class="block"
-					><span class="text-sm font-medium text-zinc-800">Display name</span><input
-						name="display"
-						value={editBrand.display}
-						required
-						class="mt-1 block w-full rounded border-zinc-300 text-sm"
-					/></label
+				<input type="hidden" name="original_display" value={editBrand.display} />
+				<input type="hidden" name="original_website" value={editBrand.website ?? ''} />
+				<input type="hidden" name="original_wikidata" value={editBrand.wikidata ?? ''} />
+
+				<div class="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 py-5">
+					<section>
+						<h3 class="text-sm font-semibold text-zinc-950">Canonical identity</h3>
+						<div class="mt-3 grid gap-4 md:grid-cols-2">
+							<label class="md:col-span-2">
+								<span class="text-xs font-medium text-zinc-600">Display name</span>
+								<input
+									name="display"
+									bind:value={identityDisplay}
+									required
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Immutable slug</span>
+								<input
+									value={editBrand.slug}
+									readonly
+									class="mt-1 block h-10 w-full rounded border-zinc-200 bg-zinc-50 font-mono text-sm text-zinc-500"
+								/>
+							</label>
+							<div class="flex items-end">
+								<p class="pb-2 text-xs leading-5 text-zinc-500">
+									Display-name changes preserve the previous name as an alias.
+								</p>
+							</div>
+						</div>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<h3 class="text-sm font-semibold text-zinc-950">External identity</h3>
+						<div class="mt-3 grid gap-4 md:grid-cols-2">
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Official website</span>
+								<input
+									name="website"
+									bind:value={identityWebsite}
+									type="url"
+									placeholder="https://…"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Wikidata entity</span>
+								<input
+									name="wikidata"
+									bind:value={identityWikidata}
+									placeholder="Q12345"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+						</div>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<label class="block">
+							<span class="text-xs font-medium text-zinc-600">Review note (optional)</span>
+							<textarea
+								name="note"
+								bind:value={identityNote}
+								rows="3"
+								placeholder="Evidence or context for this change"
+								class="mt-1 block w-full rounded border-zinc-300 text-sm"
+							></textarea>
+						</label>
+					</section>
+
+					{#if modalError}
+						<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+							{modalError}
+						</div>
+					{/if}
+				</div>
+
+				<div
+					class="flex items-center justify-between gap-4 border-t border-zinc-200 bg-zinc-50 px-5 py-4"
 				>
-				<label class="block"
-					><span class="text-sm font-medium text-zinc-800">Website</span><input
-						name="website"
-						value={editBrand.website ?? ''}
-						type="url"
-						placeholder="https://…"
-						class="mt-1 block w-full rounded border-zinc-300 text-sm"
-					/></label
-				>
-				<label class="block"
-					><span class="text-sm font-medium text-zinc-800">Wikidata</span><input
-						name="wikidata"
-						value={editBrand.wikidata ?? ''}
-						placeholder="Q12345"
-						class="mt-1 block w-full rounded border-zinc-300 text-sm"
-					/></label
-				>
-				<label class="block"
-					><span class="text-sm font-medium text-zinc-800">Edit note</span><textarea
-						name="note"
-						rows="3"
-						required
-						placeholder="Verified against official website…"
-						class="mt-1 block w-full rounded border-zinc-300 text-sm"
-					></textarea></label
-				>
-				{#if modalError}<div
-						class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
-					>
-						{modalError}
-					</div>{/if}
-				<div class="flex justify-end gap-2">
-					<button
-						type="button"
-						onclick={closeModal}
-						class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-						>Cancel</button
-					><button
-						class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
-						disabled={Boolean(pendingAction)}
-						>{pendingAction === 'updateIdentity' ? 'Saving…' : 'Save changes'}</button
-					>
+					<p class="text-xs text-zinc-500">
+						{identityChanged()
+							? 'Changes will be recorded in the admin audit log.'
+							: 'Change a field to enable confirmation.'}
+					</p>
+					<div class="flex shrink-0 gap-2">
+						<button
+							type="button"
+							onclick={closeModal}
+							class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+							>Cancel</button
+						><button
+							class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+							disabled={!identityDisplay.trim() || !identityChanged() || Boolean(pendingAction)}
+							>{pendingAction === 'updateIdentity' ? 'Saving…' : 'Confirm changes'}</button
+						>
+					</div>
 				</div>
 			</form>
 		</div>
