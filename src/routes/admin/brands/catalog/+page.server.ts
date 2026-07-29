@@ -99,14 +99,24 @@ export const actions: Actions = {
 		if (!locals.isAdmin) return fail(403, { ok: false, message: 'Admin access required.' });
 		const form = await request.formData();
 		const slug = formValue(form, 'brand_slug');
-		const display = formValue(form, 'display');
-		const website = formValue(form, 'website');
-		const wikidata = formValue(form, 'wikidata');
-		const changedFields = [
-			display !== formValue(form, 'original_display') ? 'display name' : null,
-			website !== formValue(form, 'original_website') ? 'website' : null,
-			wikidata !== formValue(form, 'original_wikidata') ? 'Wikidata' : null
-		].filter((field): field is string => Boolean(field));
+		const display = formValue(form, 'identity_display');
+		const website = formValue(form, 'identity_website');
+		const wikidata = formValue(form, 'identity_wikidata');
+		let aliases: string[];
+		try {
+			const parsed = JSON.parse(formValue(form, 'identity_aliases') || '[]');
+			if (!Array.isArray(parsed) || parsed.some((alias) => typeof alias !== 'string')) {
+				throw new Error('Aliases must be a list of names.');
+			}
+			aliases = parsed;
+		} catch (error) {
+			return fail(400, {
+				ok: false,
+				action: 'updateIdentity',
+				brandSlug: slug,
+				message: error instanceof Error ? error.message : 'Aliases could not be read.'
+			});
+		}
 		if (!slug || !display) {
 			return fail(400, {
 				ok: false,
@@ -115,24 +125,14 @@ export const actions: Actions = {
 				message: 'A display name is required.'
 			});
 		}
-		if (!changedFields.length) {
-			return fail(400, {
-				ok: false,
-				action: 'updateIdentity',
-				brandSlug: slug,
-				message: 'Change at least one identity field before confirming.'
-			});
-		}
-		const note =
-			formValue(form, 'note') ||
-			`Updated canonical ${changedFields.join(', ')} from the brand catalog.`;
 
-		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity', {
+		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity_v2', {
 			p_brand_slug: slug,
 			p_display: display,
+			p_aliases: aliases,
 			p_website: website || null,
 			p_wikidata: wikidata || null,
-			p_note: note
+			p_note: formValue(form, 'note') || null
 		});
 		if (error) {
 			return fail(400, {

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { applyAction, enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
+	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
 	import { toasts } from '$lib/toast';
 	import type { SubmitFunction } from './$types';
 
@@ -29,13 +30,7 @@
 		total_count: number;
 	};
 	type Detail = {
-		aliases: Array<{
-			id: number;
-			normalized_name: string;
-			alias_display: string | null;
-			match_mode: string;
-			created_at: string;
-		}>;
+		aliases: IdentityAlias[];
 		regions: Array<{
 			region_code: string;
 			source: string;
@@ -72,6 +67,14 @@
 			created_at: string;
 		}>;
 	};
+	type IdentityAlias = {
+		id: number;
+		normalized_name: string;
+		alias_display: string | null;
+		match_mode: string;
+		created_at: string;
+		display?: string;
+	};
 
 	export let data: {
 		brands: Brand[];
@@ -91,6 +94,13 @@
 	let identityWebsite = '';
 	let identityWikidata = '';
 	let identityNote = '';
+	let identityAliases: Array<{
+		id: number | null;
+		display: string;
+		normalized_name: string;
+		match_mode: string;
+	}> = [];
+	let originalIdentityAliases: string[] = [];
 	let statusBrand: Brand | null = null;
 	let statusNote = '';
 	let modalError = '';
@@ -196,17 +206,26 @@
 		identityWebsite = '';
 		identityWikidata = '';
 		identityNote = '';
+		identityAliases = [];
+		originalIdentityAliases = [];
 		statusBrand = null;
 		statusNote = '';
 		modalError = '';
 	}
 
-	function openIdentityEditor(brand: Brand) {
+	function openIdentityEditor(brand: Brand, aliases: IdentityAlias[]) {
 		editBrand = brand;
 		identityDisplay = brand.display;
 		identityWebsite = brand.website ?? '';
 		identityWikidata = brand.wikidata ?? '';
 		identityNote = '';
+		identityAliases = aliases.map((alias) => ({
+			id: alias.id,
+			display: alias.alias_display ?? alias.normalized_name,
+			normalized_name: alias.normalized_name,
+			match_mode: alias.match_mode
+		}));
+		originalIdentityAliases = identityAliases.map((alias) => alias.display);
 		modalError = '';
 	}
 
@@ -215,7 +234,9 @@
 		return (
 			identityDisplay.trim() !== editBrand.display ||
 			identityWebsite.trim() !== (editBrand.website ?? '') ||
-			identityWikidata.trim() !== (editBrand.wikidata ?? '')
+			identityWikidata.trim() !== (editBrand.wikidata ?? '') ||
+			JSON.stringify(identityAliases.map((alias) => alias.display)) !==
+				JSON.stringify(originalIdentityAliases)
 		);
 	}
 
@@ -652,7 +673,7 @@
 											>
 											<button
 												type="button"
-												onclick={() => openIdentityEditor(brand)}
+												onclick={() => openIdentityEditor(brand, detail.aliases)}
 												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
 												>Edit identity</button
 											>
@@ -742,63 +763,14 @@
 				class="flex min-h-0 flex-1 flex-col"
 			>
 				<input type="hidden" name="brand_slug" value={editBrand.slug} />
-				<input type="hidden" name="original_display" value={editBrand.display} />
-				<input type="hidden" name="original_website" value={editBrand.website ?? ''} />
-				<input type="hidden" name="original_wikidata" value={editBrand.wikidata ?? ''} />
-
 				<div class="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 py-5">
-					<section>
-						<h3 class="text-sm font-semibold text-zinc-950">Canonical identity</h3>
-						<div class="mt-3 grid gap-4 md:grid-cols-2">
-							<label class="md:col-span-2">
-								<span class="text-xs font-medium text-zinc-600">Display name</span>
-								<input
-									name="display"
-									bind:value={identityDisplay}
-									required
-									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
-								/>
-							</label>
-							<label>
-								<span class="text-xs font-medium text-zinc-600">Immutable slug</span>
-								<input
-									value={editBrand.slug}
-									readonly
-									class="mt-1 block h-10 w-full rounded border-zinc-200 bg-zinc-50 font-mono text-sm text-zinc-500"
-								/>
-							</label>
-							<div class="flex items-end">
-								<p class="pb-2 text-xs leading-5 text-zinc-500">
-									Display-name changes preserve the previous name as an alias.
-								</p>
-							</div>
-						</div>
-					</section>
-
-					<section class="border-t border-zinc-200 pt-6">
-						<h3 class="text-sm font-semibold text-zinc-950">External identity</h3>
-						<div class="mt-3 grid gap-4 md:grid-cols-2">
-							<label>
-								<span class="text-xs font-medium text-zinc-600">Official website</span>
-								<input
-									name="website"
-									bind:value={identityWebsite}
-									type="url"
-									placeholder="https://…"
-									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
-								/>
-							</label>
-							<label>
-								<span class="text-xs font-medium text-zinc-600">Wikidata entity</span>
-								<input
-									name="wikidata"
-									bind:value={identityWikidata}
-									placeholder="Q12345"
-									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
-								/>
-							</label>
-						</div>
-					</section>
+					<BrandIdentityFields
+						slug={editBrand.slug}
+						bind:display={identityDisplay}
+						bind:website={identityWebsite}
+						bind:wikidata={identityWikidata}
+						bind:aliases={identityAliases}
+					/>
 
 					<section class="border-t border-zinc-200 pt-6">
 						<label class="block">

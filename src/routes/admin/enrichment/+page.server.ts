@@ -85,6 +85,21 @@ type ProfileRow = {
 	updated_at: string;
 };
 
+type BrandIdentityRow = {
+	slug: string;
+	display: string;
+	website: string | null;
+	wikidata: string | null;
+};
+
+type BrandAliasRow = {
+	id: number;
+	brand_slug: string;
+	normalized_name: string;
+	alias_display: string | null;
+	match_mode: string;
+};
+
 type EnrichmentJobRow = {
 	id: string;
 	brand_slug: string;
@@ -187,11 +202,38 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const runIds = reviewDossiers.flatMap((row) =>
 		row.research_run_id ? [row.research_run_id] : []
 	);
+	const reviewBrandSlugs = reviewDossiers.map((row) => row.brand_slug);
 
 	let runs: ResearchRunRow[] = [];
 	let claims: ClaimRow[] = [];
 	let claimSources: ClaimSourceRow[] = [];
 	let sources: SourceRow[] = [];
+	let brandIdentities: BrandIdentityRow[] = [];
+	let brandAliases: BrandAliasRow[] = [];
+
+	if (reviewBrandSlugs.length) {
+		const [identitiesResult, aliasesResult] = await Promise.all([
+			locals.supabase
+				.from('brands')
+				.select('slug,display,website,wikidata')
+				.in('slug', reviewBrandSlugs),
+			locals.supabase
+				.from('brand_aliases')
+				.select('id,brand_slug,normalized_name,alias_display,match_mode')
+				.in('brand_slug', reviewBrandSlugs)
+				.order('normalized_name')
+		]);
+		if (identitiesResult.error) {
+			console.error('[enrichment] Brand identities', identitiesResult.error);
+			sourceErrors.push('Brand identities');
+		}
+		if (aliasesResult.error) {
+			console.error('[enrichment] Brand aliases', aliasesResult.error);
+			sourceErrors.push('Brand aliases');
+		}
+		brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
+		brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
+	}
 
 	if (runIds.length) {
 		const [runsResult, claimsResult, claimSourcesResult, sourcesResult] = await Promise.all([
@@ -242,6 +284,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const runById = new Map(runs.map((row) => [row.id, row]));
 	const sourceById = new Map(sources.map((row) => [row.id, row]));
 	const profileByBrand = new Map(profiles.map((row) => [row.brand_slug, row]));
+	const identityByBrand = new Map(brandIdentities.map((row) => [row.slug, row]));
 	const openFlags = flags.filter((row) => row.status !== 'resolved' && row.status !== 'closed');
 	const jobStatusCounts = countByStatus(jobs);
 	const activeJobs = jobs.filter((row) => row.status === 'queued' || row.status === 'running');
@@ -266,6 +309,15 @@ export const load: PageServerLoad = async ({ locals }) => {
 				}));
 			return {
 				...dossier,
+				identity: {
+					...(identityByBrand.get(dossier.brand_slug) ?? {
+						slug: dossier.brand_slug,
+						display: dossier.brand_slug,
+						website: null,
+						wikidata: null
+					}),
+					aliases: brandAliases.filter((alias) => alias.brand_slug === dossier.brand_slug)
+				},
 				run,
 				claims: dossierClaims,
 				integrityFlags: openFlags.filter((flag) => flag.brand_slug === dossier.brand_slug),
@@ -347,7 +399,6 @@ function integerField(form: FormData, key: string, min: number, max: number) {
 }
 
 const scalarProfileFactKeys = [
-	'official_website',
 	'official_ordering_url',
 	'founded_year',
 	'founded_place',
@@ -439,6 +490,34 @@ function parseProfileFacts(form: FormData) {
 	}
 
 	return { facts } as const;
+}
+
+function parseIdentity(form: FormData) {
+	const display = String(form.get('identity_display') ?? '').trim();
+	const website = String(form.get('identity_website') ?? '').trim();
+	const wikidata = String(form.get('identity_wikidata') ?? '').trim();
+	let aliases: string[];
+	try {
+		const parsed = JSON.parse(String(form.get('identity_aliases') ?? '[]'));
+		if (!Array.isArray(parsed) || parsed.some((alias) => typeof alias !== 'string')) {
+			throw new Error('Aliases must be a list of names.');
+		}
+		aliases = parsed;
+	} catch (error) {
+		return {
+			error: error instanceof Error ? error.message : 'Aliases could not be read.'
+		} as const;
+	}
+	if (!display) return { error: 'A canonical display name is required.' } as const;
+
+	return {
+		identity: {
+			display,
+			aliases,
+			website: website || null,
+			wikidata: wikidata || null
+		}
+	} as const;
 }
 
 async function invokeEnrichment(
@@ -620,16 +699,20 @@ export const actions: Actions = {
 		const slug = String(form.get('brand_slug') ?? '').trim();
 		const summary = String(form.get('summary') ?? '').trim();
 		const parsed = parseProfileFacts(form);
-		if (!slug || !summary || 'error' in parsed) {
+		const parsedIdentity = parseIdentity(form);
+		if (!slug || !summary || 'error' in parsed || 'error' in parsedIdentity) {
 			return fail(400, {
 				ok: false,
 				action: 'reviewAndPublish',
 				message:
 					'error' in parsed
 						? parsed.error
-						: 'A brand slug and non-empty customer summary are required.'
+						: 'error' in parsedIdentity
+							? parsedIdentity.error
+							: 'A brand slug and non-empty customer summary are required.'
 			});
 		}
+		parsed.facts.official_website = parsedIdentity.identity.website;
 		return invokeEnrichment(
 			locals,
 			{
@@ -637,6 +720,7 @@ export const actions: Actions = {
 				brand_slug: slug,
 				summary,
 				profile_facts: parsed.facts,
+				identity: parsedIdentity.identity,
 				note: String(form.get('note') ?? '').trim()
 			},
 			'reviewAndPublish',

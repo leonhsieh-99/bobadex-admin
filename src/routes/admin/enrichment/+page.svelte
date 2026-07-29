@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { applyAction, enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
+	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
 	import { toasts } from '$lib/toast';
 	import { onMount } from 'svelte';
 	import type { SubmitFunction } from './$types';
@@ -23,6 +24,18 @@
 		customer_summary: string | null;
 		creative_brief: Record<string, unknown> | string | null;
 		profile_facts: Record<string, unknown>;
+		identity: {
+			slug: string;
+			display: string;
+			website: string | null;
+			wikidata: string | null;
+			aliases: Array<{
+				id: number;
+				normalized_name: string;
+				alias_display: string | null;
+				match_mode: string;
+			}>;
+		};
 		last_researched_at: string | null;
 		updated_at: string;
 		review_reasons: string[] | null;
@@ -131,6 +144,15 @@
 	let rerunError = '';
 	let publishing: Dossier | null = null;
 	let publishError = '';
+	let publishIdentityDisplay = '';
+	let publishIdentityWebsite = '';
+	let publishIdentityWikidata = '';
+	let publishIdentityAliases: Array<{
+		id: number | null;
+		display: string;
+		normalized_name: string;
+		match_mode: string;
+	}> = [];
 	let pendingAction = '';
 	let activeTab: 'review' | 'queue' | 'published' = 'review';
 	let refreshing = false;
@@ -256,11 +278,24 @@
 	function openPublish(dossier: Dossier) {
 		publishing = dossier;
 		publishError = '';
+		publishIdentityDisplay = dossier.identity.display;
+		publishIdentityWebsite = dossier.identity.website ?? '';
+		publishIdentityWikidata = dossier.identity.wikidata ?? '';
+		publishIdentityAliases = dossier.identity.aliases.map((alias) => ({
+			id: alias.id,
+			display: alias.alias_display ?? alias.normalized_name,
+			normalized_name: alias.normalized_name,
+			match_mode: alias.match_mode
+		}));
 	}
 
 	function closePublish() {
 		publishing = null;
 		publishError = '';
+		publishIdentityDisplay = '';
+		publishIdentityWebsite = '';
+		publishIdentityWikidata = '';
+		publishIdentityAliases = [];
 	}
 
 	function factText(dossier: Dossier, key: string) {
@@ -1208,33 +1243,35 @@
 				/>
 
 				<div class="min-h-0 flex-1 space-y-7 overflow-y-auto px-5 py-5">
+					<BrandIdentityFields
+						slug={publishing.brand_slug}
+						bind:display={publishIdentityDisplay}
+						bind:website={publishIdentityWebsite}
+						bind:wikidata={publishIdentityWikidata}
+						bind:aliases={publishIdentityAliases}
+					/>
+
 					<section>
-						<h4 class="text-sm font-semibold text-zinc-950">Customer summary</h4>
-						<label class="mt-3 block">
-							<span class="sr-only">Customer summary</span>
-							<textarea
-								name="summary"
-								rows="5"
-								required
-								value={publishing.customer_summary ?? publishing.run?.customer_summary_draft ?? ''}
-								class="block w-full rounded border-zinc-300 text-sm leading-6 focus:border-zinc-500 focus:ring-zinc-500"
-							></textarea>
-						</label>
+						<div class="border-t border-zinc-200 pt-6">
+							<h4 class="text-sm font-semibold text-zinc-950">Customer summary</h4>
+							<label class="mt-3 block">
+								<span class="sr-only">Customer summary</span>
+								<textarea
+									name="summary"
+									rows="5"
+									required
+									value={publishing.customer_summary ??
+										publishing.run?.customer_summary_draft ??
+										''}
+									class="block w-full rounded border-zinc-300 text-sm leading-6 focus:border-zinc-500 focus:ring-zinc-500"
+								></textarea>
+							</label>
+						</div>
 					</section>
 
 					<section class="border-t border-zinc-200 pt-6">
 						<h4 class="text-sm font-semibold text-zinc-950">Official presence</h4>
-						<div class="mt-3 grid gap-4 md:grid-cols-2">
-							<label>
-								<span class="text-xs font-medium text-zinc-600">Official website</span>
-								<input
-									name="fact_official_website"
-									type="url"
-									value={factText(publishing, 'official_website')}
-									placeholder="https://…"
-									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
-								/>
-							</label>
+						<div class="mt-3 grid gap-4">
 							<label>
 								<span class="text-xs font-medium text-zinc-600">Official ordering URL</span>
 								<input
