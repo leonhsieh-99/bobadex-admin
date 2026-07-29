@@ -520,6 +520,24 @@ function parseIdentity(form: FormData) {
 	} as const;
 }
 
+async function functionErrorMessage(error: unknown) {
+	if (error && typeof error === 'object' && 'context' in error) {
+		const context = (error as { context?: unknown }).context;
+		if (context instanceof Response) {
+			try {
+				const payload = (await context.clone().json()) as { error?: unknown; message?: unknown };
+				if (typeof payload.error === 'string' && payload.error) return payload.error;
+				if (typeof payload.message === 'string' && payload.message) return payload.message;
+			} catch {
+				// Fall back to the client error below when the response is not JSON.
+			}
+		}
+	}
+	return error instanceof Error && error.message
+		? error.message
+		: 'The enrichment worker rejected the request.';
+}
+
 async function invokeEnrichment(
 	locals: App.Locals,
 	body: JsonRecord,
@@ -534,8 +552,7 @@ async function invokeEnrichment(
 	const responseError =
 		data && typeof data === 'object' && 'error' in data && data.error ? String(data.error) : null;
 	if (error || responseError) {
-		const message =
-			responseError ?? error?.message ?? 'The enrichment worker rejected the request.';
+		const message = responseError ?? (await functionErrorMessage(error));
 		console.error(`[enrichment] ${action}`, error ?? data);
 		return fail(400, { ok: false, action, message });
 	}

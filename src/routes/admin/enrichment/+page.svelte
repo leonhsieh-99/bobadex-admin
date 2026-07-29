@@ -1245,6 +1245,7 @@
 				<div class="min-h-0 flex-1 space-y-7 overflow-y-auto px-5 py-5">
 					<BrandIdentityFields
 						slug={publishing.brand_slug}
+						originalDisplay={publishing.identity.display}
 						bind:display={publishIdentityDisplay}
 						bind:website={publishIdentityWebsite}
 						bind:wikidata={publishIdentityWikidata}

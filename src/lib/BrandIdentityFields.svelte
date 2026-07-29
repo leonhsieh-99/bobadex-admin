@@ -7,12 +7,14 @@
 	};
 
 	export let slug: string;
+	export let originalDisplay: string;
 	export let display: string;
 	export let website: string;
 	export let wikidata: string;
 	export let aliases: IdentityAlias[];
 
 	let aliasDraft = '';
+	let removedPreviousCanonical = false;
 
 	function normalize(value: string) {
 		return value
@@ -22,13 +24,38 @@
 			.replace(/[^a-z0-9]/g, '');
 	}
 
+	function desiredAliases() {
+		const original = originalDisplay.trim();
+		const originalNormalized = normalize(original);
+		const canonicalNormalized = normalize(display);
+		if (
+			!removedPreviousCanonical &&
+			originalNormalized &&
+			originalNormalized !== canonicalNormalized &&
+			!aliases.some((alias) => normalize(alias.display) === originalNormalized)
+		) {
+			return [
+				...aliases,
+				{
+					id: null,
+					display: original,
+					normalized_name: originalNormalized,
+					match_mode: 'exact'
+				}
+			];
+		}
+		return aliases;
+	}
+
 	function regularAliases() {
 		const canonical = normalize(display);
-		return aliases.filter((alias) => normalize(alias.display) !== canonical);
+		return desiredAliases().filter((alias) => normalize(alias.display) !== canonical);
 	}
 
 	function aliasCount() {
-		const normalizedAliases = aliases.map((alias) => normalize(alias.display)).filter(Boolean);
+		const normalizedAliases = desiredAliases()
+			.map((alias) => normalize(alias.display))
+			.filter(Boolean);
 		const canonical = normalize(display);
 		if (canonical) normalizedAliases.push(canonical);
 		return normalizedAliases.filter((value, index) => normalizedAliases.indexOf(value) === index)
@@ -38,10 +65,15 @@
 	function addAlias() {
 		const value = aliasDraft.trim();
 		const normalized = normalize(value);
+		if (normalized === normalize(originalDisplay)) {
+			removedPreviousCanonical = false;
+			aliasDraft = '';
+			return;
+		}
 		if (
 			!normalized ||
 			normalized === normalize(display) ||
-			aliases.some((alias) => normalize(alias.display) === normalized)
+			desiredAliases().some((alias) => normalize(alias.display) === normalized)
 		)
 			return;
 		aliases = [
@@ -52,6 +84,9 @@
 	}
 
 	function removeAlias(alias: IdentityAlias) {
+		if (normalize(alias.display) === normalize(originalDisplay)) {
+			removedPreviousCanonical = true;
+		}
 		aliases = aliases.filter((item) => item !== alias);
 	}
 </script>
@@ -59,7 +94,7 @@
 <input
 	type="hidden"
 	name="identity_aliases"
-	value={JSON.stringify(aliases.map((alias) => alias.display))}
+	value={JSON.stringify(desiredAliases().map((alias) => alias.display))}
 />
 
 <section>

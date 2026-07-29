@@ -766,6 +766,7 @@
 				<div class="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 py-5">
 					<BrandIdentityFields
 						slug={editBrand.slug}
+						originalDisplay={editBrand.display}
 						bind:display={identityDisplay}
 						bind:website={identityWebsite}
 						bind:wikidata={identityWikidata}
