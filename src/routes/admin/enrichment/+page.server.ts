@@ -99,6 +99,7 @@ type BrandIdentityRow = {
 	status: 'active' | 'retired' | 'merged';
 	is_demo: boolean;
 	match_policy: string;
+	enrichment_mode: 'auto' | 'manual_only' | 'disabled';
 };
 
 type BrandAliasRow = {
@@ -239,7 +240,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const [identitiesResult, aliasesResult] = await Promise.all([
 			locals.supabase
 				.from('brands')
-				.select('slug,display,website,wikidata,status,is_demo,match_policy')
+				.select('slug,display,website,wikidata,status,is_demo,match_policy,enrichment_mode')
 				.in('slug', editorBrandSlugs),
 			locals.supabase
 				.from('brand_aliases')
@@ -774,6 +775,25 @@ export const actions: Actions = {
 				message: 'A brand slug is required.'
 			});
 		}
+		const { data: brand, error: brandError } = await locals.supabase
+			.from('brands')
+			.select('enrichment_mode')
+			.eq('slug', slug)
+			.maybeSingle();
+		if (brandError) {
+			return fail(400, {
+				ok: false,
+				action: 'rerunBrand',
+				message: brandError.message
+			});
+		}
+		if (!brand || brand.enrichment_mode === 'disabled') {
+			return fail(409, {
+				ok: false,
+				action: 'rerunBrand',
+				message: `Enrichment is disabled for ${slug}. Change its mode in the brand catalog first.`
+			});
+		}
 		return invokeEnrichment(
 			locals,
 			{ brand_slugs: [slug], trigger_kind: 'audit', limit: 1 },
@@ -853,7 +873,6 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
 		const reason = String(form.get('reason') ?? '').trim();
-		const enqueueFresh = String(form.get('enqueue_fresh') ?? '') === 'true';
 		if (!locals.isAdmin || !locals.userId) {
 			return fail(403, {
 				ok: false,
@@ -872,7 +891,7 @@ export const actions: Actions = {
 		const { data, error } = await supabaseAdmin().rpc('admin_reset_brand_enrichment', {
 			p_brand_slug: slug,
 			p_reason: reason,
-			p_enqueue_fresh: enqueueFresh,
+			p_enqueue_fresh: false,
 			p_reviewer_id: locals.userId
 		});
 		if (error) {
@@ -884,31 +903,11 @@ export const actions: Actions = {
 			});
 		}
 
-		let workerClaimed = false;
-		if (enqueueFresh) {
-			const workerResult = await locals.supabase.functions.invoke('process-brand-enrichment-jobs', {
-				body: { limit: 1 }
-			});
-			workerClaimed =
-				!workerResult.error &&
-				workerResult.data &&
-				typeof workerResult.data === 'object' &&
-				'claimed' in workerResult.data &&
-				Number(workerResult.data.claimed) > 0;
-			if (workerResult.error) {
-				console.warn('[enrichment] reset worker kick deferred to cron', workerResult.error);
-			}
-		}
-
 		return {
 			ok: true,
 			action: 'resetEnrichment',
 			data,
-			message: enqueueFresh
-				? workerClaimed
-					? `Reset ${slug}; the fresh enrichment worker has started.`
-					: `Reset ${slug}; a fresh audit is queued for cron.`
-				: `Reset and unpublished ${slug}.`
+			message: `Reset and disabled enrichment for ${slug}.`
 		};
 	},
 	mergeBrand: async ({ request, locals }) => {

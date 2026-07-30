@@ -27,6 +27,7 @@
 		display: string;
 		website: string | null;
 		wikidata: string | null;
+		enrichment_mode: 'auto' | 'manual_only' | 'disabled';
 		aliases: Array<{
 			id: number;
 			normalized_name: string;
@@ -174,7 +175,6 @@
 	let rerunError = '';
 	let resetting: PublishableDossier | null = null;
 	let resetReason = '';
-	let resetEnqueueFresh = true;
 	let resetError = '';
 	let closing: PublishableDossier | null = null;
 	let closeNote = '';
@@ -320,14 +320,12 @@
 	function openReset(dossier: PublishableDossier) {
 		resetting = dossier;
 		resetReason = '';
-		resetEnqueueFresh = true;
 		resetError = '';
 	}
 
 	function closeReset() {
 		resetting = null;
 		resetReason = '';
-		resetEnqueueFresh = true;
 		resetError = '';
 	}
 
@@ -1161,9 +1159,15 @@
 									<button
 										type="button"
 										onclick={() => openRerun(dossier)}
-										disabled={Boolean(dossier.activeJob) || Boolean(pendingAction)}
+										disabled={dossier.identity.enrichment_mode === 'disabled' ||
+											Boolean(dossier.activeJob) ||
+											Boolean(pendingAction)}
 										class="rounded border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-										>{dossier.activeJob ? 'Rerun queued' : 'Rerun enrichment'}</button
+										>{dossier.identity.enrichment_mode === 'disabled'
+											? 'Enrichment disabled'
+											: dossier.activeJob
+												? 'Rerun queued'
+												: 'Rerun enrichment'}</button
 									>
 									<button
 										type="button"
@@ -1325,9 +1329,15 @@
 												<button
 													type="button"
 													onclick={() => openRerun(editor)}
-													disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
+													disabled={editor.identity.enrichment_mode === 'disabled' ||
+														Boolean(editor.activeJob) ||
+														Boolean(pendingAction)}
 													class="rounded border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-													>{editor.activeJob ? 'Rerun queued' : 'Rerun enrichment'}</button
+													>{editor.identity.enrichment_mode === 'disabled'
+														? 'Enrichment disabled'
+														: editor.activeJob
+															? 'Rerun queued'
+															: 'Rerun enrichment'}</button
 												>
 												<button
 													type="button"
@@ -1844,7 +1854,7 @@
 				</h3>
 				<p class="mt-1 text-sm text-zinc-600">
 					This immediately unpublishes the profile, archives the current dossier, supersedes its
-					claims, and cancels active enrichment work.
+					claims, cancels active enrichment work, and disables enrichment for the brand.
 				</p>
 			</div>
 			<form
@@ -1868,21 +1878,6 @@
 						class="mt-1 block w-full rounded border-zinc-300 text-sm"
 					></textarea>
 				</label>
-				<label class="flex items-start gap-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-3">
-					<input
-						type="checkbox"
-						name="enqueue_fresh"
-						value="true"
-						bind:checked={resetEnqueueFresh}
-						class="mt-0.5 rounded border-zinc-300 text-blue-700"
-					/>
-					<span>
-						<span class="block text-sm font-medium text-zinc-900">Queue a fresh audit</span>
-						<span class="mt-0.5 block text-xs text-zinc-500"
-							>The worker will start now when capacity is available; otherwise cron will drain it.</span
-						>
-					</span>
-				</label>
 				{#if resetError}
 					<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
 						{resetError}
@@ -1899,11 +1894,7 @@
 						class="rounded bg-red-700 px-3 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-50"
 						disabled={!resetReason.trim() || Boolean(pendingAction)}
 					>
-						{pendingAction === 'resetEnrichment'
-							? 'Resetting…'
-							: resetEnqueueFresh
-								? 'Reset and rerun'
-								: 'Confirm reset'}
+						{pendingAction === 'resetEnrichment' ? 'Resetting…' : 'Confirm reset'}
 					</button>
 				</div>
 			</form>

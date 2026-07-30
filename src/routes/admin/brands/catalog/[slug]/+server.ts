@@ -10,7 +10,7 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 		}),
 		locals.supabase
 			.from('brands')
-			.select('status,merged_into_slug,merged_at,match_policy')
+			.select('status,merged_into_slug,merged_at,match_policy,enrichment_mode')
 			.eq('slug', params.slug)
 			.maybeSingle(),
 		locals.supabase
@@ -57,6 +57,7 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 	return json({
 		...(data ?? {}),
 		match_policy: source?.match_policy ?? 'corroboration_required',
+		enrichment_mode: source?.enrichment_mode ?? 'auto',
 		osm_locations: osmLocationsResult.data ?? [],
 		redirect
 	});

@@ -4,6 +4,7 @@ import { mergeBrands } from '$lib/server/brand-merge.server';
 import type { Actions, PageServerLoad } from './$types';
 
 type BrandStatus = 'active' | 'retired' | 'merged';
+type BrandEnrichmentMode = 'auto' | 'manual_only' | 'disabled';
 
 type CatalogRow = {
 	slug: string;
@@ -27,6 +28,7 @@ type CatalogRow = {
 	open_flag_count: number;
 	last_activity_at: string;
 	total_count: number;
+	enrichment_mode: BrandEnrichmentMode;
 };
 
 const pageSize = 50;
@@ -82,7 +84,30 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		console.error('[brand catalog regions]', regionsResult.error);
 	}
 
-	const brands = (catalogResult.data ?? []) as CatalogRow[];
+	const catalogRows = (catalogResult.data ?? []) as Omit<CatalogRow, 'enrichment_mode'>[];
+	const modeResult = catalogRows.length
+		? await locals.supabase
+				.from('brands')
+				.select('slug,enrichment_mode')
+				.in(
+					'slug',
+					catalogRows.map((brand) => brand.slug)
+				)
+		: { data: [], error: null };
+	if (modeResult.error) {
+		console.error('[brand catalog enrichment modes]', modeResult.error);
+		throw new Error(`Failed to load enrichment modes: ${modeResult.error.message}`);
+	}
+	const modeBySlug = new Map(
+		(modeResult.data ?? []).map((brand) => [
+			brand.slug,
+			brand.enrichment_mode as BrandEnrichmentMode
+		])
+	);
+	const brands: CatalogRow[] = catalogRows.map((brand) => ({
+		...brand,
+		enrichment_mode: modeBySlug.get(brand.slug) ?? 'auto'
+	}));
 	const total = Number(brands[0]?.total_count ?? 0);
 
 	return {
@@ -107,6 +132,7 @@ export const actions: Actions = {
 		const website = formValue(form, 'identity_website');
 		const wikidata = formValue(form, 'identity_wikidata');
 		const matchPolicy = formValue(form, 'identity_match_policy');
+		const enrichmentMode = formValue(form, 'identity_enrichment_mode');
 		let aliases: string[];
 		try {
 			const parsed = JSON.parse(formValue(form, 'identity_aliases') || '[]');
@@ -122,22 +148,32 @@ export const actions: Actions = {
 				message: error instanceof Error ? error.message : 'Aliases could not be read.'
 			});
 		}
-		if (!slug || !display || !isBrandMatchPolicy(matchPolicy)) {
+		if (
+			!slug ||
+			!display ||
+			!isBrandMatchPolicy(matchPolicy) ||
+			!['auto', 'manual_only', 'disabled'].includes(enrichmentMode)
+		) {
 			return fail(400, {
 				ok: false,
 				action: 'updateIdentity',
 				brandSlug: slug,
-				message: !display ? 'A display name is required.' : 'Select a valid match policy.'
+				message: !display
+					? 'A display name is required.'
+					: !isBrandMatchPolicy(matchPolicy)
+						? 'Select a valid match policy.'
+						: 'Select a valid enrichment mode.'
 			});
 		}
 
-		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity_v3', {
+		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity_v4', {
 			p_brand_slug: slug,
 			p_display: display,
 			p_aliases: aliases,
 			p_website: website || null,
 			p_wikidata: wikidata || null,
 			p_match_policy: matchPolicy,
+			p_enrichment_mode: enrichmentMode,
 			p_note: formValue(form, 'note') || null
 		});
 		if (error) {

@@ -10,6 +10,7 @@
 	import type { SubmitFunction } from './$types';
 
 	type BrandStatus = 'active' | 'retired' | 'merged';
+	type BrandEnrichmentMode = 'auto' | 'manual_only' | 'disabled';
 	type Brand = {
 		slug: string;
 		display: string;
@@ -32,9 +33,11 @@
 		open_flag_count: number;
 		last_activity_at: string;
 		total_count: number;
+		enrichment_mode: BrandEnrichmentMode;
 	};
 	type Detail = {
 		match_policy: BrandMatchPolicy;
+		enrichment_mode: BrandEnrichmentMode;
 		redirect: {
 			target_slug: string;
 			target_display: string;
@@ -116,6 +119,8 @@
 	let identityNote = '';
 	let identityMatchPolicy: BrandMatchPolicy = 'corroboration_required';
 	let originalIdentityMatchPolicy: BrandMatchPolicy = 'corroboration_required';
+	let identityEnrichmentMode: BrandEnrichmentMode = 'auto';
+	let originalIdentityEnrichmentMode: BrandEnrichmentMode = 'auto';
 	let identityHasAliasDraft = false;
 	let identityAliases: Array<{
 		id: number | null;
@@ -141,7 +146,9 @@
 		identityAliases,
 		originalIdentityAliases,
 		identityMatchPolicy,
-		originalIdentityMatchPolicy
+		originalIdentityMatchPolicy,
+		identityEnrichmentMode,
+		originalIdentityEnrichmentMode
 	);
 
 	function catalogUrl(overrides: Record<string, string | number | boolean | null> = {}) {
@@ -244,6 +251,8 @@
 		identityNote = '';
 		identityMatchPolicy = 'corroboration_required';
 		originalIdentityMatchPolicy = 'corroboration_required';
+		identityEnrichmentMode = 'auto';
+		originalIdentityEnrichmentMode = 'auto';
 		identityHasAliasDraft = false;
 		identityAliases = [];
 		originalIdentityAliases = [];
@@ -268,6 +277,8 @@
 		originalIdentityAliases = identityAliases.map((alias) => alias.display);
 		identityMatchPolicy = detail.match_policy;
 		originalIdentityMatchPolicy = detail.match_policy;
+		identityEnrichmentMode = detail.enrichment_mode;
+		originalIdentityEnrichmentMode = detail.enrichment_mode;
 		modalError = '';
 	}
 
@@ -279,7 +290,9 @@
 		aliases: Array<{ display: string }>,
 		originalAliases: string[],
 		matchPolicy: BrandMatchPolicy,
-		originalMatchPolicy: BrandMatchPolicy
+		originalMatchPolicy: BrandMatchPolicy,
+		enrichmentMode: BrandEnrichmentMode,
+		originalEnrichmentMode: BrandEnrichmentMode
 	) {
 		if (!brand) return false;
 		return (
@@ -287,6 +300,7 @@
 			website.trim() !== (brand.website ?? '') ||
 			wikidata.trim() !== (brand.wikidata ?? '') ||
 			matchPolicy !== originalMatchPolicy ||
+			enrichmentMode !== originalEnrichmentMode ||
 			JSON.stringify(aliases.map((alias) => alias.display)) !== JSON.stringify(originalAliases)
 		);
 	}
@@ -539,7 +553,20 @@
 											: 'bg-zinc-200 text-zinc-700'}">{brand.status}</span
 								>{#if brand.is_demo}<span
 										class="ml-1 rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">demo</span
-									>{/if}</td
+									>{/if}
+								<p
+									class="mt-2 text-[11px] font-medium {brand.enrichment_mode === 'auto'
+										? 'text-emerald-700'
+										: brand.enrichment_mode === 'manual_only'
+											? 'text-amber-700'
+											: 'text-red-700'}"
+								>
+									{brand.enrichment_mode === 'auto'
+										? 'Auto enrichment'
+										: brand.enrichment_mode === 'manual_only'
+											? 'Manual enrichment'
+											: 'Enrichment disabled'}
+								</p></td
 							>
 							<td class="px-3 py-3"
 								><div class="flex flex-wrap gap-1">
@@ -895,6 +922,30 @@
 							recommendation={details[editBrand.slug]?.dossier?.recommended_match_policy ?? null}
 							bind:value={identityMatchPolicy}
 						/>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<label class="block">
+							<span class="text-sm font-medium text-zinc-800">Enrichment mode</span>
+							<select
+								name="identity_enrichment_mode"
+								bind:value={identityEnrichmentMode}
+								class="mt-1 block w-full rounded border-zinc-300 text-sm"
+							>
+								<option value="auto">Automatic</option>
+								<option value="manual_only">Manual only</option>
+								<option value="disabled">Disabled</option>
+							</select>
+						</label>
+						{#if identityEnrichmentMode === 'disabled'}
+							<p class="mt-2 text-xs font-medium text-red-700">
+								Queued work will be cancelled and this brand cannot be enriched.
+							</p>
+						{:else if identityEnrichmentMode === 'manual_only'}
+							<p class="mt-2 text-xs font-medium text-amber-700">
+								Only a targeted admin rerun can enqueue this brand.
+							</p>
+						{/if}
 					</section>
 
 					<section class="border-t border-zinc-200 pt-6">
