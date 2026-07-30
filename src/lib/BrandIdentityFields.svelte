@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { normalizeBrandAlias } from '$lib/brand-alias';
+
 	type IdentityAlias = {
 		id: number | null;
 		display: string;
@@ -30,18 +32,10 @@
 		removedPreviousCanonical
 	);
 	$: regularAliasRows = desiredAliasRows.filter(
-		(alias) => normalize(alias.display) !== normalize(display)
+		(alias) => normalizeBrandAlias(alias.display) !== normalizeBrandAlias(display)
 	);
 	$: serializedAliases = JSON.stringify(desiredAliasRows.map((alias) => alias.display));
 	$: totalAliasCount = countAliases(desiredAliasRows, display);
-
-	function normalize(value: string) {
-		return value
-			.normalize('NFD')
-			.replace(/[\u0300-\u036f]/g, '')
-			.toLowerCase()
-			.replace(/[^a-z0-9]/g, '');
-	}
 
 	function buildDesiredAliases(
 		currentAliases: IdentityAlias[],
@@ -50,13 +44,13 @@
 		previousCanonicalRemoved: boolean
 	) {
 		const original = previousDisplay.trim();
-		const originalNormalized = normalize(original);
-		const canonicalNormalized = normalize(canonicalDisplay);
+		const originalNormalized = normalizeBrandAlias(original);
+		const canonicalNormalized = normalizeBrandAlias(canonicalDisplay);
 		if (
 			!previousCanonicalRemoved &&
 			originalNormalized &&
 			originalNormalized !== canonicalNormalized &&
-			!currentAliases.some((alias) => normalize(alias.display) === originalNormalized)
+			!currentAliases.some((alias) => normalizeBrandAlias(alias.display) === originalNormalized)
 		) {
 			return [
 				...currentAliases,
@@ -73,9 +67,9 @@
 
 	function countAliases(currentAliases: IdentityAlias[], canonicalDisplay: string) {
 		const normalizedAliases = currentAliases
-			.map((alias) => normalize(alias.display))
+			.map((alias) => normalizeBrandAlias(alias.display))
 			.filter(Boolean);
-		const canonical = normalize(canonicalDisplay);
+		const canonical = normalizeBrandAlias(canonicalDisplay);
 		if (canonical) normalizedAliases.push(canonical);
 		return normalizedAliases.filter((value, index) => normalizedAliases.indexOf(value) === index)
 			.length;
@@ -83,12 +77,12 @@
 
 	function addAlias() {
 		const value = aliasDraft.trim();
-		const normalized = normalize(value);
+		const normalized = normalizeBrandAlias(value);
 		if (!normalized) {
 			aliasFeedback = { kind: 'error', message: 'Enter a valid alias.' };
 			return;
 		}
-		if (normalized === normalize(originalDisplay)) {
+		if (normalized === normalizeBrandAlias(originalDisplay)) {
 			removedPreviousCanonical = false;
 			aliasDraft = '';
 			aliasFeedback = {
@@ -97,14 +91,14 @@
 			};
 			return;
 		}
-		if (normalized === normalize(display)) {
+		if (normalized === normalizeBrandAlias(display)) {
 			aliasFeedback = {
 				kind: 'info',
 				message: `${value} normalizes to the canonical name and does not need a separate alias.`
 			};
 			return;
 		}
-		if (desiredAliasRows.some((alias) => normalize(alias.display) === normalized)) {
+		if (desiredAliasRows.some((alias) => normalizeBrandAlias(alias.display) === normalized)) {
 			aliasFeedback = { kind: 'info', message: `${value} is already in the alias list.` };
 			return;
 		}
@@ -120,7 +114,7 @@
 	}
 
 	function removeAlias(alias: IdentityAlias) {
-		if (normalize(alias.display) === normalize(originalDisplay)) {
+		if (normalizeBrandAlias(alias.display) === normalizeBrandAlias(originalDisplay)) {
 			removedPreviousCanonical = true;
 		}
 		aliases = aliases.filter((item) => item !== alias);
