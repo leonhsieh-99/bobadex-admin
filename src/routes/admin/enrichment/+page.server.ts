@@ -1,5 +1,6 @@
 import { fail } from '@sveltejs/kit';
 import { mergeBrands } from '$lib/server/brand-merge.server';
+import { isBrandMatchPolicy } from '$lib/brand-match-policy';
 import type { Actions, PageServerLoad } from './$types';
 
 type JsonRecord = Record<string, unknown>;
@@ -17,6 +18,9 @@ type DossierRow = {
 	quality_metrics: JsonRecord | null;
 	review_reasons: string[] | null;
 	approval_method: string | null;
+	recommended_match_policy: string;
+	match_policy_route: string | null;
+	match_policy_evidence: JsonRecord;
 };
 
 type ResearchRunRow = {
@@ -93,6 +97,7 @@ type BrandIdentityRow = {
 	wikidata: string | null;
 	status: 'active' | 'retired' | 'merged';
 	is_demo: boolean;
+	match_policy: string;
 };
 
 type BrandAliasRow = {
@@ -162,7 +167,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				.schema('mod')
 				.from('brand_dossiers')
 				.select(
-					'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method'
+					'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method,recommended_match_policy,match_policy_route,match_policy_evidence'
 				)
 				.order('updated_at', { ascending: false }),
 			locals.supabase
@@ -218,7 +223,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const [identitiesResult, aliasesResult] = await Promise.all([
 			locals.supabase
 				.from('brands')
-				.select('slug,display,website,wikidata,status,is_demo')
+				.select('slug,display,website,wikidata,status,is_demo,match_policy')
 				.in('slug', reviewBrandSlugs),
 			locals.supabase
 				.from('brand_aliases')
@@ -503,6 +508,7 @@ function parseIdentity(form: FormData) {
 	const display = String(form.get('identity_display') ?? '').trim();
 	const website = String(form.get('identity_website') ?? '').trim();
 	const wikidata = String(form.get('identity_wikidata') ?? '').trim();
+	const matchPolicy = String(form.get('identity_match_policy') ?? '').trim();
 	let aliases: string[];
 	try {
 		const parsed = JSON.parse(String(form.get('identity_aliases') ?? '[]'));
@@ -516,13 +522,17 @@ function parseIdentity(form: FormData) {
 		} as const;
 	}
 	if (!display) return { error: 'A canonical display name is required.' } as const;
+	if (!isBrandMatchPolicy(matchPolicy)) {
+		return { error: 'Select a valid match policy.' } as const;
+	}
 
 	return {
 		identity: {
 			display,
 			aliases,
 			website: website || null,
-			wikidata: wikidata || null
+			wikidata: wikidata || null,
+			match_policy: matchPolicy
 		}
 	} as const;
 }

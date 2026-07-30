@@ -1,4 +1,5 @@
 import { fail } from '@sveltejs/kit';
+import { isBrandMatchPolicy } from '$lib/brand-match-policy';
 import { mergeBrands } from '$lib/server/brand-merge.server';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -105,6 +106,7 @@ export const actions: Actions = {
 		const display = formValue(form, 'identity_display');
 		const website = formValue(form, 'identity_website');
 		const wikidata = formValue(form, 'identity_wikidata');
+		const matchPolicy = formValue(form, 'identity_match_policy');
 		let aliases: string[];
 		try {
 			const parsed = JSON.parse(formValue(form, 'identity_aliases') || '[]');
@@ -120,21 +122,22 @@ export const actions: Actions = {
 				message: error instanceof Error ? error.message : 'Aliases could not be read.'
 			});
 		}
-		if (!slug || !display) {
+		if (!slug || !display || !isBrandMatchPolicy(matchPolicy)) {
 			return fail(400, {
 				ok: false,
 				action: 'updateIdentity',
 				brandSlug: slug,
-				message: 'A display name is required.'
+				message: !display ? 'A display name is required.' : 'Select a valid match policy.'
 			});
 		}
 
-		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity_v2', {
+		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity_v3', {
 			p_brand_slug: slug,
 			p_display: display,
 			p_aliases: aliases,
 			p_website: website || null,
 			p_wikidata: wikidata || null,
+			p_match_policy: matchPolicy,
 			p_note: formValue(form, 'note') || null
 		});
 		if (error) {

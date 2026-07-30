@@ -2,7 +2,9 @@
 	import { applyAction, enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
+	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
+	import type { BrandMatchPolicy } from '$lib/brand-match-policy';
 	import { toasts } from '$lib/toast';
 	import type { SubmitFunction } from './$types';
 
@@ -31,6 +33,7 @@
 		total_count: number;
 	};
 	type Detail = {
+		match_policy: BrandMatchPolicy;
 		redirect: {
 			target_slug: string;
 			target_display: string;
@@ -56,6 +59,7 @@
 			review_reasons: string[];
 			last_researched_at: string | null;
 			refresh_after: string | null;
+			recommended_match_policy: BrandMatchPolicy;
 		} | null;
 		integrity_flags: Array<{
 			id: string;
@@ -100,6 +104,8 @@
 	let identityWebsite = '';
 	let identityWikidata = '';
 	let identityNote = '';
+	let identityMatchPolicy: BrandMatchPolicy = 'corroboration_required';
+	let originalIdentityMatchPolicy: BrandMatchPolicy = 'corroboration_required';
 	let identityHasAliasDraft = false;
 	let identityAliases: Array<{
 		id: number | null;
@@ -123,7 +129,9 @@
 		identityWebsite,
 		identityWikidata,
 		identityAliases,
-		originalIdentityAliases
+		originalIdentityAliases,
+		identityMatchPolicy,
+		originalIdentityMatchPolicy
 	);
 
 	function catalogUrl(overrides: Record<string, string | number | boolean | null> = {}) {
@@ -224,6 +232,8 @@
 		identityWebsite = '';
 		identityWikidata = '';
 		identityNote = '';
+		identityMatchPolicy = 'corroboration_required';
+		originalIdentityMatchPolicy = 'corroboration_required';
 		identityHasAliasDraft = false;
 		identityAliases = [];
 		originalIdentityAliases = [];
@@ -233,19 +243,21 @@
 		modalError = '';
 	}
 
-	function openIdentityEditor(brand: Brand, aliases: IdentityAlias[]) {
+	function openIdentityEditor(brand: Brand, detail: Detail) {
 		editBrand = brand;
 		identityDisplay = brand.display;
 		identityWebsite = brand.website ?? '';
 		identityWikidata = brand.wikidata ?? '';
 		identityNote = '';
-		identityAliases = aliases.map((alias) => ({
+		identityAliases = detail.aliases.map((alias) => ({
 			id: alias.id,
 			display: alias.alias_display ?? alias.normalized_name,
 			normalized_name: alias.normalized_name,
 			match_mode: alias.match_mode
 		}));
 		originalIdentityAliases = identityAliases.map((alias) => alias.display);
+		identityMatchPolicy = detail.match_policy;
+		originalIdentityMatchPolicy = detail.match_policy;
 		modalError = '';
 	}
 
@@ -255,13 +267,16 @@
 		website: string,
 		wikidata: string,
 		aliases: Array<{ display: string }>,
-		originalAliases: string[]
+		originalAliases: string[],
+		matchPolicy: BrandMatchPolicy,
+		originalMatchPolicy: BrandMatchPolicy
 	) {
 		if (!brand) return false;
 		return (
 			display.trim() !== brand.display ||
 			website.trim() !== (brand.website ?? '') ||
 			wikidata.trim() !== (brand.wikidata ?? '') ||
+			matchPolicy !== originalMatchPolicy ||
 			JSON.stringify(aliases.map((alias) => alias.display)) !== JSON.stringify(originalAliases)
 		);
 	}
@@ -715,7 +730,7 @@
 											>
 											<button
 												type="button"
-												onclick={() => openIdentityEditor(brand, detail.aliases)}
+												onclick={() => openIdentityEditor(brand, detail)}
 												disabled={brand.status === 'merged'}
 												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
 												>Edit identity</button
@@ -829,6 +844,13 @@
 						bind:aliases={identityAliases}
 						bind:hasAliasDraft={identityHasAliasDraft}
 					/>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<BrandMatchPolicyField
+							recommendation={details[editBrand.slug]?.dossier?.recommended_match_policy ?? null}
+							bind:value={identityMatchPolicy}
+						/>
+					</section>
 
 					<section class="border-t border-zinc-200 pt-6">
 						<label class="block">

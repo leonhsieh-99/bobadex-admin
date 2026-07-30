@@ -2,7 +2,9 @@
 	import { applyAction, enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
+	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
+	import { isBrandMatchPolicy, type BrandMatchPolicy } from '$lib/brand-match-policy';
 	import { toasts } from '$lib/toast';
 	import { onMount } from 'svelte';
 	import type { SubmitFunction } from './$types';
@@ -25,6 +27,9 @@
 		customer_summary: string | null;
 		creative_brief: Record<string, unknown> | string | null;
 		profile_facts: Record<string, unknown>;
+		recommended_match_policy: BrandMatchPolicy;
+		match_policy_route: string | null;
+		match_policy_evidence: Record<string, unknown>;
 		identity: {
 			slug: string;
 			display: string;
@@ -36,6 +41,7 @@
 				alias_display: string | null;
 				match_mode: string;
 			}>;
+			match_policy: BrandMatchPolicy;
 		};
 		last_researched_at: string | null;
 		updated_at: string;
@@ -150,6 +156,7 @@
 	let publishIdentityDisplay = '';
 	let publishIdentityWebsite = '';
 	let publishIdentityWikidata = '';
+	let publishMatchPolicy: BrandMatchPolicy = 'corroboration_required';
 	let publishHasAliasDraft = false;
 	let publishIdentityAliases: Array<{
 		id: number | null;
@@ -297,6 +304,9 @@
 		publishIdentityDisplay = dossier.identity.display;
 		publishIdentityWebsite = dossier.identity.website ?? '';
 		publishIdentityWikidata = dossier.identity.wikidata ?? '';
+		publishMatchPolicy = isBrandMatchPolicy(dossier.recommended_match_policy)
+			? dossier.recommended_match_policy
+			: dossier.identity.match_policy;
 		publishHasAliasDraft = false;
 		publishIdentityAliases = dossier.identity.aliases.map((alias) => ({
 			id: alias.id,
@@ -312,6 +322,7 @@
 		publishIdentityDisplay = '';
 		publishIdentityWebsite = '';
 		publishIdentityWikidata = '';
+		publishMatchPolicy = 'corroboration_required';
 		publishIdentityAliases = [];
 	}
 
@@ -1285,6 +1296,14 @@
 						bind:aliases={publishIdentityAliases}
 						bind:hasAliasDraft={publishHasAliasDraft}
 					/>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<BrandMatchPolicyField
+							label="Recommended match policy"
+							recommendation={publishing.recommended_match_policy}
+							bind:value={publishMatchPolicy}
+						/>
+					</section>
 
 					<section>
 						<div class="border-t border-zinc-200 pt-6">

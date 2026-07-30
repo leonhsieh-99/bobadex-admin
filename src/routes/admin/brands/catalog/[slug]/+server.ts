@@ -10,7 +10,7 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 		}),
 		locals.supabase
 			.from('brands')
-			.select('status,merged_into_slug,merged_at')
+			.select('status,merged_into_slug,merged_at,match_policy')
 			.eq('slug', params.slug)
 			.maybeSingle()
 	]);
@@ -43,5 +43,9 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 		};
 	}
 
-	return json({ ...(data ?? {}), redirect });
+	return json({
+		...(data ?? {}),
+		match_policy: source?.match_policy ?? 'corroboration_required',
+		redirect
+	});
 };
