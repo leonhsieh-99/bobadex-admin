@@ -1148,7 +1148,7 @@
 						</div>
 
 						<footer class="border-t border-zinc-200 bg-zinc-50 px-5 py-4">
-							<div class="flex flex-col gap-3">
+							<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
 								<div class="flex flex-wrap items-center gap-2">
 									<button
 										type="button"
@@ -1172,34 +1172,31 @@
 										class="rounded border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
 										>Reset enrichment</button
 									>
-									<details>
-										<summary
-											title="More brand actions"
-											aria-label="More brand actions"
-											class="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded border border-zinc-300 bg-white text-xl leading-none text-zinc-600 hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"
-											>⋮</summary
-										>
-										<div class="mt-2 flex flex-wrap gap-2 border-t border-zinc-200 pt-3">
-											<button
-												type="button"
-												onclick={() => openMerge(dossier)}
-												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
-												>Merge into another brand</button
-											>
-											<button
-												type="button"
-												onclick={() => openMarkClosed(dossier)}
-												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
-												>Mark closed</button
-											>
-											<button
-												type="button"
-												onclick={() => openDelete(dossier)}
-												class="rounded border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
-												>Delete false positive</button
-											>
-										</div>
-									</details>
+								</div>
+								<div
+									class="flex flex-wrap items-center gap-2 border-t border-zinc-200 pt-3 lg:justify-end lg:border-t-0 lg:border-l lg:pt-0 lg:pl-3"
+								>
+									<button
+										type="button"
+										onclick={() => openMerge(dossier)}
+										disabled={Boolean(pendingAction)}
+										class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+										>Merge brand</button
+									>
+									<button
+										type="button"
+										onclick={() => openMarkClosed(dossier)}
+										disabled={Boolean(pendingAction)}
+										class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+										>Mark closed</button
+									>
+									<button
+										type="button"
+										onclick={() => openDelete(dossier)}
+										disabled={Boolean(pendingAction)}
+										class="rounded border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+										>Delete false positive</button
+									>
 								</div>
 							</div>
 						</footer>
@@ -1316,50 +1313,46 @@
 								</td>
 								<td class="px-4 py-3">
 									{#if editor}
-										<div class="flex min-w-max items-center gap-2">
-											<button
-												type="button"
-												onclick={() => openPublish(editor)}
-												disabled={Boolean(pendingAction)}
-												class="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
-												>Edit and republish</button
-											>
-											<button
-												type="button"
-												onclick={() => openRerun(editor)}
-												disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
-												class="rounded border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-												>{editor.activeJob ? 'Rerun queued' : 'Rerun enrichment'}</button
-											>
-											<button
-												type="button"
-												onclick={() => openReset(editor)}
-												disabled={Boolean(pendingAction)}
-												class="rounded border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-												>Reset enrichment</button
-											>
-											<details>
-												<summary
-													title="More brand actions"
-													aria-label="More brand actions"
-													class="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded border border-zinc-300 bg-white text-lg leading-none text-zinc-600 hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"
-													>⋮</summary
+										<div class="grid min-w-[22rem] gap-2">
+											<div class="flex flex-wrap items-center gap-2">
+												<button
+													type="button"
+													onclick={() => openPublish(editor)}
+													disabled={Boolean(pendingAction)}
+													class="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+													>Edit and republish</button
 												>
-												<div class="mt-2 flex gap-2 border-t border-zinc-200 pt-2">
-													<button
-														type="button"
-														onclick={() => openMerge(editor)}
-														class="rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
-														>Merge into another brand</button
-													>
-													<button
-														type="button"
-														onclick={() => openMarkClosed(editor)}
-														class="rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
-														>Mark closed</button
-													>
-												</div>
-											</details>
+												<button
+													type="button"
+													onclick={() => openRerun(editor)}
+													disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
+													class="rounded border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+													>{editor.activeJob ? 'Rerun queued' : 'Rerun enrichment'}</button
+												>
+												<button
+													type="button"
+													onclick={() => openReset(editor)}
+													disabled={Boolean(pendingAction)}
+													class="rounded border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+													>Reset enrichment</button
+												>
+											</div>
+											<div class="flex flex-wrap items-center gap-2 border-t border-zinc-200 pt-2">
+												<button
+													type="button"
+													onclick={() => openMerge(editor)}
+													disabled={Boolean(pendingAction)}
+													class="rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+													>Merge brand</button
+												>
+												<button
+													type="button"
+													onclick={() => openMarkClosed(editor)}
+													disabled={Boolean(pendingAction)}
+													class="rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+													>Mark closed</button
+												>
+											</div>
 										</div>
 									{:else}
 										<span class="text-xs text-zinc-400">Dossier unavailable</span>
