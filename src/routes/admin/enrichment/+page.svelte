@@ -22,28 +22,41 @@
 		} | null;
 	};
 
-	type Dossier = {
+	type BrandIdentity = {
+		slug: string;
+		display: string;
+		website: string | null;
+		wikidata: string | null;
+		aliases: Array<{
+			id: number;
+			normalized_name: string;
+			alias_display: string | null;
+			match_mode: string;
+		}>;
+		match_policy: BrandMatchPolicy;
+	};
+
+	type PublishableDossier = {
 		brand_slug: string;
 		approval_status: string;
 		customer_summary: string | null;
-		creative_brief: Record<string, unknown> | string | null;
 		profile_facts: Record<string, unknown>;
 		recommended_match_policy: BrandMatchPolicy;
+		identity: BrandIdentity;
+		activeJob: EnrichmentJob | null;
+		run?: {
+			id: string;
+			model: string | null;
+			customer_summary_draft: string | null;
+			creative_brief_draft: Record<string, unknown> | string | null;
+			error_text: string | null;
+		} | null;
+	};
+
+	type Dossier = PublishableDossier & {
+		creative_brief: Record<string, unknown> | string | null;
 		match_policy_route: string | null;
 		match_policy_evidence: Record<string, unknown>;
-		identity: {
-			slug: string;
-			display: string;
-			website: string | null;
-			wikidata: string | null;
-			aliases: Array<{
-				id: number;
-				normalized_name: string;
-				alias_display: string | null;
-				match_mode: string;
-			}>;
-			match_policy: BrandMatchPolicy;
-		};
 		last_researched_at: string | null;
 		updated_at: string;
 		review_reasons: string[] | null;
@@ -84,7 +97,6 @@
 			publication_method: string | null;
 			published_at: string | null;
 		} | null;
-		activeJob: EnrichmentJob | null;
 		osmLocations: Array<{
 			id: string;
 			name: string | null;
@@ -114,6 +126,7 @@
 		publication_method: string | null;
 		published_at: string | null;
 		updated_at: string;
+		editor: PublishableDossier | null;
 	};
 
 	type CronState = {
@@ -157,10 +170,17 @@
 	let deleteConfirmation = '';
 	let deleteNote = '';
 	let deleteError = '';
-	let rerunning: Dossier | null = null;
+	let rerunning: PublishableDossier | null = null;
 	let rerunError = '';
-	let publishing: Dossier | null = null;
-	let merging: Dossier | null = null;
+	let resetting: PublishableDossier | null = null;
+	let resetReason = '';
+	let resetEnqueueFresh = true;
+	let resetError = '';
+	let closing: PublishableDossier | null = null;
+	let closeNote = '';
+	let closeError = '';
+	let publishing: PublishableDossier | null = null;
+	let merging: PublishableDossier | null = null;
 	let mergeError = '';
 	let publishError = '';
 	let publishIdentityDisplay = '';
@@ -256,6 +276,8 @@
 					toasts.success(message);
 					if (action === 'deleteFalsePositive') closeDelete();
 					if (action === 'rerunBrand') closeRerun();
+					if (action === 'resetEnrichment') closeReset();
+					if (action === 'markClosed') closeMarkClosed();
 					if (action === 'reviewAndPublish') closePublish();
 					if (action === 'mergeBrand') closeMerge();
 					await invalidateAll();
@@ -266,6 +288,8 @@
 				}
 				if (action === 'deleteFalsePositive') deleteError = message;
 				if (action === 'rerunBrand') rerunError = message;
+				if (action === 'resetEnrichment') resetError = message;
+				if (action === 'markClosed') closeError = message;
 				if (action === 'reviewAndPublish') publishError = message;
 				if (action === 'mergeBrand') mergeError = message;
 				toasts.error(message);
@@ -288,12 +312,38 @@
 		deleteError = '';
 	}
 
-	function openRerun(dossier: Dossier) {
+	function openRerun(dossier: PublishableDossier) {
 		rerunning = dossier;
 		rerunError = '';
 	}
 
-	function openMerge(dossier: Dossier) {
+	function openReset(dossier: PublishableDossier) {
+		resetting = dossier;
+		resetReason = '';
+		resetEnqueueFresh = true;
+		resetError = '';
+	}
+
+	function closeReset() {
+		resetting = null;
+		resetReason = '';
+		resetEnqueueFresh = true;
+		resetError = '';
+	}
+
+	function openMarkClosed(dossier: PublishableDossier) {
+		closing = dossier;
+		closeNote = '';
+		closeError = '';
+	}
+
+	function closeMarkClosed() {
+		closing = null;
+		closeNote = '';
+		closeError = '';
+	}
+
+	function openMerge(dossier: PublishableDossier) {
 		merging = dossier;
 		mergeError = '';
 	}
@@ -308,7 +358,7 @@
 		rerunError = '';
 	}
 
-	function openPublish(dossier: Dossier) {
+	function openPublish(dossier: PublishableDossier) {
 		publishing = dossier;
 		publishError = '';
 		publishIdentityDisplay = dossier.identity.display;
@@ -336,19 +386,19 @@
 		publishIdentityAliases = [];
 	}
 
-	function factText(dossier: Dossier, key: string) {
+	function factText(dossier: PublishableDossier, key: string) {
 		const value = dossier.profile_facts?.[key];
 		return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 	}
 
-	function factList(dossier: Dossier, key: string) {
+	function factList(dossier: PublishableDossier, key: string) {
 		const value = dossier.profile_facts?.[key];
 		return Array.isArray(value)
 			? value.filter((item): item is string => typeof item === 'string').join('\n')
 			: '';
 	}
 
-	function factSocials(dossier: Dossier) {
+	function factSocials(dossier: PublishableDossier) {
 		const value = dossier.profile_facts?.official_socials;
 		if (!Array.isArray(value)) return '';
 		return value
@@ -458,6 +508,9 @@
 		if (event.key !== 'Escape') return;
 		if (deleting) closeDelete();
 		if (rerunning) closeRerun();
+		if (resetting) closeReset();
+		if (closing) closeMarkClosed();
+		if (merging) closeMerge();
 		if (publishing) closePublish();
 	}}
 />
@@ -1095,58 +1148,58 @@
 						</div>
 
 						<footer class="border-t border-zinc-200 bg-zinc-50 px-5 py-4">
-							<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-								<div class="grid gap-2 sm:grid-cols-2">
+							<div class="flex flex-col gap-3">
+								<div class="flex flex-wrap items-center gap-2">
 									<button
 										type="button"
 										onclick={() => openPublish(dossier)}
 										class="rounded bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
 										disabled={Boolean(pendingAction)}
 									>
-										Approve
+										Review and publish
 									</button>
-									<form
-										method="post"
-										action="?/markClosed"
-										use:enhance={actionEnhance('markClosed')}
-										class="flex gap-2"
-									>
-										<input type="hidden" name="brand_slug" value={dossier.brand_slug} /><input
-											name="note"
-											required
-											placeholder="Closure evidence"
-											class="min-w-0 flex-1 rounded border-zinc-300 text-sm"
-										/><button
-											class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-white disabled:opacity-50"
-											disabled={Boolean(pendingAction)}>Mark closed</button
-										>
-									</form>
-								</div>
-								<div class="flex flex-wrap justify-end gap-2">
-									<a
-										href={`/admin/brands/catalog?q=${encodeURIComponent(dossier.brand_slug)}`}
-										class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
-										>Edit identity</a
-									>
-									<button
-										type="button"
-										onclick={() => openMerge(dossier)}
-										class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
-										>Merge with existing brand</button
-									>
 									<button
 										type="button"
 										onclick={() => openRerun(dossier)}
-										disabled={Boolean(dossier.activeJob)}
+										disabled={Boolean(dossier.activeJob) || Boolean(pendingAction)}
 										class="rounded border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
 										>{dossier.activeJob ? 'Rerun queued' : 'Rerun enrichment'}</button
 									>
 									<button
 										type="button"
-										onclick={() => openDelete(dossier)}
-										class="rounded border border-red-200 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
-										>Delete false positive</button
+										onclick={() => openReset(dossier)}
+										disabled={Boolean(pendingAction)}
+										class="rounded border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+										>Reset enrichment</button
 									>
+									<details>
+										<summary
+											title="More brand actions"
+											aria-label="More brand actions"
+											class="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded border border-zinc-300 bg-white text-xl leading-none text-zinc-600 hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"
+											>⋮</summary
+										>
+										<div class="mt-2 flex flex-wrap gap-2 border-t border-zinc-200 pt-3">
+											<button
+												type="button"
+												onclick={() => openMerge(dossier)}
+												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
+												>Merge into another brand</button
+											>
+											<button
+												type="button"
+												onclick={() => openMarkClosed(dossier)}
+												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
+												>Mark closed</button
+											>
+											<button
+												type="button"
+												onclick={() => openDelete(dossier)}
+												class="rounded border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+												>Delete false positive</button
+											>
+										</div>
+									</details>
 								</div>
 							</div>
 						</footer>
@@ -1241,10 +1294,12 @@
 							<th class="px-4 py-3 font-medium">Confidence</th>
 							<th class="px-4 py-3 font-medium">Method</th>
 							<th class="px-4 py-3 font-medium">Published</th>
+							<th class="px-4 py-3 font-medium">Actions</th>
 						</tr>
 					</thead>
 					<tbody class="divide-y divide-zinc-100">
 						{#each data.publishedProfiles as profile}
+							{@const editor = profile.editor}
 							<tr>
 								<td class="max-w-xs px-4 py-3 font-medium break-all text-zinc-900">
 									{profile.brand_slug}
@@ -1259,11 +1314,62 @@
 								<td class="px-4 py-3 text-zinc-500">
 									{relativeDate(profile.published_at ?? profile.updated_at)}
 								</td>
+								<td class="px-4 py-3">
+									{#if editor}
+										<div class="flex min-w-max items-center gap-2">
+											<button
+												type="button"
+												onclick={() => openPublish(editor)}
+												disabled={Boolean(pendingAction)}
+												class="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+												>Edit and republish</button
+											>
+											<button
+												type="button"
+												onclick={() => openRerun(editor)}
+												disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
+												class="rounded border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+												>{editor.activeJob ? 'Rerun queued' : 'Rerun enrichment'}</button
+											>
+											<button
+												type="button"
+												onclick={() => openReset(editor)}
+												disabled={Boolean(pendingAction)}
+												class="rounded border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+												>Reset enrichment</button
+											>
+											<details>
+												<summary
+													title="More brand actions"
+													aria-label="More brand actions"
+													class="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded border border-zinc-300 bg-white text-lg leading-none text-zinc-600 hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"
+													>⋮</summary
+												>
+												<div class="mt-2 flex gap-2 border-t border-zinc-200 pt-2">
+													<button
+														type="button"
+														onclick={() => openMerge(editor)}
+														class="rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
+														>Merge into another brand</button
+													>
+													<button
+														type="button"
+														onclick={() => openMarkClosed(editor)}
+														class="rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
+														>Mark closed</button
+													>
+												</div>
+											</details>
+										</div>
+									{:else}
+										<span class="text-xs text-zinc-400">Dossier unavailable</span>
+									{/if}
+								</td>
 							</tr>
 						{/each}
 						{#if data.publishedProfiles.length === 0}
 							<tr>
-								<td colspan="5" class="px-4 py-10 text-center text-zinc-500">
+								<td colspan="6" class="px-4 py-10 text-center text-zinc-500">
 									No profiles have been published.
 								</td>
 							</tr>
@@ -1299,9 +1405,15 @@
 		>
 			<div class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
 				<div>
-					<h3 id="publish-title" class="text-lg font-semibold text-zinc-950">Review and publish</h3>
+					<h3 id="publish-title" class="text-lg font-semibold text-zinc-950">
+						{publishing.approval_status === 'approved'
+							? 'Edit and republish'
+							: 'Review and publish'}
+					</h3>
 					<p class="mt-1 text-sm text-zinc-600">
-						{publishing.brand_slug} · Current enrichment values are prefilled.
+						{publishing.brand_slug} · {publishing.approval_status === 'approved'
+							? 'Current published values are prefilled.'
+							: 'Current enrichment values are prefilled.'}
 					</p>
 				</div>
 				<button
@@ -1321,6 +1433,11 @@
 				class="flex min-h-0 flex-1 flex-col"
 			>
 				<input type="hidden" name="brand_slug" value={publishing.brand_slug} />
+				<input
+					type="hidden"
+					name="publish_mode"
+					value={publishing.approval_status === 'approved' ? 'republish' : 'review'}
+				/>
 				<input
 					type="hidden"
 					name="original_profile_facts"
@@ -1645,7 +1762,11 @@
 							class="rounded bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
 							disabled={publishHasAliasDraft || Boolean(pendingAction)}
 						>
-							{pendingAction === 'reviewAndPublish' ? 'Publishing…' : 'Confirm and publish'}
+							{pendingAction === 'reviewAndPublish'
+								? 'Publishing…'
+								: publishing.approval_status === 'approved'
+									? 'Confirm and republish'
+									: 'Confirm and publish'}
 						</button>
 					</div>
 				</div>
@@ -1705,6 +1826,151 @@
 						disabled={Boolean(pendingAction)}
 					>
 						{pendingAction === 'rerunBrand' ? 'Queuing…' : 'Confirm rerun'}
+					</button>
+				</div>
+			</form>
+		</div>
+	</div>
+{/if}
+
+{#if resetting}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closeReset()}
+	>
+		<div
+			class="w-full max-w-lg rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="reset-title"
+		>
+			<div class="border-b border-zinc-200 px-5 py-4">
+				<h3 id="reset-title" class="text-lg font-semibold text-zinc-950">
+					Reset brand enrichment?
+				</h3>
+				<p class="mt-1 text-sm text-zinc-600">
+					This immediately unpublishes the profile, archives the current dossier, supersedes its
+					claims, and cancels active enrichment work.
+				</p>
+			</div>
+			<form
+				method="post"
+				action="?/resetEnrichment"
+				use:enhance={actionEnhance('resetEnrichment')}
+				class="space-y-4 px-5 py-5"
+			>
+				<input type="hidden" name="brand_slug" value={resetting.brand_slug} />
+				<p class="font-mono text-sm font-medium break-all text-zinc-900">
+					{resetting.brand_slug}
+				</p>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Reset reason</span>
+					<textarea
+						name="reason"
+						rows="3"
+						required
+						bind:value={resetReason}
+						placeholder="What is wrong with the current enrichment?"
+						class="mt-1 block w-full rounded border-zinc-300 text-sm"
+					></textarea>
+				</label>
+				<label class="flex items-start gap-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-3">
+					<input
+						type="checkbox"
+						name="enqueue_fresh"
+						value="true"
+						bind:checked={resetEnqueueFresh}
+						class="mt-0.5 rounded border-zinc-300 text-blue-700"
+					/>
+					<span>
+						<span class="block text-sm font-medium text-zinc-900">Queue a fresh audit</span>
+						<span class="mt-0.5 block text-xs text-zinc-500"
+							>The worker will start now when capacity is available; otherwise cron will drain it.</span
+						>
+					</span>
+				</label>
+				{#if resetError}
+					<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+						{resetError}
+					</div>
+				{/if}
+				<div class="flex justify-end gap-2">
+					<button
+						type="button"
+						onclick={closeReset}
+						class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+						>Cancel</button
+					>
+					<button
+						class="rounded bg-red-700 px-3 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-50"
+						disabled={!resetReason.trim() || Boolean(pendingAction)}
+					>
+						{pendingAction === 'resetEnrichment'
+							? 'Resetting…'
+							: resetEnqueueFresh
+								? 'Reset and rerun'
+								: 'Confirm reset'}
+					</button>
+				</div>
+			</form>
+		</div>
+	</div>
+{/if}
+
+{#if closing}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closeMarkClosed()}
+	>
+		<div
+			class="w-full max-w-lg rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="close-brand-title"
+		>
+			<div class="border-b border-zinc-200 px-5 py-4">
+				<h3 id="close-brand-title" class="text-lg font-semibold text-zinc-950">
+					Mark brand closed?
+				</h3>
+				<p class="mt-1 font-mono text-sm break-all text-zinc-600">{closing.brand_slug}</p>
+			</div>
+			<form
+				method="post"
+				action="?/markClosed"
+				use:enhance={actionEnhance('markClosed')}
+				class="space-y-4 px-5 py-5"
+			>
+				<input type="hidden" name="brand_slug" value={closing.brand_slug} />
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Closure evidence</span>
+					<textarea
+						name="note"
+						rows="3"
+						required
+						bind:value={closeNote}
+						placeholder="How was the closure verified?"
+						class="mt-1 block w-full rounded border-zinc-300 text-sm"
+					></textarea>
+				</label>
+				{#if closeError}
+					<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+						{closeError}
+					</div>
+				{/if}
+				<div class="flex justify-end gap-2">
+					<button
+						type="button"
+						onclick={closeMarkClosed}
+						class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+						>Cancel</button
+					>
+					<button
+						class="rounded bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+						disabled={!closeNote.trim() || Boolean(pendingAction)}
+					>
+						{pendingAction === 'markClosed' ? 'Saving…' : 'Confirm closed'}
 					</button>
 				</div>
 			</form>

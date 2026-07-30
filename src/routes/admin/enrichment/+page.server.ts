@@ -1,6 +1,7 @@
 import { fail } from '@sveltejs/kit';
 import { mergeBrands } from '$lib/server/brand-merge.server';
 import { isBrandMatchPolicy } from '$lib/brand-match-policy';
+import { supabaseAdmin } from '$lib/supabase.server';
 import type { Actions, PageServerLoad } from './$types';
 
 type JsonRecord = Record<string, unknown>;
@@ -222,6 +223,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		row.research_run_id ? [row.research_run_id] : []
 	);
 	const reviewBrandSlugs = reviewDossiers.map((row) => row.brand_slug);
+	const editorBrandSlugs = [
+		...new Set([...reviewBrandSlugs, ...profiles.map((profile) => profile.brand_slug)])
+	];
 
 	let runs: ResearchRunRow[] = [];
 	let claims: ClaimRow[] = [];
@@ -231,24 +235,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 	let brandAliases: BrandAliasRow[] = [];
 	let osmLocations: OsmLocationRow[] = [];
 
-	if (reviewBrandSlugs.length) {
-		const [identitiesResult, aliasesResult, osmLocationsResult] = await Promise.all([
+	if (editorBrandSlugs.length) {
+		const [identitiesResult, aliasesResult] = await Promise.all([
 			locals.supabase
 				.from('brands')
 				.select('slug,display,website,wikidata,status,is_demo,match_policy')
-				.in('slug', reviewBrandSlugs),
+				.in('slug', editorBrandSlugs),
 			locals.supabase
 				.from('brand_aliases')
 				.select('id,brand_slug,normalized_name,alias_display,match_mode')
-				.in('brand_slug', reviewBrandSlugs)
-				.order('normalized_name'),
-			locals.supabase
-				.schema('ingest')
-				.from('osm_candidate_pipeline_states')
-				.select('id,name,source,source_key,lat,lon,region_key,matched_brand_slug')
-				.in('matched_brand_slug', reviewBrandSlugs)
-				.order('created_at', { ascending: false })
-				.limit(5000)
+				.in('brand_slug', editorBrandSlugs)
+				.order('normalized_name')
 		]);
 		if (identitiesResult.error) {
 			console.error('[enrichment] Brand identities', identitiesResult.error);
@@ -258,12 +255,22 @@ export const load: PageServerLoad = async ({ locals }) => {
 			console.error('[enrichment] Brand aliases', aliasesResult.error);
 			sourceErrors.push('Brand aliases');
 		}
+		brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
+		brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
+	}
+
+	if (reviewBrandSlugs.length) {
+		const osmLocationsResult = await locals.supabase
+			.schema('ingest')
+			.from('osm_candidate_pipeline_states')
+			.select('id,name,source,source_key,lat,lon,region_key,matched_brand_slug')
+			.in('matched_brand_slug', reviewBrandSlugs)
+			.order('created_at', { ascending: false })
+			.limit(5000);
 		if (osmLocationsResult.error) {
 			console.error('[enrichment] OSM locations', osmLocationsResult.error);
 			sourceErrors.push('OSM locations');
 		}
-		brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
-		brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
 		osmLocations = (osmLocationsResult.data ?? []) as OsmLocationRow[];
 	}
 
@@ -316,6 +323,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const runById = new Map(runs.map((row) => [row.id, row]));
 	const sourceById = new Map(sources.map((row) => [row.id, row]));
 	const profileByBrand = new Map(profiles.map((row) => [row.brand_slug, row]));
+	const dossierByBrand = new Map(dossiers.map((row) => [row.brand_slug, row]));
 	const identityByBrand = new Map(brandIdentities.map((row) => [row.slug, row]));
 	const openFlags = flags.filter((row) => row.status !== 'resolved' && row.status !== 'closed');
 	const jobStatusCounts = countByStatus(jobs);
@@ -383,6 +391,26 @@ export const load: PageServerLoad = async ({ locals }) => {
 			}
 			return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
 		});
+	const publishedProfiles = profiles
+		.map((profile) => {
+			const dossier = dossierByBrand.get(profile.brand_slug);
+			const identity = identityByBrand.get(profile.brand_slug);
+			return {
+				...profile,
+				editor:
+					dossier && identity && identity.status !== 'merged'
+						? {
+								...dossier,
+								identity: {
+									...identity,
+									aliases: brandAliases.filter((alias) => alias.brand_slug === profile.brand_slug)
+								},
+								activeJob: latestActiveJobByBrand.get(profile.brand_slug) ?? null
+							}
+						: null
+			};
+		})
+		.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
 	return {
 		metrics: {
@@ -398,9 +426,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		},
 		dossiers: enrichedDossiers,
 		activeJobs,
-		publishedProfiles: profiles.sort(
-			(a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-		),
+		publishedProfiles,
 		recentJobs: jobs.slice(0, 20),
 		sourceErrors: [...new Set(sourceErrors)],
 		cron: {
@@ -758,6 +784,7 @@ export const actions: Actions = {
 	reviewAndPublish: async ({ request, locals }) => {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
+		const publishMode = String(form.get('publish_mode') ?? 'review');
 		const summary = String(form.get('summary') ?? '').trim();
 		const parsed = parseProfileFacts(form);
 		const parsedIdentity = parseIdentity(form);
@@ -774,6 +801,40 @@ export const actions: Actions = {
 			});
 		}
 		parsed.facts.official_website = parsedIdentity.identity.website;
+		if (publishMode === 'republish') {
+			if (!locals.isAdmin || !locals.userId) {
+				return fail(403, {
+					ok: false,
+					action: 'reviewAndPublish',
+					message: 'Admin access required.'
+				});
+			}
+			const { data, error } = await supabaseAdmin().rpc(
+				'admin_edit_and_republish_brand_enrichment',
+				{
+					p_brand_slug: slug,
+					p_summary: summary,
+					p_profile_facts: parsed.facts,
+					p_identity: parsedIdentity.identity,
+					p_note: String(form.get('note') ?? '').trim() || null,
+					p_reviewer_id: locals.userId
+				}
+			);
+			if (error) {
+				console.error('[enrichment] editAndRepublish', error);
+				return fail(400, {
+					ok: false,
+					action: 'reviewAndPublish',
+					message: error.message || 'The profile could not be republished.'
+				});
+			}
+			return {
+				ok: true,
+				action: 'reviewAndPublish',
+				data,
+				message: `Updated and republished ${slug}.`
+			};
+		}
 		return invokeEnrichment(
 			locals,
 			{
@@ -787,6 +848,68 @@ export const actions: Actions = {
 			'reviewAndPublish',
 			`Published ${slug}.`
 		);
+	},
+	resetEnrichment: async ({ request, locals }) => {
+		const form = await request.formData();
+		const slug = String(form.get('brand_slug') ?? '').trim();
+		const reason = String(form.get('reason') ?? '').trim();
+		const enqueueFresh = String(form.get('enqueue_fresh') ?? '') === 'true';
+		if (!locals.isAdmin || !locals.userId) {
+			return fail(403, {
+				ok: false,
+				action: 'resetEnrichment',
+				message: 'Admin access required.'
+			});
+		}
+		if (!slug || !reason) {
+			return fail(400, {
+				ok: false,
+				action: 'resetEnrichment',
+				message: 'A brand slug and reset reason are required.'
+			});
+		}
+
+		const { data, error } = await supabaseAdmin().rpc('admin_reset_brand_enrichment', {
+			p_brand_slug: slug,
+			p_reason: reason,
+			p_enqueue_fresh: enqueueFresh,
+			p_reviewer_id: locals.userId
+		});
+		if (error) {
+			console.error('[enrichment] resetEnrichment', error);
+			return fail(400, {
+				ok: false,
+				action: 'resetEnrichment',
+				message: error.message || 'The enrichment could not be reset.'
+			});
+		}
+
+		let workerClaimed = false;
+		if (enqueueFresh) {
+			const workerResult = await locals.supabase.functions.invoke('process-brand-enrichment-jobs', {
+				body: { limit: 1 }
+			});
+			workerClaimed =
+				!workerResult.error &&
+				workerResult.data &&
+				typeof workerResult.data === 'object' &&
+				'claimed' in workerResult.data &&
+				Number(workerResult.data.claimed) > 0;
+			if (workerResult.error) {
+				console.warn('[enrichment] reset worker kick deferred to cron', workerResult.error);
+			}
+		}
+
+		return {
+			ok: true,
+			action: 'resetEnrichment',
+			data,
+			message: enqueueFresh
+				? workerClaimed
+					? `Reset ${slug}; the fresh enrichment worker has started.`
+					: `Reset ${slug}; a fresh audit is queued for cron.`
+				: `Reset and unpublished ${slug}.`
+		};
 	},
 	mergeBrand: async ({ request, locals }) => {
 		const form = await request.formData();
