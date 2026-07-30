@@ -5,6 +5,7 @@
 	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
 	import type { BrandMatchPolicy } from '$lib/brand-match-policy';
+	import { coordinatesLabel, googleMapsCoordinatesUrl } from '$lib/maps';
 	import { toasts } from '$lib/toast';
 	import type { SubmitFunction } from './$types';
 
@@ -48,6 +49,15 @@
 			last_seen_at: string;
 		}>;
 		sources: Array<{ id: number; source: string; source_key: string; created_at: string }>;
+		osm_locations: Array<{
+			id: string;
+			name: string | null;
+			source: string | null;
+			source_key: string | null;
+			lat: number | null;
+			lon: number | null;
+			region_key: string | null;
+		}>;
 		profile: {
 			summary: string;
 			summary_confidence: number | null;
@@ -670,6 +680,41 @@
 															>
 																No canonical sources.
 															</p>{/if}
+													</div>
+												</section>
+												<section>
+													<div class="flex items-center justify-between gap-3">
+														<h3 class="text-xs font-semibold text-zinc-500 uppercase">
+															OSM locations
+														</h3>
+														<span class="text-xs text-zinc-500">{detail.osm_locations.length}</span>
+													</div>
+													<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
+														{#each detail.osm_locations as location}
+															<div class="py-2">
+																<p class="truncate text-xs font-medium text-zinc-700">
+																	{location.name ??
+																		`${location.source ?? 'OSM'}:${location.source_key ?? location.id}`}
+																</p>
+																{#if googleMapsCoordinatesUrl(location.lat, location.lon)}
+																	<a
+																		href={googleMapsCoordinatesUrl(location.lat, location.lon) ??
+																			'#'}
+																		target="_blank"
+																		rel="noreferrer"
+																		class="mt-0.5 inline-block font-mono text-xs text-blue-700 hover:underline"
+																		>{coordinatesLabel(location.lat, location.lon)}</a
+																	>
+																{:else}
+																	<p class="mt-0.5 text-xs text-zinc-500">
+																		Coordinates unavailable
+																	</p>
+																{/if}
+															</div>
+														{/each}
+														{#if detail.osm_locations.length === 0}
+															<p class="py-2 text-sm text-zinc-500">No matched OSM locations.</p>
+														{/if}
 													</div>
 												</section>
 											</div>

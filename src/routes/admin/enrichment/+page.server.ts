@@ -108,6 +108,17 @@ type BrandAliasRow = {
 	match_mode: string;
 };
 
+type OsmLocationRow = {
+	id: string;
+	name: string | null;
+	source: string | null;
+	source_key: string | null;
+	lat: number | null;
+	lon: number | null;
+	region_key: string | null;
+	matched_brand_slug: string | null;
+};
+
 type EnrichmentJobRow = {
 	id: string;
 	brand_slug: string;
@@ -218,9 +229,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	let sources: SourceRow[] = [];
 	let brandIdentities: BrandIdentityRow[] = [];
 	let brandAliases: BrandAliasRow[] = [];
+	let osmLocations: OsmLocationRow[] = [];
 
 	if (reviewBrandSlugs.length) {
-		const [identitiesResult, aliasesResult] = await Promise.all([
+		const [identitiesResult, aliasesResult, osmLocationsResult] = await Promise.all([
 			locals.supabase
 				.from('brands')
 				.select('slug,display,website,wikidata,status,is_demo,match_policy')
@@ -229,7 +241,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 				.from('brand_aliases')
 				.select('id,brand_slug,normalized_name,alias_display,match_mode')
 				.in('brand_slug', reviewBrandSlugs)
-				.order('normalized_name')
+				.order('normalized_name'),
+			locals.supabase
+				.schema('ingest')
+				.from('osm_candidate_pipeline_states')
+				.select('id,name,source,source_key,lat,lon,region_key,matched_brand_slug')
+				.in('matched_brand_slug', reviewBrandSlugs)
+				.order('created_at', { ascending: false })
+				.limit(5000)
 		]);
 		if (identitiesResult.error) {
 			console.error('[enrichment] Brand identities', identitiesResult.error);
@@ -239,8 +258,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 			console.error('[enrichment] Brand aliases', aliasesResult.error);
 			sourceErrors.push('Brand aliases');
 		}
+		if (osmLocationsResult.error) {
+			console.error('[enrichment] OSM locations', osmLocationsResult.error);
+			sourceErrors.push('OSM locations');
+		}
 		brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
 		brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
+		osmLocations = (osmLocationsResult.data ?? []) as OsmLocationRow[];
 	}
 
 	if (runIds.length) {
@@ -335,6 +359,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 				integrityFlags: openFlags.filter((flag) => flag.brand_slug === dossier.brand_slug),
 				profile: profileByBrand.get(dossier.brand_slug) ?? null,
 				activeJob: latestActiveJobByBrand.get(dossier.brand_slug) ?? null,
+				osmLocations: osmLocations.filter(
+					(location) => location.matched_brand_slug === dossier.brand_slug
+				),
 				metrics: {
 					overallConfidence:
 						readMetric(dossier.quality_metrics, 'overall_confidence') ??

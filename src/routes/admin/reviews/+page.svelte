@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import ReviewTabs from '$lib/ReviewTabs.svelte';
+	import { coordinatesLabel, googleMapsCoordinatesUrl } from '$lib/maps';
 	import { toasts } from '$lib/toast';
 	import type { SubmitFunction } from './$types';
 
@@ -212,11 +213,6 @@
 		return 'Location unavailable';
 	}
 
-	function mapLink(candidate: Candidate) {
-		if (typeof candidate.lat !== 'number' || typeof candidate.lon !== 'number') return null;
-		return `https://www.openstreetmap.org/?mlat=${candidate.lat}&mlon=${candidate.lon}#map=18/${candidate.lat}/${candidate.lon}`;
-	}
-
 	function osmWebsite(candidate: Candidate) {
 		const website = candidate.tags?.website ?? candidate.tags?.['contact:website'];
 		return safeUrl(website);
@@ -382,7 +378,7 @@
 						<p class="mt-1 truncate text-xs text-zinc-500">{candidate.normalized_name ?? 'No normalized name'} · {locationLabel(candidate)}</p>
 					</div>
 					<div class="flex shrink-0 items-center gap-3 text-xs">
-						{#if mapLink(candidate)}<a class="font-medium text-blue-700 hover:text-blue-900" href={mapLink(candidate) ?? '#'} target="_blank" rel="noreferrer">OSM map</a>{/if}
+						{#if googleMapsCoordinatesUrl(candidate.lat, candidate.lon)}<a class="font-medium text-blue-700 hover:text-blue-900" href={googleMapsCoordinatesUrl(candidate.lat, candidate.lon) ?? '#'} target="_blank" rel="noreferrer">Google Maps</a>{/if}
 						{#if osmWebsite(candidate)}<a class="font-medium text-blue-700 hover:text-blue-900" href={osmWebsite(candidate) ?? '#'} target="_blank" rel="noreferrer">Website</a>{/if}
 						<span class="text-zinc-500">{new Date(candidate.created_at).toLocaleDateString()}</span>
 					</div>
@@ -393,6 +389,13 @@
 						<h4 class="text-xs font-semibold text-zinc-500 uppercase">Source evidence</h4>
 						<dl class="mt-3 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs">
 							<dt class="text-zinc-500">Location</dt><dd class="text-zinc-900">{locationLabel(candidate)}</dd>
+							<dt class="text-zinc-500">Coordinates</dt><dd>
+								{#if googleMapsCoordinatesUrl(candidate.lat, candidate.lon)}
+									<a class="font-mono text-blue-700 hover:underline" href={googleMapsCoordinatesUrl(candidate.lat, candidate.lon) ?? '#'} target="_blank" rel="noreferrer">{coordinatesLabel(candidate.lat, candidate.lon)}</a>
+								{:else}
+									<span class="text-zinc-500">Unavailable</span>
+								{/if}
+							</dd>
 							<dt class="text-zinc-500">Provider ID</dt><dd class="break-all font-mono text-zinc-900">{candidate.source ?? 'OSM'}:{candidate.source_key ?? candidate.id}</dd>
 							<dt class="text-zinc-500">Match target</dt><dd class="font-medium text-zinc-900">{candidate.matched_brand_slug ?? 'None'}</dd>
 							<dt class="text-zinc-500">Match score</dt><dd class="text-zinc-900">{candidate.match_score !== null ? `${Math.round(candidate.match_score * 100)}%` : 'None'}</dd>

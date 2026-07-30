@@ -5,6 +5,7 @@
 	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
 	import { isBrandMatchPolicy, type BrandMatchPolicy } from '$lib/brand-match-policy';
+	import { coordinatesLabel, googleMapsCoordinatesUrl } from '$lib/maps';
 	import { toasts } from '$lib/toast';
 	import { onMount } from 'svelte';
 	import type { SubmitFunction } from './$types';
@@ -84,6 +85,15 @@
 			published_at: string | null;
 		} | null;
 		activeJob: EnrichmentJob | null;
+		osmLocations: Array<{
+			id: string;
+			name: string | null;
+			source: string | null;
+			source_key: string | null;
+			lat: number | null;
+			lon: number | null;
+			region_key: string | null;
+		}>;
 	};
 
 	type EnrichmentJob = {
@@ -964,6 +974,37 @@
 							</div>
 
 							<aside class="space-y-5">
+								<section>
+									<div class="flex items-center justify-between gap-3">
+										<h5 class="text-xs font-semibold text-zinc-500 uppercase">OSM locations</h5>
+										<span class="text-xs text-zinc-500">{dossier.osmLocations.length}</span>
+									</div>
+									<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
+										{#each dossier.osmLocations as location}
+											<div class="py-2.5">
+												<p class="truncate text-xs font-medium text-zinc-800">
+													{location.name ??
+														`${location.source ?? 'OSM'}:${location.source_key ?? location.id}`}
+												</p>
+												{#if googleMapsCoordinatesUrl(location.lat, location.lon)}
+													<a
+														href={googleMapsCoordinatesUrl(location.lat, location.lon) ?? '#'}
+														target="_blank"
+														rel="noreferrer"
+														class="mt-0.5 inline-block font-mono text-xs text-blue-700 hover:underline"
+														>{coordinatesLabel(location.lat, location.lon)}</a
+													>
+												{:else}
+													<p class="mt-0.5 text-xs text-zinc-500">Coordinates unavailable</p>
+												{/if}
+											</div>
+										{/each}
+										{#if dossier.osmLocations.length === 0}
+											<p class="py-3 text-sm text-zinc-500">No matched OSM locations.</p>
+										{/if}
+									</div>
+								</section>
+
 								<section>
 									<h5 class="text-xs font-semibold text-zinc-500 uppercase">Review reasons</h5>
 									<div class="mt-2 flex flex-wrap gap-2">

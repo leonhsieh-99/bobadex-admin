@@ -4,7 +4,7 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = async ({ locals, params }) => {
 	if (!locals.isAdmin) throw error(403, 'Forbidden');
 
-	const [detailsResult, sourceResult] = await Promise.all([
+	const [detailsResult, sourceResult, osmLocationsResult] = await Promise.all([
 		locals.supabase.rpc('admin_get_brand_catalog_details', {
 			p_brand_slug: params.slug
 		}),
@@ -12,7 +12,14 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 			.from('brands')
 			.select('status,merged_into_slug,merged_at,match_policy')
 			.eq('slug', params.slug)
-			.maybeSingle()
+			.maybeSingle(),
+		locals.supabase
+			.schema('ingest')
+			.from('osm_candidate_pipeline_states')
+			.select('id,name,source,source_key,lat,lon,region_key,matched_brand_slug')
+			.eq('matched_brand_slug', params.slug)
+			.order('created_at', { ascending: false })
+			.limit(5000)
 	]);
 	const { data, error: rpcError } = detailsResult;
 	if (rpcError) {
@@ -22,6 +29,10 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 	if (sourceResult.error) {
 		console.error('[brand catalog redirect]', sourceResult.error);
 		throw error(500, sourceResult.error.message);
+	}
+	if (osmLocationsResult.error) {
+		console.error('[brand catalog OSM locations]', osmLocationsResult.error);
+		throw error(500, osmLocationsResult.error.message);
 	}
 
 	let redirect = null;
@@ -46,6 +57,7 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 	return json({
 		...(data ?? {}),
 		match_policy: source?.match_policy ?? 'corroboration_required',
+		osm_locations: osmLocationsResult.data ?? [],
 		redirect
 	});
 };
