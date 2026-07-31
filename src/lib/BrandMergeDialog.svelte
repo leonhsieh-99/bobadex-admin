@@ -28,7 +28,7 @@
 	let previewLoading = false;
 	let localError = '';
 	let reason = '';
-	let markTargetForReview = true;
+	let markTargetForReview = false;
 
 	$: if (source.slug !== sourceKey) {
 		sourceKey = source.slug;
@@ -38,7 +38,7 @@
 		preview = null;
 		localError = '';
 		reason = '';
-		markTargetForReview = true;
+		markTargetForReview = false;
 	}
 
 	function scheduleSearch() {
@@ -306,8 +306,8 @@
 								class="mt-0.5 rounded border-zinc-300 text-zinc-950"
 							/>
 							<span>
-								Return the target dossier for a quick post-merge review. Its published profile
-								remains live.
+								Require a post-merge enrichment review. Leave this off when the target's
+								existing profile remains valid.
 							</span>
 						</label>
 					</section>
