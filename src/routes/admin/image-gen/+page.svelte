@@ -416,10 +416,32 @@
 				<div
 					class="grid gap-2 border-b border-zinc-100 px-4 py-3 last:border-b-0 md:grid-cols-[minmax(0,1fr)_120px_140px_140px] md:items-center md:gap-4"
 				>
-					<div class="min-w-0">
-						<p class="truncate text-sm font-semibold text-zinc-950">{candidate.brand_display}</p>
-						<code class="block truncate text-xs text-zinc-500">{candidate.id}</code>
-					</div>
+					{#if candidate.preview_url}
+						<a
+							href={candidate.preview_url}
+							target="_blank"
+							rel="noreferrer"
+							class="flex min-w-0 items-center gap-3 rounded-sm hover:bg-zinc-50 focus:outline-2 focus:outline-offset-2 focus:outline-zinc-950"
+							title={`View ${candidate.status} icon for ${candidate.brand_display}`}
+						>
+							<img
+								src={candidate.preview_url}
+								alt=""
+								class="h-12 w-12 shrink-0 border border-zinc-200 bg-zinc-50 object-contain"
+							/>
+							<span class="min-w-0">
+								<span class="block truncate text-sm font-semibold text-zinc-950"
+									>{candidate.brand_display}</span
+								>
+								<code class="block truncate text-xs text-zinc-500">{candidate.id}</code>
+							</span>
+						</a>
+					{:else}
+						<div class="min-w-0">
+							<p class="truncate text-sm font-semibold text-zinc-950">{candidate.brand_display}</p>
+							<code class="block truncate text-xs text-zinc-500">{candidate.id}</code>
+						</div>
+					{/if}
 					<span
 						class={`w-fit rounded px-2 py-0.5 text-xs font-medium ${statusClass(candidate.status)}`}
 						>{candidate.status}</span
