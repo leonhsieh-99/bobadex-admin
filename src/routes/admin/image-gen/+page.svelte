@@ -13,6 +13,7 @@
 		dossier_status: string | null;
 		dossier_updated_at: string | null;
 		latest_candidate_status: string | null;
+		latest_candidate_url: string | null;
 	};
 
 	type Candidate = {
@@ -300,9 +301,26 @@
 							? 'Approved'
 							: (brand.dossier_status ?? 'No dossier')}
 					</span>
-					<span class="text-xs text-zinc-600"
-						>{brand.latest_candidate_status ?? 'Never generated'}</span
-					>
+					<div class="flex items-center gap-2">
+						{#if brand.latest_candidate_url && brand.latest_candidate_status === 'generated'}
+							<a
+								href={brand.latest_candidate_url}
+								target="_blank"
+								rel="noreferrer"
+								class="block h-10 w-10 shrink-0 overflow-hidden border border-zinc-200 bg-zinc-50 hover:border-zinc-400"
+								title={`View generated icon for ${brand.display}`}
+							>
+								<img
+									src={brand.latest_candidate_url}
+									alt={`Generated icon for ${brand.display}`}
+									class="h-full w-full object-contain"
+								/>
+							</a>
+						{/if}
+						<span class="text-xs text-zinc-600"
+							>{brand.latest_candidate_status ?? 'Never generated'}</span
+						>
+					</div>
 					<button
 						type="button"
 						onclick={() => openGenerator(brand, 'auto')}

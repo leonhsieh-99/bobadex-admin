@@ -88,6 +88,12 @@ function publicStorageUrl(bucket: string, path: string | null) {
 	return supabaseAdmin().storage.from(bucket).getPublicUrl(path).data.publicUrl;
 }
 
+function candidatePreviewPath(candidate: CandidateRow) {
+	return (
+		candidate.published_storage_path ?? candidate.processed_storage_path ?? candidate.storage_path
+	);
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!locals.isAdmin) throw error(403, 'Admin access required.');
 
@@ -147,6 +153,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			dossier_status: dossier?.approval_status ?? null,
 			dossier_updated_at: dossier?.updated_at ?? null,
 			latest_candidate_status: latestCandidate?.status ?? null,
+			latest_candidate_url:
+				storage.ready && storage.isPublic && latestCandidate
+					? publicStorageUrl(
+							latestCandidate.storage_bucket || 'shop-media',
+							candidatePreviewPath(latestCandidate)
+						)
+					: null,
 			icon_url:
 				storage.ready && storage.isPublic ? publicStorageUrl('shop-media', brand.icon_path) : null
 		};
@@ -165,10 +178,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		});
 	const decoratedCandidates = candidates.map((candidate) => {
 		const brand = brandBySlug.get(candidate.brand_slug);
-		const previewPath =
-			candidate.published_storage_path ??
-			candidate.processed_storage_path ??
-			candidate.storage_path;
+		const previewPath = candidatePreviewPath(candidate);
 		return {
 			...candidate,
 			brand_display: brand?.display ?? candidate.brand_slug,

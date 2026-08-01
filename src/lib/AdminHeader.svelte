@@ -6,6 +6,8 @@
 	import { toasts } from '$lib/toast';
 
 	export let reviewCount = 0;
+	export let enrichmentCount = 0;
+	export let imageCount = 0;
 
 	const navLink = 'inline-flex items-center gap-2 rounded px-3 py-2 text-sm hover:bg-zinc-100';
 
@@ -35,6 +37,10 @@
 
 	function withBase(path: string) {
 		return base && base !== '/' ? `${base}${path}` : path;
+	}
+
+	function badgeCount(count: number) {
+		return count > 999 ? '999+' : count;
 	}
 
 	function handle(url: URL) {
@@ -78,12 +84,28 @@
 				{#if reviewCount > 0}
 					<span
 						class="inline-flex min-w-5 items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 tabular-nums"
-						>{reviewCount > 999 ? '999+' : reviewCount}</span
+						>{badgeCount(reviewCount)}</span
 					>
 				{/if}
 			</a>
-			<a href={withBase('/admin/enrichment')} class={navLink}>Enrichment</a>
-			<a href={withBase('/admin/image-gen')} class={navLink}>Image Gen</a>
+			<a href={withBase('/admin/enrichment')} class={navLink}>
+				Enrichment
+				{#if enrichmentCount > 0}
+					<span
+						class="inline-flex min-w-5 items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 tabular-nums"
+						>{badgeCount(enrichmentCount)}</span
+					>
+				{/if}
+			</a>
+			<a href={withBase('/admin/image-gen')} class={navLink}>
+				Image Gen
+				{#if imageCount > 0}
+					<span
+						class="inline-flex min-w-5 items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 tabular-nums"
+						>{badgeCount(imageCount)}</span
+					>
+				{/if}
+			</a>
 			<form method="post" action={withBase('/logout')}>
 				<button
 					type="submit"

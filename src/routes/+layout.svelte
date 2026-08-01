@@ -1,13 +1,17 @@
 <script lang="ts">
-  import '../app.css';
-  import { page } from '$app/stores';
-  import Toaster from '$lib/Toaster.svelte';
-  import AdminHeader from '$lib/AdminHeader.svelte';
-  import { navigating } from '$app/stores';
+	import '../app.css';
+	import { page } from '$app/stores';
+	import Toaster from '$lib/Toaster.svelte';
+	import AdminHeader from '$lib/AdminHeader.svelte';
+	import { navigating } from '$app/stores';
 </script>
 
 {#if $page.url.pathname.startsWith('/admin')}
-  <AdminHeader reviewCount={$page.data.manualReviewCount ?? 0} />
+	<AdminHeader
+		reviewCount={$page.data.manualReviewCount ?? 0}
+		enrichmentCount={$page.data.enrichmentReviewCount ?? 0}
+		imageCount={$page.data.imageReviewCount ?? 0}
+	/>
 {/if}
 
 <slot />
