@@ -399,6 +399,11 @@
 			class="shrink-0 border-b-2 border-transparent px-3 py-2 text-sm text-zinc-600 hover:text-zinc-950"
 			>Enrichment</a
 		>
+		<a
+			href="/admin/image-gen"
+			class="shrink-0 border-b-2 border-transparent px-3 py-2 text-sm text-zinc-600 hover:text-zinc-950"
+			>Image Gen</a
+		>
 	</nav>
 
 	<section class="sticky top-[65px] z-30 border-y border-zinc-200 bg-white/95 py-3 backdrop-blur">

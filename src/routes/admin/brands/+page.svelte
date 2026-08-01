@@ -3,9 +3,7 @@
 	import { browser } from '$app/environment';
 	import { page as pageStore } from '$app/stores';
 	import { toasts } from '$lib/toast';
-	import { writable, get } from 'svelte/store';
-	import { createClient } from '@supabase/supabase-js';
-	import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
+	import { writable } from 'svelte/store';
 	import ReviewTabs from '$lib/ReviewTabs.svelte';
 
 	type PendingBrand = {
@@ -26,13 +24,6 @@
 		created_at: string;
 		slug: string | null;
 		duplicates?: number | null;
-	};
-
-	type IconlessBrand = {
-		slug: string;
-		display: string;
-		icon_path: string | null;
-		created_at: string;
 	};
 
 	type CandidateEvidence = {
@@ -70,7 +61,6 @@
 	export let data: {
 		pending: PendingBrand[];
 		pendingDelete: PendingDelete[];
-		iconless: IconlessBrand[];
 		candidates: CandidateEvidence[];
 	};
 
@@ -82,14 +72,6 @@
 			return next;
 		});
 	}
-
-	const batchRunning = writable(false);
-	const progress = writable<Record<string, 'idle' | 'ok' | 'err' | 'run'>>({});
-	const doneCount = writable(0);
-
-	const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY, {
-		auth: { persistSession: true }
-	});
 
 	function groupKey(row: PendingBrand) {
 		return row.normalized_name || row.suggested_name.trim().toLowerCase();
@@ -245,39 +227,6 @@
 		}[action];
 	}
 
-	async function generateOne(slug: string, prompt: string) {
-		progress.update((p) => ({ ...p, [slug]: 'run' }));
-		const { data: res, error } = await supabase.functions.invoke('generate-icon', {
-			body: { slug, prompt }
-		});
-		if (error || !(res as any)?.path) {
-			progress.update((p) => ({ ...p, [slug]: 'err' }));
-			return false;
-		}
-		const originalPath = (res as any).path as string;
-		const bucket = 'shop-media';
-		await supabase.functions.invoke('generate-thumb', {
-			body: { bucket, path: originalPath, sizes: [256, 512], overwrite: true }
-		});
-		progress.update((p) => ({ ...p, [slug]: 'ok' }));
-		doneCount.update((n) => n + 1);
-		return true;
-	}
-
-	async function runBatch(limit = 50) {
-		if (get(batchRunning)) return;
-		batchRunning.set(true);
-		doneCount.set(0);
-		const items = data.iconless.slice(0, limit);
-		progress.set(Object.fromEntries(items.map((b) => [b.slug, 'idle'] as const)));
-		for (const b of items) {
-			if (!get(batchRunning)) break;
-			await generateOne(b.slug, b.display);
-		}
-		batchRunning.set(false);
-		toasts.success('Batch icon generation finished');
-	}
-
 	$: groups = buildGroups(data.pending, data.candidates);
 	$: pendingCount = data.pending.reduce((sum, row) => sum + (row.duplicates ?? 1), 0);
 
@@ -285,15 +234,9 @@
 		const $page = $pageStore;
 		const toast = $page.url.searchParams.get('toast');
 		const msg = $page.url.searchParams.get('msg');
-		const slug = $page.url.searchParams.get('slug');
-		const display = $page.url.searchParams.get('display');
-
 		if (toast) {
 			if (toast === 'verified') {
 				toasts.success('Brand verified');
-				if (slug && display) {
-					generateOne(slug, display);
-				}
 			} else if (toast === 'rejected') {
 				toasts.success('Brand rejected');
 			} else if (toast === 'verify_failed') {
@@ -685,55 +628,6 @@
 										Keep
 									</button>
 								</form>
-							</div>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		</div>
-
-		<div class="rounded-lg border border-gray-200 bg-white p-5">
-			<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-				<h2 class="text-base font-semibold text-gray-950">Brands needing icons</h2>
-				{#if data.iconless.length}
-					<div class="flex items-center gap-3">
-						<span class="text-xs text-gray-600">{$doneCount}/{data.iconless.length} completed</span>
-						<button
-							class="rounded-md bg-gray-950 px-3 py-2 text-xs font-semibold text-white hover:bg-black disabled:opacity-50"
-							on:click={() => runBatch(50)}
-							disabled={$batchRunning}
-						>
-							{$batchRunning ? 'Generating...' : 'Generate batch'}
-						</button>
-					</div>
-				{/if}
-			</div>
-
-			{#if data.iconless.length === 0}
-				<p class="py-8 text-center text-sm text-gray-500">All set. Every brand has an icon.</p>
-			{:else}
-				<ul class="max-h-[30rem] divide-y divide-gray-100 overflow-y-auto">
-					{#each data.iconless as brand}
-						<li class="flex items-center justify-between gap-3 py-3">
-							<div class="min-w-0">
-								<div class="truncate text-sm font-medium text-gray-950">{brand.display}</div>
-								<div class="text-xs text-gray-500">slug: <code>{brand.slug}</code></div>
-							</div>
-							<div class="flex shrink-0 items-center gap-2">
-								{#if $progress[brand.slug] === 'ok'}
-									<span class="text-xs text-emerald-700">Done</span>
-								{:else if $progress[brand.slug] === 'err'}
-									<span class="text-xs text-red-600">Failed</span>
-								{:else if $progress[brand.slug] === 'run'}
-									<span class="text-xs text-gray-600">Working...</span>
-								{/if}
-								<button
-									class="rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-semibold hover:bg-gray-50 disabled:opacity-50"
-									on:click={() => generateOne(brand.slug, brand.display)}
-									disabled={$batchRunning || $progress[brand.slug] === 'run'}
-								>
-									Generate
-								</button>
 							</div>
 						</li>
 					{/each}

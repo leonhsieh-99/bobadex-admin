@@ -60,16 +60,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 		throw error(500, 'Failed to load pending delete requests');
 	}
 
-	const { data: iconless, error: iErr } = await locals.supabase
-		.from('brands')
-		.select('slug, display, icon_path, created_at')
-		.or('icon_path.is.null,icon_path.eq.')
-		.order('created_at', { ascending: true });
-	if (iErr) {
-		console.error(iErr);
-		throw error(500, 'Failed to load brands needing icons');
-	}
-
 	const pendingRows = (pending ?? []) as PendingBrand[];
 	const stagingIds = pendingRows.map((row) => row.id);
 	const normalizedNames = Array.from(
@@ -118,7 +108,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	return {
 		pending: pendingRows,
 		pendingDelete: pendingDelete ?? [],
-		iconless: iconless ?? [],
 		candidates: Array.from(candidates.values())
 	};
 };
