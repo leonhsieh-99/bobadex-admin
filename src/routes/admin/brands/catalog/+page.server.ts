@@ -49,6 +49,24 @@ function actionError(data: unknown, fallback: string) {
 	return fallback;
 }
 
+async function functionErrorMessage(error: unknown) {
+	if (error && typeof error === 'object' && 'context' in error) {
+		const context = (error as { context?: unknown }).context;
+		if (context instanceof Response) {
+			try {
+				const payload = (await context.clone().json()) as { error?: unknown; message?: unknown };
+				if (typeof payload.error === 'string' && payload.error) return payload.error;
+				if (typeof payload.message === 'string' && payload.message) return payload.message;
+			} catch {
+				// Fall through to the client error when the function did not return JSON.
+			}
+		}
+	}
+	return error instanceof Error && error.message
+		? error.message
+		: 'The brand deletion request was rejected.';
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const q = cleanSearch(url.searchParams.get('q'));
 	const requestedStatus = url.searchParams.get('status');
@@ -310,5 +328,61 @@ export const actions: Actions = {
 				message: error instanceof Error ? error.message : 'Could not merge these brands.'
 			});
 		}
+	},
+
+	deleteBrand: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, {
+				ok: false,
+				action: 'deleteBrand',
+				message: 'Admin access required.'
+			});
+		}
+		const form = await request.formData();
+		const slug = formValue(form, 'brand_slug');
+		const confirmationSlug = String(form.get('confirmation_slug') ?? '');
+		const note = formValue(form, 'note');
+		if (!slug || confirmationSlug !== slug || !note) {
+			return fail(400, {
+				ok: false,
+				action: 'deleteBrand',
+				brandSlug: slug,
+				message:
+					confirmationSlug !== slug
+						? 'The confirmation slug must match exactly.'
+						: 'A verification note is required.'
+			});
+		}
+
+		const { data, error } = await locals.supabase.functions.invoke(
+			'process-brand-enrichment-jobs',
+			{
+				body: {
+					action: 'delete_false_positive_brand',
+					brand_slug: slug,
+					confirmation_slug: confirmationSlug,
+					note
+				}
+			}
+		);
+		const responseError = actionError(data, '');
+		if (error || responseError) {
+			const message = responseError || (await functionErrorMessage(error));
+			console.error('[brand catalog] deleteBrand', error ?? data);
+			return fail(400, {
+				ok: false,
+				action: 'deleteBrand',
+				brandSlug: slug,
+				message
+			});
+		}
+
+		return {
+			ok: true,
+			action: 'deleteBrand',
+			brandSlug: slug,
+			data,
+			message: `Permanently deleted false-positive brand ${slug}.`
+		};
 	}
 };

@@ -132,7 +132,10 @@
 	let identityIsChanged = false;
 	let statusBrand: Brand | null = null;
 	let mergeBrand: Brand | null = null;
+	let deletingBrand: Brand | null = null;
 	let statusNote = '';
+	let deleteConfirmation = '';
+	let deleteNote = '';
 	let modalError = '';
 	let pendingAction = '';
 
@@ -258,7 +261,10 @@
 		originalIdentityAliases = [];
 		statusBrand = null;
 		mergeBrand = null;
+		deletingBrand = null;
 		statusNote = '';
+		deleteConfirmation = '';
+		deleteNote = '';
 		modalError = '';
 	}
 
@@ -832,6 +838,19 @@
 													>{brand.status === 'active' ? 'Mark closed' : 'Reopen brand'}</button
 												>
 											{/if}
+											{#if brand.status !== 'merged' && !brand.is_demo}
+												<button
+													type="button"
+													onclick={() => {
+														deletingBrand = brand;
+														deleteConfirmation = '';
+														deleteNote = '';
+														modalError = '';
+													}}
+													class="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm font-medium text-red-800 hover:bg-red-100"
+													>Delete brand</button
+												>
+											{/if}
 										</div>
 									{/if}
 								</td>
@@ -991,6 +1010,84 @@
 							>{pendingAction === 'updateIdentity' ? 'Saving…' : 'Confirm changes'}</button
 						>
 					</div>
+				</div>
+			</form>
+		</div>
+	</div>
+{/if}
+
+{#if deletingBrand}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closeModal()}
+	>
+		<div
+			class="w-full max-w-lg rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="delete-brand-title"
+		>
+			<div class="border-b border-zinc-200 px-5 py-4">
+				<h2 id="delete-brand-title" class="text-lg font-semibold text-zinc-950">
+					Permanently delete brand
+				</h2>
+				<p class="mt-1 text-sm text-red-700">
+					Use this only for a false-positive brand. This cannot be undone; the API will refuse
+					deletion while shops or feed events still depend on it.
+				</p>
+			</div>
+			<form
+				method="post"
+				action="?/deleteBrand"
+				use:enhance={actionEnhance('deleteBrand')}
+				class="space-y-4 px-5 py-5"
+			>
+				<input type="hidden" name="brand_slug" value={deletingBrand.slug} />
+				<div>
+					<p class="text-sm font-medium text-zinc-900">{deletingBrand.display}</p>
+					<code class="text-xs break-all text-zinc-500">{deletingBrand.slug}</code>
+				</div>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Type the exact slug</span>
+					<input
+						name="confirmation_slug"
+						bind:value={deleteConfirmation}
+						autocomplete="off"
+						required
+						class="mt-2 block w-full rounded border-zinc-300 text-sm"
+					/>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Verification note</span>
+					<textarea
+						name="note"
+						bind:value={deleteNote}
+						rows="4"
+						required
+						placeholder="Verified false positive through…"
+						class="mt-1 block w-full rounded border-zinc-300 text-sm"
+					></textarea>
+				</label>
+				{#if modalError}<div
+						class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+					>
+						{modalError}
+					</div>{/if}
+				<div class="flex justify-end gap-2">
+					<button
+						type="button"
+						onclick={closeModal}
+						class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+						>Cancel</button
+					>
+					<button
+						class="rounded bg-red-700 px-3 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-40"
+						disabled={deleteConfirmation !== deletingBrand.slug ||
+							!deleteNote.trim() ||
+							Boolean(pendingAction)}
+						>{pendingAction === 'deleteBrand' ? 'Deleting…' : 'Delete permanently'}</button
+					>
 				</div>
 			</form>
 		</div>
