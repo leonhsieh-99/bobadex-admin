@@ -238,7 +238,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
 			)
 			.order('created_at', { ascending: false })
-			.limit(60)
+			.limit(125)
 	]);
 
 	const sourceResults = [
@@ -391,6 +391,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const sourceById = new Map(sources.map((row) => [row.id, row]));
 	const profileByBrand = new Map(profiles.map((row) => [row.brand_slug, row]));
 	const dossierByBrand = new Map(dossiers.map((row) => [row.brand_slug, row]));
+	const dossierByRunId = new Map(
+		dossiers.flatMap((row) => (row.research_run_id ? [[row.research_run_id, row] as const] : []))
+	);
 	const identityByBrand = new Map(brandIdentities.map((row) => [row.slug, row]));
 	const openFlags = flags.filter((row) => row.status !== 'resolved' && row.status !== 'closed');
 	const jobStatusCounts = countByStatus(jobs);
@@ -406,6 +409,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 	}
 	const monitoredJobs = jobs.map((job) => {
 		const run = runByJobId.get(job.id) ?? null;
+		const runDossier = run ? (dossierByRunId.get(run.id) ?? null) : null;
+		const reviewReasons = runDossier?.review_reasons ?? [];
 		const rawResponse = run?.raw_response ?? null;
 		const retrievedSources = recordArray(rawResponse?.search_results).map((source) => ({
 			url: typeof source.url === 'string' ? source.url : null,
@@ -419,13 +424,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 			? 'pending'
 			: run.status === 'failed'
 				? 'failed'
-				: !hasAdequateInput || hasBlockingFlag || (identityConfidence ?? 0) < 0.85
+				: reviewReasons.length > 0 ||
+					  !hasAdequateInput ||
+					  hasBlockingFlag ||
+					  (identityConfidence ?? 0) < 0.85
 					? 'review'
 					: 'passed';
 		return {
 			...job,
 			paused: job.trigger_context?.controlled_paused === true,
 			controlled: job.trigger_context?.manual_request === true,
+			autoPublishRequested: job.trigger_context?.auto_publish_requested === true,
 			run: run
 				? {
 						id: run.id,
@@ -437,6 +446,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 						executedQueries: stringArray(rawResponse?.executed_queries),
 						retrievedSources,
 						retainedSources,
+						qualityMetrics: run.quality_metrics ?? {},
+						reviewReasons,
+						autoPublishEligible: runDossier ? reviewReasons.length === 0 : null,
+						approvalStatus: runDossier?.approval_status ?? null,
 						gate: {
 							status: gateStatus,
 							version:
@@ -567,7 +580,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		legacyDossiers,
 		activeJobs,
 		publishedProfiles,
-		recentJobs: monitoredJobs.slice(0, 50),
+		recentJobs: monitoredJobs.slice(0, 125),
 		sourceErrors: [...new Set(sourceErrors)],
 		cron: {
 			serverTime: cronPayload?.server_time ?? null,
@@ -960,17 +973,18 @@ export const actions: Actions = {
 	},
 	controlledCohort: async ({ request, locals }) => {
 		const form = await request.formData();
-		const count = integerField(form, 'count', 1, 25);
+		const count = integerField(form, 'count', 1, 100);
 		const anchorFilter = String(form.get('anchor_filter') ?? 'any');
+		const autoPublish = form.get('auto_publish') === 'on';
 		if (
 			!count ||
-			![1, 5, 10, 25].includes(count) ||
+			![1, 5, 10, 25, 100].includes(count) ||
 			!['any', 'present', 'missing'].includes(anchorFilter)
 		) {
 			return fail(400, {
 				ok: false,
 				action: 'controlledCohort',
-				message: 'Choose a cohort size of 1, 5, 10, or 25 and a valid anchor filter.'
+				message: 'Choose a cohort size of 1, 5, 10, 25, or 100 and a valid anchor filter.'
 			});
 		}
 		const { data, error } = await locals.supabase.rpc('admin_queue_brand_enrichment_cohort', {
@@ -979,7 +993,8 @@ export const actions: Actions = {
 			p_missing_website: form.get('missing_website') === 'on',
 			p_anchor_filter: anchorFilter,
 			p_prior_failures: form.get('prior_failures') === 'on',
-			p_note: String(form.get('note') ?? '').trim() || null
+			p_note: String(form.get('note') ?? '').trim() || null,
+			p_auto_publish: autoPublish
 		});
 		if (error) {
 			console.error('[enrichment] controlledCohort', error);
@@ -994,7 +1009,7 @@ export const actions: Actions = {
 		return {
 			ok: true,
 			action: 'controlledCohort',
-			message: `Queued ${queuedCount} controlled v8 test${queuedCount === 1 ? '' : 's'}.`
+			message: `Queued ${queuedCount} enrichment job${queuedCount === 1 ? '' : 's'}${autoPublish ? ' with guarded auto-publish enabled' : ' for manual review'}.`
 		};
 	},
 	controlledJobState: async ({ request, locals }) => {

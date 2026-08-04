@@ -130,6 +130,7 @@
 		last_error: string | null;
 		paused: boolean;
 		controlled: boolean;
+		autoPublishRequested: boolean;
 		created_at: string;
 		completed_at?: string | null;
 		run: {
@@ -142,6 +143,10 @@
 			executedQueries: string[];
 			retrievedSources: Array<{ url: string | null; title: string | null }>;
 			retainedSources: Array<{ id: string; url: string; title: string | null }>;
+			qualityMetrics: Record<string, unknown>;
+			reviewReasons: string[];
+			autoPublishEligible: boolean | null;
+			approvalStatus: string | null;
 			gate: {
 				status: string;
 				version: string | null;
@@ -239,6 +244,7 @@
 	let pendingAction = '';
 	let activeTab: 'v8' | 'review' | 'queue' | 'published' = data.v8Dossiers.length ? 'v8' : 'review';
 	let cohortCount = 1;
+	let cohortAutoPublish = false;
 	let refreshing = false;
 	let liveCron = data.cron;
 	let cronRefreshing = false;
@@ -279,6 +285,23 @@
 		if (value == null) return 'Not provided';
 		if (typeof value === 'string') return value;
 		return JSON.stringify(value, null, 2);
+	}
+
+	function metricLabel(key: string) {
+		return key
+			.split('_')
+			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+			.join(' ');
+	}
+
+	function metricValue(key: string, value: unknown) {
+		if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+		if (typeof value === 'number') {
+			return key.includes('confidence') || key.includes('coverage')
+				? percent(value)
+				: number.format(value);
+		}
+		return displayValue(value);
 	}
 
 	function archivedDossier(dossier: Dossier) {
@@ -647,7 +670,7 @@
 						</p>
 					</div>
 					<span class="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700"
-						>Maximum 25</span
+						>Maximum 100</span
 					>
 				</div>
 
@@ -659,7 +682,7 @@
 						const estimate = (cohortCount * 0.005).toFixed(3);
 						if (
 							!window.confirm(
-								`Queue up to ${cohortCount} controlled v8 audit${cohortCount === 1 ? '' : 's'}? Estimated Search API cost: $${estimate}, excluding synthesis.`
+								`Queue up to ${cohortCount} enrichment job${cohortCount === 1 ? '' : 's'}?${cohortAutoPublish ? ' Qualified dossiers will publish automatically; failures will be sent to review.' : ' Every result will remain available for manual review.'} Estimated Search API cost: $${estimate}, excluding synthesis.`
 							)
 						)
 							event.preventDefault();
@@ -677,6 +700,7 @@
 							<option value={5}>5 brands</option>
 							<option value={10}>10 brands</option>
 							<option value={25}>25 brands</option>
+							<option value={100}>100 brands</option>
 						</select>
 					</label>
 					<label>
@@ -691,6 +715,14 @@
 						</select>
 					</label>
 					<div class="flex flex-wrap gap-x-5 gap-y-2 sm:col-span-2">
+						<label class="flex items-center gap-2 text-sm font-medium text-zinc-800"
+							><input
+								type="checkbox"
+								name="auto_publish"
+								bind:checked={cohortAutoPublish}
+								class="rounded border-zinc-300"
+							/> Auto-publish qualified dossiers</label
+						>
 						<label class="flex items-center gap-2 text-sm text-zinc-700"
 							><input type="checkbox" name="local_only" class="rounded border-zinc-300" /> Local identity</label
 						>
@@ -718,7 +750,7 @@
 						>
 							{pendingAction === 'controlledCohort'
 								? 'Queuing tests…'
-								: `Queue ${cohortCount} controlled test${cohortCount === 1 ? '' : 's'}`}
+								: `Queue ${cohortCount} enrichment job${cohortCount === 1 ? '' : 's'}`}
 						</button>
 						<p class="mt-2 text-xs text-zinc-500">
 							Estimated Search API cost: ${(cohortCount * 0.005).toLocaleString('en-US', {
@@ -1402,6 +1434,10 @@
 									class="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700"
 									>Controlled</span
 								>{/if}
+							{#if job.autoPublishRequested}<span
+									class="rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700"
+									>Auto-publish requested</span
+								>{/if}
 							{#if job.paused}<span
 									class="rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
 									>Paused</span
@@ -1453,6 +1489,44 @@
 										</p>{/if}
 								</div>
 							</div>
+							{#if job.run}<div
+									class="mt-4 grid gap-4 border-t border-zinc-200 pt-4 lg:grid-cols-2"
+								>
+									<div>
+										<p class="text-xs font-semibold text-zinc-500 uppercase">
+											Publication decision
+										</p>
+										<p class="mt-1 text-sm font-medium text-zinc-900">
+											{job.run.autoPublishEligible === null
+												? 'Decision unavailable'
+												: job.run.autoPublishEligible
+													? job.run.approvalStatus === 'approved'
+														? 'Qualified and published'
+														: 'Qualified'
+													: 'Sent to review'}
+										</p>
+										{#if job.run.reviewReasons.length}<ul
+												class="mt-2 list-disc space-y-1 pl-5 text-xs text-amber-800"
+											>
+												{#each job.run.reviewReasons as reason}<li>{reason}</li>{/each}
+											</ul>{:else}<p class="mt-2 text-xs text-zinc-500">
+												No gate review reasons.
+											</p>{/if}
+									</div>
+									<div>
+										<p class="text-xs font-semibold text-zinc-500 uppercase">Quality metrics</p>
+										<dl class="mt-2 grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+											{#each Object.entries(job.run.qualityMetrics) as [key, value]}<div
+													class="flex justify-between gap-3 border-b border-zinc-100 pb-1"
+												>
+													<dt class="text-zinc-500">{metricLabel(key)}</dt>
+													<dd class="text-right font-medium text-zinc-800">
+														{metricValue(key, value)}
+													</dd>
+												</div>{/each}
+										</dl>
+									</div>
+								</div>{/if}
 							{#if job.last_error || job.run?.error}<div
 									class="mt-4 border-l-2 border-red-400 bg-red-50 px-3 py-2 text-sm text-red-800"
 								>
