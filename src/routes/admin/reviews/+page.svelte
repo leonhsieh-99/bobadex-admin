@@ -93,6 +93,8 @@
 		pipelineStateCounts: Partial<Record<PipelineState, number>>;
 		latestReviewByCandidate: Record<string, LatestReview>;
 		similarAliasesByCandidate: Record<string, AliasSuggestion[]>;
+		suggestedLocationAnchors: Record<string, string>;
+		brandAnchorsBySlug: Record<string, string | null>;
 		reviewTab: ReviewTab;
 		q: string;
 	};
@@ -125,6 +127,8 @@
 	let brandSearchTimer: ReturnType<typeof setTimeout> | null = null;
 	let brandSearchBox: HTMLDivElement | null = null;
 	let mergeSlugs: Record<string, string> = {};
+	let mergeAnchorDrafts: Record<string, string> = {};
+	let mergeAnchorEdited: Record<string, boolean> = {};
 
 	$: if (data.q !== lastSyncedQ) {
 		searchTerm = data.q;
@@ -176,8 +180,22 @@
 		}
 	}
 
-	function setMergeSlug(candidateId: string, slug: string) {
+	function setMergeSlug(candidateId: string, slug: string, suggestedAnchor = '') {
 		mergeSlugs = { ...mergeSlugs, [candidateId]: slug };
+		mergeAnchorDrafts = {
+			...mergeAnchorDrafts,
+			[candidateId]: data.brandAnchorsBySlug[slug] ?? suggestedAnchor
+		};
+		mergeAnchorEdited = { ...mergeAnchorEdited, [candidateId]: false };
+	}
+
+	function mergeAnchorValue(candidateId: string, brandSlug: string, suggestedAnchor: string) {
+		return mergeAnchorDrafts[candidateId] ?? data.brandAnchorsBySlug[brandSlug] ?? suggestedAnchor;
+	}
+
+	function setMergeAnchor(candidateId: string, anchor: string) {
+		mergeAnchorDrafts = { ...mergeAnchorDrafts, [candidateId]: anchor };
+		mergeAnchorEdited = { ...mergeAnchorEdited, [candidateId]: true };
 	}
 
 	async function copySlug(slug: string) {
@@ -265,7 +283,10 @@
 		if (typeof value === 'string') return value;
 		if (value && typeof value === 'object') {
 			return Object.entries(value as Record<string, unknown>)
-				.filter(([, item]) => typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean')
+				.filter(
+					([, item]) =>
+						typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean'
+				)
 				.map(([key, item]) => `${key.replaceAll('_', ' ')}: ${String(item)}`)
 				.join(' · ');
 		}
@@ -273,7 +294,9 @@
 	}
 
 	function visibleFlags(flags: Record<string, unknown> | null) {
-		return Object.entries(flags ?? {}).filter(([, value]) => value === true || (typeof value === 'string' && value));
+		return Object.entries(flags ?? {}).filter(
+			([, value]) => value === true || (typeof value === 'string' && value)
+		);
 	}
 
 	function formatNumber(value: number | null | undefined) {
@@ -305,54 +328,144 @@
 		<div class="mt-5"><ReviewTabs active="candidates" /></div>
 	</header>
 
-	<section class="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-5" aria-label="Location pipeline states">
+	<section
+		class="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-5"
+		aria-label="Location pipeline states"
+	>
 		{#each data.reviewTabs as tab}
-			<button type="button" class={`rounded-lg border p-3 text-left ${data.reviewTab === tab.id ? 'border-zinc-950 bg-zinc-50' : 'border-zinc-200 bg-white hover:bg-zinc-50'}`} on:click={() => applyFilters(tab.id, searchTerm)}>
+			<button
+				type="button"
+				class={`rounded-lg border p-3 text-left ${data.reviewTab === tab.id ? 'border-zinc-950 bg-zinc-50' : 'border-zinc-200 bg-white hover:bg-zinc-50'}`}
+				on:click={() => applyFilters(tab.id, searchTerm)}
+			>
 				<div class="text-xs text-zinc-500">{reviewTabLabels[tab.id]}</div>
 				<div class="mt-1 text-xl font-semibold text-zinc-950">{formatNumber(tabCount(tab))}</div>
 			</button>
 		{/each}
 	</section>
 
-	<section class="sticky top-[61px] z-30 mt-5 border-y border-zinc-200 bg-white/95 py-3 backdrop-blur">
+	<section
+		class="sticky top-[61px] z-30 mt-5 border-y border-zinc-200 bg-white/95 py-3 backdrop-blur"
+	>
 		<div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
 			<div class="relative" bind:this={brandSearchBox}>
-				<div class="flex items-center gap-3 rounded-md border border-zinc-300 bg-white px-3 shadow-sm focus-within:border-zinc-500 focus-within:ring-2 focus-within:ring-zinc-200">
-					<svg class="h-4 w-4 shrink-0 text-zinc-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12.9 14.32a8 8 0 111.414-1.414l4.387 4.387-1.414 1.414-4.387-4.387zM14 8a6 6 0 11-12 0 6 6 0 0112 0z" clip-rule="evenodd" /></svg>
+				<div
+					class="flex items-center gap-3 rounded-md border border-zinc-300 bg-white px-3 shadow-sm focus-within:border-zinc-500 focus-within:ring-2 focus-within:ring-zinc-200"
+				>
+					<svg
+						class="h-4 w-4 shrink-0 text-zinc-400"
+						viewBox="0 0 20 20"
+						fill="currentColor"
+						aria-hidden="true"
+						><path
+							fill-rule="evenodd"
+							d="M12.9 14.32a8 8 0 111.414-1.414l4.387 4.387-1.414 1.414-4.387-4.387zM14 8a6 6 0 11-12 0 6 6 0 0112 0z"
+							clip-rule="evenodd"
+						/></svg
+					>
 					<div class="min-w-0 flex-1 py-2">
-						<label for="brand-lookup" class="block text-[10px] font-semibold text-zinc-500 uppercase">Check existing brands and aliases</label>
-						<input id="brand-lookup" class="w-full border-0 bg-transparent p-0 text-sm text-zinc-950 placeholder:text-zinc-400 focus:ring-0" placeholder="Search before creating a brand" bind:value={brandQuery} on:input={scheduleBrandSearch} on:focus={() => (brandOpen = brandResults.length > 0)} />
+						<label
+							for="brand-lookup"
+							class="block text-[10px] font-semibold text-zinc-500 uppercase"
+							>Check existing brands and aliases</label
+						>
+						<input
+							id="brand-lookup"
+							class="w-full border-0 bg-transparent p-0 text-sm text-zinc-950 placeholder:text-zinc-400 focus:ring-0"
+							placeholder="Search before creating a brand"
+							bind:value={brandQuery}
+							on:input={scheduleBrandSearch}
+							on:focus={() => (brandOpen = brandResults.length > 0)}
+						/>
 					</div>
 					{#if brandLoading}<span class="text-xs text-zinc-500">Searching</span>{/if}
 				</div>
 
 				{#if brandOpen}
-					<div class="absolute right-0 left-0 z-40 mt-1 max-h-80 overflow-auto rounded-md border border-zinc-200 bg-white shadow-xl">
+					<div
+						class="absolute right-0 left-0 z-40 mt-1 max-h-80 overflow-auto rounded-md border border-zinc-200 bg-white shadow-xl"
+					>
 						{#each brandResults as brand}
-							<div class="flex items-center justify-between gap-4 border-b border-zinc-100 px-3 py-2.5 last:border-b-0">
+							<div
+								class="flex items-center justify-between gap-4 border-b border-zinc-100 px-3 py-2.5 last:border-b-0"
+							>
 								<div class="min-w-0">
 									<p class="truncate text-sm font-medium text-zinc-950">{brand.display}</p>
-									<p class="truncate text-xs text-zinc-500">{brand.slug}{brand.matched_alias ? ` · alias: ${brand.matched_alias}` : ''}</p>
+									<p class="truncate text-xs text-zinc-500">
+										{brand.slug}{brand.matched_alias ? ` · alias: ${brand.matched_alias}` : ''}
+									</p>
 								</div>
 								<div class="flex shrink-0 items-center gap-3 text-xs">
-									{#if safeUrl(brand.website)}<a href={safeUrl(brand.website) ?? '#'} target="_blank" rel="noreferrer" class="text-zinc-600 hover:text-zinc-950">Website</a>{/if}
-									{#if wikidataUrl(brand.wikidata)}<a href={wikidataUrl(brand.wikidata) ?? '#'} target="_blank" rel="noreferrer" class="text-zinc-600 hover:text-zinc-950">Wikidata</a>{/if}
-									<button type="button" class="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950" title={`Copy slug: ${brand.slug}`} aria-label={`Copy slug for ${brand.display}`} on:click={() => copySlug(brand.slug)}>
-										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+									{#if safeUrl(brand.website)}<a
+											href={safeUrl(brand.website) ?? '#'}
+											target="_blank"
+											rel="noreferrer"
+											class="text-zinc-600 hover:text-zinc-950">Website</a
+										>{/if}
+									{#if wikidataUrl(brand.wikidata)}<a
+											href={wikidataUrl(brand.wikidata) ?? '#'}
+											target="_blank"
+											rel="noreferrer"
+											class="text-zinc-600 hover:text-zinc-950">Wikidata</a
+										>{/if}
+									<button
+										type="button"
+										class="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950"
+										title={`Copy slug: ${brand.slug}`}
+										aria-label={`Copy slug for ${brand.display}`}
+										on:click={() => copySlug(brand.slug)}
+									>
+										<svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"
+											><rect
+												x="9"
+												y="9"
+												width="11"
+												height="11"
+												rx="2"
+												stroke="currentColor"
+												stroke-width="2"
+											/><path
+												d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"
+												stroke="currentColor"
+												stroke-width="2"
+												stroke-linecap="round"
+											/></svg
+										>
 									</button>
 								</div>
 							</div>
 						{/each}
-						{#if brandResults.length === 0}<p class="px-4 py-6 text-center text-sm text-zinc-500">No matching brand or alias.</p>{/if}
+						{#if brandResults.length === 0}<p class="px-4 py-6 text-center text-sm text-zinc-500">
+								No matching brand or alias.
+							</p>{/if}
 					</div>
 				{/if}
 			</div>
 
-			<form method="GET" class="flex items-center gap-2" on:submit|preventDefault={() => applyFilters(data.reviewTab, searchTerm)}>
-				<select name="tab" aria-label="Location pipeline state" class="rounded-md border-zinc-300 py-2 text-sm" value={data.reviewTab} on:change={(event) => applyFilters((event.currentTarget as HTMLSelectElement).value as ReviewTab, searchTerm)}>
-					{#each data.reviewTabs as tab}<option value={tab.id}>{reviewTabLabels[tab.id]}</option>{/each}
+			<form
+				method="GET"
+				class="flex items-center gap-2"
+				on:submit|preventDefault={() => applyFilters(data.reviewTab, searchTerm)}
+			>
+				<select
+					name="tab"
+					aria-label="Location pipeline state"
+					class="rounded-md border-zinc-300 py-2 text-sm"
+					value={data.reviewTab}
+					on:change={(event) =>
+						applyFilters((event.currentTarget as HTMLSelectElement).value as ReviewTab, searchTerm)}
+				>
+					{#each data.reviewTabs as tab}<option value={tab.id}>{reviewTabLabels[tab.id]}</option
+						>{/each}
 				</select>
-				<input name="q" aria-label="Search candidates" class="min-w-0 rounded-md border-zinc-300 py-2 text-sm lg:w-56" placeholder="Filter candidates" bind:value={searchTerm} on:input={scheduleCandidateSearch} />
+				<input
+					name="q"
+					aria-label="Search candidates"
+					class="min-w-0 rounded-md border-zinc-300 py-2 text-sm lg:w-56"
+					placeholder="Filter candidates"
+					bind:value={searchTerm}
+					on:input={scheduleCandidateSearch}
+				/>
 			</form>
 		</div>
 	</section>
@@ -366,53 +479,119 @@
 		{#each data.candidates as candidate}
 			{@const latestReview = data.latestReviewByCandidate[candidate.id]}
 			{@const aliasSuggestions = data.similarAliasesByCandidate[candidate.id] ?? []}
-			{@const canAct = candidate.pipeline_state === 'waiting_manual_review' || candidate.pipeline_state === 'waiting_region_reconciliation'}
+			{@const suggestedAnchor = data.suggestedLocationAnchors[candidate.id] ?? ''}
+			{@const mergeSlug =
+				mergeSlugs[candidate.id] ??
+				latestReview?.proposed_brand_slug ??
+				candidate.matched_brand_slug ??
+				''}
+			{@const destinationAnchor = data.brandAnchorsBySlug[mergeSlug] ?? null}
+			{@const canAct =
+				candidate.pipeline_state === 'waiting_manual_review' ||
+				candidate.pipeline_state === 'waiting_region_reconciliation'}
 			<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
-				<header class="flex flex-col gap-3 border-b border-zinc-200 bg-zinc-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+				<header
+					class="flex flex-col gap-3 border-b border-zinc-200 bg-zinc-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+				>
 					<div class="min-w-0">
 						<div class="flex flex-wrap items-center gap-2">
-							<h3 class="truncate text-base font-semibold text-zinc-950">{candidate.name ?? 'Unnamed candidate'}</h3>
-							<span class="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">{pipelineStateLabels[candidate.pipeline_state]}</span>
+							<h3 class="truncate text-base font-semibold text-zinc-950">
+								{candidate.name ?? 'Unnamed candidate'}
+							</h3>
+							<span class="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800"
+								>{pipelineStateLabels[candidate.pipeline_state]}</span
+							>
 							<span class="rounded bg-zinc-200/70 px-2 py-0.5 text-[11px] text-zinc-700">OSM</span>
 						</div>
-						<p class="mt-1 truncate text-xs text-zinc-500">{candidate.normalized_name ?? 'No normalized name'} · {locationLabel(candidate)}</p>
+						<p class="mt-1 truncate text-xs text-zinc-500">
+							{candidate.normalized_name ?? 'No normalized name'} · {locationLabel(candidate)}
+						</p>
 					</div>
 					<div class="flex shrink-0 items-center gap-3 text-xs">
-						{#if googleMapsCoordinatesUrl(candidate.lat, candidate.lon)}<a class="font-medium text-blue-700 hover:text-blue-900" href={googleMapsCoordinatesUrl(candidate.lat, candidate.lon) ?? '#'} target="_blank" rel="noreferrer">Google Maps</a>{/if}
-						{#if osmWebsite(candidate)}<a class="font-medium text-blue-700 hover:text-blue-900" href={osmWebsite(candidate) ?? '#'} target="_blank" rel="noreferrer">Website</a>{/if}
+						{#if googleMapsCoordinatesUrl(candidate.lat, candidate.lon)}<a
+								class="font-medium text-blue-700 hover:text-blue-900"
+								href={googleMapsCoordinatesUrl(candidate.lat, candidate.lon) ?? '#'}
+								target="_blank"
+								rel="noreferrer">Google Maps</a
+							>{/if}
+						{#if osmWebsite(candidate)}<a
+								class="font-medium text-blue-700 hover:text-blue-900"
+								href={osmWebsite(candidate) ?? '#'}
+								target="_blank"
+								rel="noreferrer">Website</a
+							>{/if}
 						<span class="text-zinc-500">{new Date(candidate.created_at).toLocaleDateString()}</span>
 					</div>
 				</header>
 
-				<div class="grid divide-y divide-zinc-200 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_20rem] xl:divide-x xl:divide-y-0">
+				<div
+					class="grid divide-y divide-zinc-200 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_20rem] xl:divide-x xl:divide-y-0"
+				>
 					<section class="p-4">
 						<h4 class="text-xs font-semibold text-zinc-500 uppercase">Source evidence</h4>
 						<dl class="mt-3 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs">
-							<dt class="text-zinc-500">Location</dt><dd class="text-zinc-900">{locationLabel(candidate)}</dd>
-							<dt class="text-zinc-500">Coordinates</dt><dd>
+							<dt class="text-zinc-500">Location</dt>
+							<dd class="text-zinc-900">{locationLabel(candidate)}</dd>
+							<dt class="text-zinc-500">Coordinates</dt>
+							<dd>
 								{#if googleMapsCoordinatesUrl(candidate.lat, candidate.lon)}
-									<a class="font-mono text-blue-700 hover:underline" href={googleMapsCoordinatesUrl(candidate.lat, candidate.lon) ?? '#'} target="_blank" rel="noreferrer">{coordinatesLabel(candidate.lat, candidate.lon)}</a>
+									<a
+										class="font-mono text-blue-700 hover:underline"
+										href={googleMapsCoordinatesUrl(candidate.lat, candidate.lon) ?? '#'}
+										target="_blank"
+										rel="noreferrer">{coordinatesLabel(candidate.lat, candidate.lon)}</a
+									>
 								{:else}
 									<span class="text-zinc-500">Unavailable</span>
 								{/if}
 							</dd>
-							<dt class="text-zinc-500">Provider ID</dt><dd class="break-all font-mono text-zinc-900">{candidate.source ?? 'OSM'}:{candidate.source_key ?? candidate.id}</dd>
-							<dt class="text-zinc-500">Match target</dt><dd class="font-medium text-zinc-900">{candidate.matched_brand_slug ?? 'None'}</dd>
-							<dt class="text-zinc-500">Match score</dt><dd class="text-zinc-900">{candidate.match_score !== null ? `${Math.round(candidate.match_score * 100)}%` : 'None'}</dd>
-							<dt class="text-zinc-500">OSM category</dt><dd class="text-zinc-900">{candidate.tags?.amenity ?? candidate.tags?.shop ?? candidate.tags?.cuisine ?? 'Unspecified'}</dd>
-							<dt class="text-zinc-500">Business type</dt><dd class="text-zinc-900">{candidate.llm_primary_business_type?.replaceAll('_', ' ') ?? 'Unknown'}</dd>
-							<dt class="text-zinc-500">OSM region</dt><dd class="text-zinc-900">{candidate.region_key ?? 'Missing'}</dd>
-							<dt class="text-zinc-500">Detected region</dt><dd class="text-zinc-900">{candidate.detected_region_key ?? 'Missing'}</dd>
-							<dt class="text-zinc-500">Region check</dt><dd class="text-zinc-900">{candidate.region_consistency_status?.replaceAll('_', ' ') ?? 'Unknown'}</dd>
+							<dt class="text-zinc-500">Provider ID</dt>
+							<dd class="font-mono break-all text-zinc-900">
+								{candidate.source ?? 'OSM'}:{candidate.source_key ?? candidate.id}
+							</dd>
+							<dt class="text-zinc-500">Match target</dt>
+							<dd class="font-medium text-zinc-900">{candidate.matched_brand_slug ?? 'None'}</dd>
+							<dt class="text-zinc-500">Match score</dt>
+							<dd class="text-zinc-900">
+								{candidate.match_score !== null
+									? `${Math.round(candidate.match_score * 100)}%`
+									: 'None'}
+							</dd>
+							<dt class="text-zinc-500">OSM category</dt>
+							<dd class="text-zinc-900">
+								{candidate.tags?.amenity ??
+									candidate.tags?.shop ??
+									candidate.tags?.cuisine ??
+									'Unspecified'}
+							</dd>
+							<dt class="text-zinc-500">Business type</dt>
+							<dd class="text-zinc-900">
+								{candidate.llm_primary_business_type?.replaceAll('_', ' ') ?? 'Unknown'}
+							</dd>
+							<dt class="text-zinc-500">OSM region</dt>
+							<dd class="text-zinc-900">{candidate.region_key ?? 'Missing'}</dd>
+							<dt class="text-zinc-500">Detected region</dt>
+							<dd class="text-zinc-900">{candidate.detected_region_key ?? 'Missing'}</dd>
+							<dt class="text-zinc-500">Region check</dt>
+							<dd class="text-zinc-900">
+								{candidate.region_consistency_status?.replaceAll('_', ' ') ?? 'Unknown'}
+							</dd>
 						</dl>
 						{#if candidate.blocked_reason || candidate.llm_review_error}
-							<p class="mt-3 border-l-2 border-red-400 bg-red-50 px-3 py-2 text-xs text-red-700">{candidate.blocked_reason ?? candidate.llm_review_error}</p>
+							<p class="mt-3 border-l-2 border-red-400 bg-red-50 px-3 py-2 text-xs text-red-700">
+								{candidate.blocked_reason ?? candidate.llm_review_error}
+							</p>
 						{/if}
 						{#if candidate.tags && Object.keys(candidate.tags).length}
 							<details class="mt-4 border-t border-zinc-100 pt-3">
-								<summary class="cursor-pointer text-xs font-medium text-zinc-600">All OSM tags ({Object.keys(candidate.tags).length})</summary>
+								<summary class="cursor-pointer text-xs font-medium text-zinc-600"
+									>All OSM tags ({Object.keys(candidate.tags).length})</summary
+								>
 								<div class="mt-2 grid gap-1.5 text-xs text-zinc-700 sm:grid-cols-2 xl:grid-cols-1">
-									{#each Object.entries(candidate.tags) as [key, value]}<div class="break-words"><span class="text-zinc-500">{key}:</span> {String(value)}</div>{/each}
+									{#each Object.entries(candidate.tags) as [key, value]}<div class="break-words">
+											<span class="text-zinc-500">{key}:</span>
+											{String(value)}
+										</div>{/each}
 								</div>
 							</details>
 						{/if}
@@ -421,106 +600,318 @@
 					<section class="p-4">
 						<div class="flex items-center justify-between gap-3">
 							<h4 class="text-xs font-semibold text-zinc-500 uppercase">Decision intelligence</h4>
-							{#if latestReview}<span class="rounded bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700">{latestReview.model ?? 'LLM'}{latestReview.confidence !== null ? ` · ${Math.round(latestReview.confidence * 100)}%` : ''}</span>{/if}
+							{#if latestReview}<span
+									class="rounded bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700"
+									>{latestReview.model ?? 'LLM'}{latestReview.confidence !== null
+										? ` · ${Math.round(latestReview.confidence * 100)}%`
+										: ''}</span
+								>{/if}
 						</div>
 
 						{#if latestReview}
 							<div class="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-3">
 								<div class="flex flex-wrap gap-2">
-									<span class="rounded bg-white px-2 py-1 text-xs font-semibold text-blue-800">{latestReview.auto_decision ?? latestReview.action ?? 'reviewed'}</span>
-									{#if latestReview.proposed_display}<span class="rounded bg-white px-2 py-1 text-xs text-zinc-700">Display: {latestReview.proposed_display}</span>{/if}
-									{#if latestReview.proposed_brand_slug}<span class="rounded bg-white px-2 py-1 text-xs text-zinc-700">Brand: {latestReview.proposed_brand_slug}</span>{/if}
+									<span class="rounded bg-white px-2 py-1 text-xs font-semibold text-blue-800"
+										>{latestReview.auto_decision ?? latestReview.action ?? 'reviewed'}</span
+									>
+									{#if latestReview.proposed_display}<span
+											class="rounded bg-white px-2 py-1 text-xs text-zinc-700"
+											>Display: {latestReview.proposed_display}</span
+										>{/if}
+									{#if latestReview.proposed_brand_slug}<span
+											class="rounded bg-white px-2 py-1 text-xs text-zinc-700"
+											>Brand: {latestReview.proposed_brand_slug}</span
+										>{/if}
 								</div>
 								<div class="mt-3 grid grid-cols-2 gap-2 text-xs">
-									<div><span class="text-zinc-500">Tea business</span><p class="font-medium text-zinc-900">{latestReview.is_boba_or_tea_business === null ? 'Unknown' : latestReview.is_boba_or_tea_business ? 'Yes' : 'No'}</p></div>
-									<div><span class="text-zinc-500">Currently open</span><p class="font-medium text-zinc-900">{latestReview.appears_currently_open === null ? 'Unknown' : latestReview.appears_currently_open ? 'Yes' : 'No'}</p></div>
+									<div>
+										<span class="text-zinc-500">Tea business</span>
+										<p class="font-medium text-zinc-900">
+											{latestReview.is_boba_or_tea_business === null
+												? 'Unknown'
+												: latestReview.is_boba_or_tea_business
+													? 'Yes'
+													: 'No'}
+										</p>
+									</div>
+									<div>
+										<span class="text-zinc-500">Currently open</span>
+										<p class="font-medium text-zinc-900">
+											{latestReview.appears_currently_open === null
+												? 'Unknown'
+												: latestReview.appears_currently_open
+													? 'Yes'
+													: 'No'}
+										</p>
+									</div>
 								</div>
-								{#if latestReview.reason}<p class="mt-3 text-xs leading-5 text-zinc-700">{latestReview.reason}</p>{/if}
+								{#if latestReview.reason}<p class="mt-3 text-xs leading-5 text-zinc-700">
+										{latestReview.reason}
+									</p>{/if}
 								{#if latestReview.evidence?.length}
 									<ul class="mt-3 space-y-1.5 border-t border-blue-100 pt-3">
-										{#each latestReview.evidence.slice(0, 5) as item}<li class="flex gap-2 text-xs text-zinc-700"><span class="text-blue-500">•</span><span>{evidenceText(item)}</span></li>{/each}
+										{#each latestReview.evidence.slice(0, 5) as item}<li
+												class="flex gap-2 text-xs text-zinc-700"
+											>
+												<span class="text-blue-500">•</span><span>{evidenceText(item)}</span>
+											</li>{/each}
 									</ul>
 								{/if}
 								{#if latestReview.sources?.length}
 									<div class="mt-3 flex flex-wrap gap-2 border-t border-blue-100 pt-3">
 										{#each latestReview.sources.slice(0, 8) as source, index}
-											{#if sourceUrl(source)}<a href={sourceUrl(source) ?? '#'} target="_blank" rel="noreferrer" class="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium text-blue-700 hover:border-blue-400">{sourceLabel(source, index)} ↗</a>{/if}
+											{#if sourceUrl(source)}<a
+													href={sourceUrl(source) ?? '#'}
+													target="_blank"
+													rel="noreferrer"
+													class="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium text-blue-700 hover:border-blue-400"
+													>{sourceLabel(source, index)} ↗</a
+												>{/if}
 										{/each}
 									</div>
 									{#if latestReview.sources.length > 8}
 										<details class="mt-2 text-xs">
-											<summary class="cursor-pointer font-medium text-blue-700">{latestReview.sources.length - 8} more sources</summary>
+											<summary class="cursor-pointer font-medium text-blue-700"
+												>{latestReview.sources.length - 8} more sources</summary
+											>
 											<div class="mt-2 flex flex-wrap gap-2">
 												{#each latestReview.sources.slice(8) as source, index}
-													{#if sourceUrl(source)}<a href={sourceUrl(source) ?? '#'} target="_blank" rel="noreferrer" class="rounded border border-blue-200 bg-white px-2 py-1 font-medium text-blue-700 hover:border-blue-400">{sourceLabel(source, index + 8)} ↗</a>{/if}
+													{#if sourceUrl(source)}<a
+															href={sourceUrl(source) ?? '#'}
+															target="_blank"
+															rel="noreferrer"
+															class="rounded border border-blue-200 bg-white px-2 py-1 font-medium text-blue-700 hover:border-blue-400"
+															>{sourceLabel(source, index + 8)} ↗</a
+														>{/if}
 												{/each}
 											</div>
 										</details>
 									{/if}
 								{/if}
-								{#if visibleFlags(latestReview.evidence_flags).length}<div class="mt-3 flex flex-wrap gap-1.5">{#each visibleFlags(latestReview.evidence_flags) as [key]}<span class="rounded bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">{key.replaceAll('_', ' ')}</span>{/each}</div>{/if}
-								{#if visibleFlags(latestReview.risk_flags).length}<div class="mt-3 flex flex-wrap gap-1.5">{#each visibleFlags(latestReview.risk_flags) as [key]}<span class="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700">{key.replaceAll('_', ' ')}</span>{/each}</div>{/if}
+								{#if visibleFlags(latestReview.evidence_flags).length}<div
+										class="mt-3 flex flex-wrap gap-1.5"
+									>
+										{#each visibleFlags(latestReview.evidence_flags) as [key]}<span
+												class="rounded bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700"
+												>{key.replaceAll('_', ' ')}</span
+											>{/each}
+									</div>{/if}
+								{#if visibleFlags(latestReview.risk_flags).length}<div
+										class="mt-3 flex flex-wrap gap-1.5"
+									>
+										{#each visibleFlags(latestReview.risk_flags) as [key]}<span
+												class="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700"
+												>{key.replaceAll('_', ' ')}</span
+											>{/each}
+									</div>{/if}
 							</div>
 						{:else}
-							<p class="mt-3 rounded-md bg-zinc-50 px-3 py-4 text-xs text-zinc-500">No LLM inference has been recorded for this candidate.</p>
+							<p class="mt-3 rounded-md bg-zinc-50 px-3 py-4 text-xs text-zinc-500">
+								No LLM inference has been recorded for this candidate.
+							</p>
 						{/if}
 
 						<div class="mt-4">
-							<div class="flex items-center justify-between"><h5 class="text-xs font-semibold text-zinc-700">Similar existing aliases</h5><span class="text-[11px] text-zinc-400">heuristic match</span></div>
+							<div class="flex items-center justify-between">
+								<h5 class="text-xs font-semibold text-zinc-700">Similar existing aliases</h5>
+								<span class="text-[11px] text-zinc-400">heuristic match</span>
+							</div>
 							<div class="mt-2 space-y-2">
 								{#each aliasSuggestions as suggestion}
-									<div class="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2">
+									<div
+										class="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2"
+									>
 										<div class="min-w-0">
-											<p class="truncate text-xs font-medium text-zinc-900">{suggestion.brand_display} <span class="font-normal text-zinc-500">{Math.round(suggestion.score * 100)}%</span></p>
-											<p class="truncate text-[11px] text-zinc-500">{suggestion.alias} · {suggestion.brand_slug}</p>
+											<p class="truncate text-xs font-medium text-zinc-900">
+												{suggestion.brand_display}
+												<span class="font-normal text-zinc-500"
+													>{Math.round(suggestion.score * 100)}%</span
+												>
+											</p>
+											<p class="truncate text-[11px] text-zinc-500">
+												{suggestion.alias} · {suggestion.brand_slug}
+											</p>
 										</div>
 										<div class="flex shrink-0 items-center gap-2">
-											{#if safeUrl(suggestion.website)}<a href={safeUrl(suggestion.website) ?? '#'} target="_blank" rel="noreferrer" class="text-[11px] text-zinc-500 hover:text-zinc-900">Site</a>{/if}
-											{#if wikidataUrl(suggestion.wikidata)}<a href={wikidataUrl(suggestion.wikidata) ?? '#'} target="_blank" rel="noreferrer" class="text-[11px] text-zinc-500 hover:text-zinc-900">WD</a>{/if}
-											<button type="button" class="rounded bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-800 hover:bg-zinc-200" on:click={() => setMergeSlug(candidate.id, suggestion.brand_slug)}>Use</button>
+											{#if safeUrl(suggestion.website)}<a
+													href={safeUrl(suggestion.website) ?? '#'}
+													target="_blank"
+													rel="noreferrer"
+													class="text-[11px] text-zinc-500 hover:text-zinc-900">Site</a
+												>{/if}
+											{#if wikidataUrl(suggestion.wikidata)}<a
+													href={wikidataUrl(suggestion.wikidata) ?? '#'}
+													target="_blank"
+													rel="noreferrer"
+													class="text-[11px] text-zinc-500 hover:text-zinc-900">WD</a
+												>{/if}
+											<button
+												type="button"
+												class="rounded bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-800 hover:bg-zinc-200"
+												on:click={() =>
+													setMergeSlug(candidate.id, suggestion.brand_slug, suggestedAnchor)}
+												>Use</button
+											>
 										</div>
 									</div>
 								{/each}
-								{#if aliasSuggestions.length === 0}<p class="text-xs text-zinc-500">No convincing alias match found.</p>{/if}
+								{#if aliasSuggestions.length === 0}<p class="text-xs text-zinc-500">
+										No convincing alias match found.
+									</p>{/if}
 							</div>
 						</div>
 					</section>
 
 					<aside class="space-y-4 bg-zinc-50/50 p-4">
 						{#if canAct}
-						<div>
-							<h4 class="text-xs font-semibold text-zinc-500 uppercase">Create new brand</h4>
-							<form method="POST" action="?/approve" class="mt-2 space-y-2" use:enhance={enhanceAction}>
-								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
-								<label class="block"><span class="sr-only">Display name</span><input name="force_display" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Brand display name" value={latestReview?.proposed_display ?? candidate.name ?? ''} /></label>
-								<label class="block"><span class="sr-only">Approval note</span><input name="note" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Approval note" /></label>
-								<button class="h-9 w-full rounded-md bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800">Approve new brand</button>
-							</form>
-						</div>
+							<div>
+								<h4 class="text-xs font-semibold text-zinc-500 uppercase">Create new brand</h4>
+								<form
+									method="POST"
+									action="?/approve"
+									class="mt-2 space-y-2"
+									use:enhance={enhanceAction}
+								>
+									<input type="hidden" name="candidate_id" value={candidate.id} /><input
+										type="hidden"
+										name="filter_tab"
+										value={data.reviewTab}
+									/><input type="hidden" name="filter_q" value={searchTerm} />
+									<label class="block"
+										><span class="sr-only">Display name</span><input
+											name="force_display"
+											class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
+											placeholder="Brand display name"
+											value={latestReview?.proposed_display ?? candidate.name ?? ''}
+										/></label
+									>
+									<label class="block">
+										<span class="text-[11px] font-medium text-zinc-600"
+											>Enrichment location anchor</span
+										>
+										<input
+											name="enrichment_location_anchor"
+											maxlength="160"
+											class="mt-1 w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
+											placeholder="Automatic coordinate/address grounding"
+											value={suggestedAnchor}
+										/>
+										<span class="mt-1 block text-[11px] leading-4 text-zinc-500"
+											>Used to identify local businesses during research; not treated as
+											headquarters.</span
+										>
+									</label>
+									<label class="block"
+										><span class="sr-only">Approval note</span><input
+											name="note"
+											class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
+											placeholder="Approval note"
+										/></label
+									>
+									<button
+										class="h-9 w-full rounded-md bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800"
+										>Approve new brand</button
+									>
+								</form>
+							</div>
 
-						<div class="border-t border-zinc-200 pt-4">
-							<h4 class="text-xs font-semibold text-zinc-500 uppercase">Merge existing</h4>
-							<form method="POST" action="?/merge" class="mt-2 space-y-2" use:enhance={enhanceAction}>
-								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
-								<label class="block"><span class="sr-only">Brand slug</span><input name="brand_slug" required class="w-full rounded-md border-zinc-300 px-3 py-2 font-mono text-xs" placeholder="Existing brand slug" value={mergeSlugs[candidate.id] ?? latestReview?.proposed_brand_slug ?? candidate.matched_brand_slug ?? ''} on:input={(event) => setMergeSlug(candidate.id, event.currentTarget.value)} /></label>
-								<label class="block"><span class="sr-only">Merge note</span><input name="note" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Merge note" /></label>
-								<button class="h-9 w-full rounded-md bg-amber-600 px-3 text-xs font-semibold text-white hover:bg-amber-700">Merge into brand</button>
-							</form>
-						</div>
+							<div class="border-t border-zinc-200 pt-4">
+								<h4 class="text-xs font-semibold text-zinc-500 uppercase">Merge existing</h4>
+								<form
+									method="POST"
+									action="?/merge"
+									class="mt-2 space-y-2"
+									use:enhance={enhanceAction}
+								>
+									<input type="hidden" name="candidate_id" value={candidate.id} /><input
+										type="hidden"
+										name="filter_tab"
+										value={data.reviewTab}
+									/><input type="hidden" name="filter_q" value={searchTerm} />
+									<label class="block"
+										><span class="sr-only">Brand slug</span><input
+											name="brand_slug"
+											required
+											class="w-full rounded-md border-zinc-300 px-3 py-2 font-mono text-xs"
+											placeholder="Existing brand slug"
+											value={mergeSlug}
+											on:input={(event) =>
+												setMergeSlug(candidate.id, event.currentTarget.value, suggestedAnchor)}
+										/></label
+									>
+									<label class="block">
+										<span
+											class="flex items-center justify-between gap-2 text-[11px] font-medium text-zinc-600"
+										>
+											<span>Enrichment location anchor</span>
+											{#if destinationAnchor}<span class="font-normal text-zinc-500"
+													>Destination anchor</span
+												>{/if}
+										</span>
+										<input
+											name="enrichment_location_anchor"
+											maxlength="160"
+											class="mt-1 w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
+											placeholder="Automatic coordinate/address grounding"
+											value={mergeAnchorValue(candidate.id, mergeSlug, suggestedAnchor)}
+											on:input={(event) => setMergeAnchor(candidate.id, event.currentTarget.value)}
+										/>
+										<input
+											type="hidden"
+											name="update_enrichment_location_anchor"
+											value={mergeAnchorEdited[candidate.id] ? 'true' : 'false'}
+										/>
+										<span class="mt-1 block text-[11px] leading-4 text-zinc-500"
+											>{destinationAnchor && !mergeAnchorEdited[candidate.id]
+												? 'The destination anchor will be preserved unless you edit this field.'
+												: 'Used to identify local businesses during research; not treated as headquarters.'}</span
+										>
+									</label>
+									<label class="block"
+										><span class="sr-only">Merge note</span><input
+											name="note"
+											class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
+											placeholder="Merge note"
+										/></label
+									>
+									<button
+										class="h-9 w-full rounded-md bg-amber-600 px-3 text-xs font-semibold text-white hover:bg-amber-700"
+										>Merge into brand</button
+									>
+								</form>
+							</div>
 
-						<div class="border-t border-zinc-200 pt-4">
-							<form method="POST" action="?/reject" class="space-y-2" use:enhance={enhanceAction}>
-								<input type="hidden" name="candidate_id" value={candidate.id} /><input type="hidden" name="filter_tab" value={data.reviewTab} /><input type="hidden" name="filter_q" value={searchTerm} />
-								<label class="block"><span class="sr-only">Rejection reason</span><input name="note" class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs" placeholder="Rejection reason" /></label>
-								<button class="h-9 w-full rounded-md border border-zinc-300 bg-white px-3 text-xs font-semibold text-zinc-800 hover:bg-zinc-100">Reject candidate</button>
-							</form>
-						</div>
+							<div class="border-t border-zinc-200 pt-4">
+								<form method="POST" action="?/reject" class="space-y-2" use:enhance={enhanceAction}>
+									<input type="hidden" name="candidate_id" value={candidate.id} /><input
+										type="hidden"
+										name="filter_tab"
+										value={data.reviewTab}
+									/><input type="hidden" name="filter_q" value={searchTerm} />
+									<label class="block"
+										><span class="sr-only">Rejection reason</span><input
+											name="note"
+											class="w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
+											placeholder="Rejection reason"
+										/></label
+									>
+									<button
+										class="h-9 w-full rounded-md border border-zinc-300 bg-white px-3 text-xs font-semibold text-zinc-800 hover:bg-zinc-100"
+										>Reject candidate</button
+									>
+								</form>
+							</div>
 						{:else}
 							<div>
 								<h4 class="text-xs font-semibold text-zinc-500 uppercase">Pipeline status</h4>
-								<p class="mt-2 text-sm font-medium text-zinc-900">{pipelineStateLabels[candidate.pipeline_state]}</p>
+								<p class="mt-2 text-sm font-medium text-zinc-900">
+									{pipelineStateLabels[candidate.pipeline_state]}
+								</p>
 							</div>
-							<p class="text-xs leading-5 text-zinc-500">This state is informational. Decisions are available for candidates still awaiting manual review or region reconciliation.</p>
+							<p class="text-xs leading-5 text-zinc-500">
+								This state is informational. Decisions are available for candidates still awaiting
+								manual review or region reconciliation.
+							</p>
 						{/if}
 					</aside>
 				</div>
@@ -528,7 +919,10 @@
 		{/each}
 
 		{#if data.candidates.length === 0}
-			<div class="rounded-lg border border-zinc-200 bg-white px-6 py-14 text-center"><h2 class="text-sm font-semibold text-zinc-950">No candidates in this view</h2><p class="mt-1 text-sm text-zinc-500">Change the status filter or clear the search.</p></div>
+			<div class="rounded-lg border border-zinc-200 bg-white px-6 py-14 text-center">
+				<h2 class="text-sm font-semibold text-zinc-950">No candidates in this view</h2>
+				<p class="mt-1 text-sm text-zinc-500">Change the status filter or clear the search.</p>
+			</div>
 		{/if}
 	</section>
 </main>

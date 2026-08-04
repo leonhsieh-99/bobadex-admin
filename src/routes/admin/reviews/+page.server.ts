@@ -1,4 +1,5 @@
 import { error, redirect } from '@sveltejs/kit';
+import { supabaseAdmin } from '$lib/supabase.server';
 import type { Actions, PageServerLoad } from './$types';
 
 type OsmCandidateStatus =
@@ -92,6 +93,12 @@ type BrandRow = {
 	display: string;
 	website: string | null;
 	wikidata: string | null;
+	enrichment_location_anchor: string | null;
+};
+
+type ReviewRawResponseRow = {
+	id: string;
+	raw_response: Record<string, unknown> | null;
 };
 
 type AliasSuggestion = {
@@ -156,9 +163,10 @@ function aliasSimilarity(left: string, right: string) {
 	const rightBigrams = bigrams(right);
 	let overlap = 0;
 	for (const pair of leftBigrams) if (rightBigrams.has(pair)) overlap += 1;
-	const dice = leftBigrams.size + rightBigrams.size
-		? (2 * overlap) / (leftBigrams.size + rightBigrams.size)
-		: 0;
+	const dice =
+		leftBigrams.size + rightBigrams.size
+			? (2 * overlap) / (leftBigrams.size + rightBigrams.size)
+			: 0;
 
 	const leftTokens = new Set(left.split(' '));
 	const rightTokens = new Set(right.split(' '));
@@ -171,6 +179,36 @@ function aliasSimilarity(left: string, right: string) {
 			: 0;
 
 	return Math.max(contained, dice * 0.7 + tokenScore * 0.3);
+}
+
+function textValue(value: unknown) {
+	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function suggestedLocationAnchor(
+	candidate: CandidateRow,
+	rawResponse: Record<string, unknown> | null
+) {
+	const resolved = rawResponse?.resolved_locality;
+	if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+		const locality = resolved as Record<string, unknown>;
+		const city = textValue(locality.city);
+		const state = textValue(locality.state);
+		if (city || state) return [...new Set([city, state].filter(Boolean))].join(', ');
+
+		const label = textValue(locality.label);
+		if (label)
+			return label
+				.split(',')
+				.slice(0, 2)
+				.map((part) => part.trim())
+				.join(', ');
+	}
+
+	const tags = candidate.tags ?? {};
+	const city = tags['addr:city'] ?? tags.city ?? tags.town ?? tags.village ?? null;
+	const state = tags['addr:state'] ?? null;
+	return [...new Set([city, state].filter(Boolean))].join(', ');
 }
 
 function reviewsRedirect(form: FormData, params: Record<string, string | null | undefined>) {
@@ -245,7 +283,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.from('brand_aliases')
 			.select('brand_slug,normalized_name,alias_display,match_mode')
 			.limit(5000),
-		locals.supabase.from('brands').select('slug,display,website,wikidata').limit(5000)
+		locals.supabase
+			.from('brands')
+			.select('slug,display,website,wikidata,enrichment_location_anchor')
+			.limit(5000)
 	]);
 
 	if (candidateResult.error) {
@@ -263,6 +304,32 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	}
 
 	const candidates = (candidateResult.data ?? []) as CandidateRow[];
+	const reviewIds = candidates.flatMap((candidate) =>
+		candidate.llm_review_id ? [candidate.llm_review_id] : []
+	);
+	let rawResponses: ReviewRawResponseRow[] = [];
+	if (reviewIds.length) {
+		const rawResult = await supabaseAdmin()
+			.schema('ingest')
+			.from('osm_candidate_llm_reviews')
+			.select('id,raw_response')
+			.in('id', reviewIds);
+		if (rawResult.error) {
+			console.error('[reviews] failed to load location suggestions', rawResult.error);
+		} else {
+			rawResponses = (rawResult.data ?? []) as ReviewRawResponseRow[];
+		}
+	}
+	const rawResponseByReview = new Map(rawResponses.map((row) => [row.id, row.raw_response]));
+	const suggestedLocationAnchors = Object.fromEntries(
+		candidates.map((candidate) => [
+			candidate.id,
+			suggestedLocationAnchor(
+				candidate,
+				candidate.llm_review_id ? (rawResponseByReview.get(candidate.llm_review_id) ?? null) : null
+			)
+		])
+	);
 	const pipelineStateCounts = {} as Record<PipelineState, number>;
 	for (const row of (summaryResult.data ?? []) as Array<{ pipeline_state: PipelineState }>) {
 		increment(pipelineStateCounts, row.pipeline_state);
@@ -294,6 +361,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const brandsBySlug = new Map(
 		((brandResult.data ?? []) as BrandRow[]).map((brand) => [brand.slug, brand])
+	);
+	const brandAnchorsBySlug = Object.fromEntries(
+		[...brandsBySlug.values()].map((brand) => [brand.slug, brand.enrichment_location_anchor])
 	);
 	const aliasRows = (aliasResult.data ?? []) as AliasRow[];
 	const similarAliasesByCandidate: Record<string, AliasSuggestion[]> = {};
@@ -329,6 +399,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		pipelineStateCounts,
 		latestReviewByCandidate,
 		similarAliasesByCandidate,
+		suggestedLocationAnchors,
+		brandAnchorsBySlug,
 		reviewTab,
 		q
 	};
@@ -342,29 +414,42 @@ export const actions: Actions = {
 		const candidateId = form.get('candidate_id') as string | null;
 		const forceDisplay = (form.get('force_display') as string | null) || null;
 		const note = (form.get('note') as string | null) || null;
+		const enrichmentLocationAnchor =
+			String(form.get('enrichment_location_anchor') ?? '').trim() || null;
 
 		if (!candidateId) {
-			throw redirect(303, reviewsRedirect(form, { toast: 'approve_failed', msg: 'missing_candidate_id' }));
+			throw redirect(
+				303,
+				reviewsRedirect(form, { toast: 'approve_failed', msg: 'missing_candidate_id' })
+			);
 		}
 		await requireActionableCandidate(locals, candidateId, form, 'approve_failed');
 
 		const { data, error: rpcError } = await locals.supabase
-			.rpc('approve_osm_candidate', {
+			.rpc('admin_approve_osm_candidate_with_anchor', {
 				p_candidate_id: candidateId,
 				p_force_display: forceDisplay,
-				p_note: note
+				p_note: note,
+				p_enrichment_location_anchor: enrichmentLocationAnchor
 			})
 			.returns<ApproveResult>();
 
 		if (rpcError) {
-			throw redirect(303, reviewsRedirect(form, { toast: 'approve_failed', msg: rpcError.message }));
+			throw redirect(
+				303,
+				reviewsRedirect(form, { toast: 'approve_failed', msg: rpcError.message })
+			);
 		}
 
 		const result = data as ApproveResult | ApproveResult[] | null;
 		const row = Array.isArray(result) ? result[0] : result;
-		if (!row) throw redirect(303, reviewsRedirect(form, { toast: 'approve_failed', msg: 'no_result' }));
+		if (!row)
+			throw redirect(303, reviewsRedirect(form, { toast: 'approve_failed', msg: 'no_result' }));
 
-		throw redirect(303, reviewsRedirect(form, { toast: row.op ?? 'created_new', brand: row.brand_slug }));
+		throw redirect(
+			303,
+			reviewsRedirect(form, { toast: row.op ?? 'created_new', brand: row.brand_slug })
+		);
 	},
 
 	merge: async ({ request, locals }) => {
@@ -374,17 +459,26 @@ export const actions: Actions = {
 		const candidateId = String(form.get('candidate_id') ?? '');
 		const brandSlug = String(form.get('brand_slug') ?? '');
 		const note = (form.get('note') as string | null) ?? null;
+		const enrichmentLocationAnchor =
+			String(form.get('enrichment_location_anchor') ?? '').trim() || null;
+		const updateEnrichmentLocationAnchor =
+			String(form.get('update_enrichment_location_anchor') ?? '') === 'true';
 
 		if (!candidateId || !brandSlug) {
 			throw redirect(303, reviewsRedirect(form, { toast: 'merge_failed', msg: 'missing_params' }));
 		}
 		await requireActionableCandidate(locals, candidateId, form, 'merge_failed');
 
-		const { error: rpcError } = await locals.supabase.rpc('admin_merge_candidate_to_brand', {
-			p_candidate_id: candidateId,
-			p_brand_slug: brandSlug,
-			p_note: note
-		});
+		const { error: rpcError } = await locals.supabase.rpc(
+			'admin_merge_candidate_to_brand_with_anchor',
+			{
+				p_candidate_id: candidateId,
+				p_brand_slug: brandSlug,
+				p_note: note,
+				p_enrichment_location_anchor: enrichmentLocationAnchor,
+				p_update_enrichment_location_anchor: updateEnrichmentLocationAnchor
+			}
+		);
 
 		if (rpcError) {
 			throw redirect(303, reviewsRedirect(form, { toast: 'merge_failed', msg: rpcError.message }));
@@ -401,7 +495,10 @@ export const actions: Actions = {
 		const note = (form.get('note') as string | null) || null;
 
 		if (!candidateId) {
-			throw redirect(303, reviewsRedirect(form, { toast: 'reject_failed', msg: 'missing_candidate_id' }));
+			throw redirect(
+				303,
+				reviewsRedirect(form, { toast: 'reject_failed', msg: 'missing_candidate_id' })
+			);
 		}
 		await requireActionableCandidate(locals, candidateId, form, 'reject_failed');
 

@@ -28,6 +28,7 @@
 		website: string | null;
 		wikidata: string | null;
 		enrichment_mode: 'auto' | 'manual_only' | 'disabled';
+		enrichment_location_anchor: string | null;
 		aliases: Array<{
 			id: number;
 			normalized_name: string;
@@ -172,6 +173,8 @@
 	let deleteNote = '';
 	let deleteError = '';
 	let rerunning: PublishableDossier | null = null;
+	let rerunAnchor = '';
+	let anchorDrafts: Record<string, string> = {};
 	let rerunError = '';
 	let resetting: PublishableDossier | null = null;
 	let resetReason = '';
@@ -314,7 +317,16 @@
 
 	function openRerun(dossier: PublishableDossier) {
 		rerunning = dossier;
+		rerunAnchor = anchorDraft(dossier);
 		rerunError = '';
+	}
+
+	function anchorDraft(dossier: PublishableDossier) {
+		return anchorDrafts[dossier.brand_slug] ?? dossier.identity.enrichment_location_anchor ?? '';
+	}
+
+	function setAnchorDraft(dossier: PublishableDossier, value: string) {
+		anchorDrafts = { ...anchorDrafts, [dossier.brand_slug]: value };
 	}
 
 	function openReset(dossier: PublishableDossier) {
@@ -353,6 +365,7 @@
 
 	function closeRerun() {
 		rerunning = null;
+		rerunAnchor = '';
 		rerunError = '';
 	}
 
@@ -1156,19 +1169,37 @@
 									>
 										Review and publish
 									</button>
-									<button
-										type="button"
-										onclick={() => openRerun(dossier)}
-										disabled={dossier.identity.enrichment_mode === 'disabled' ||
-											Boolean(dossier.activeJob) ||
-											Boolean(pendingAction)}
-										class="rounded border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-										>{dossier.identity.enrichment_mode === 'disabled'
-											? 'Enrichment disabled'
-											: dossier.activeJob
-												? 'Rerun queued'
-												: 'Rerun enrichment'}</button
-									>
+									<div class="grid gap-1 sm:grid-cols-[minmax(13rem,18rem)_auto] sm:items-end">
+										<label class="block">
+											<span class="text-[11px] font-medium text-zinc-600"
+												>Enrichment location anchor</span
+											>
+											<input
+												value={anchorDraft(dossier)}
+												oninput={(event) => setAnchorDraft(dossier, event.currentTarget.value)}
+												maxlength="160"
+												placeholder="Automatic grounding"
+												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
+											/>
+										</label>
+										<button
+											type="button"
+											onclick={() => openRerun(dossier)}
+											disabled={dossier.identity.enrichment_mode === 'disabled' ||
+												Boolean(dossier.activeJob) ||
+												Boolean(pendingAction)}
+											class="h-9 rounded border border-blue-200 bg-white px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+											>{dossier.identity.enrichment_mode === 'disabled'
+												? 'Enrichment disabled'
+												: dossier.activeJob
+													? 'Rerun queued'
+													: 'Rerun enrichment'}</button
+										>
+										<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
+											Used to identify local businesses during research; not treated as
+											headquarters.
+										</p>
+									</div>
 									<button
 										type="button"
 										onclick={() => openReset(dossier)}
@@ -1326,19 +1357,39 @@
 													class="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
 													>Edit and republish</button
 												>
-												<button
-													type="button"
-													onclick={() => openRerun(editor)}
-													disabled={editor.identity.enrichment_mode === 'disabled' ||
-														Boolean(editor.activeJob) ||
-														Boolean(pendingAction)}
-													class="rounded border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-													>{editor.identity.enrichment_mode === 'disabled'
-														? 'Enrichment disabled'
-														: editor.activeJob
-															? 'Rerun queued'
-															: 'Rerun enrichment'}</button
+												<div
+													class="grid gap-1 sm:grid-cols-[minmax(12rem,16rem)_auto] sm:items-end"
 												>
+													<label class="block">
+														<span class="text-[11px] font-medium text-zinc-600"
+															>Enrichment location anchor</span
+														>
+														<input
+															value={anchorDraft(editor)}
+															oninput={(event) => setAnchorDraft(editor, event.currentTarget.value)}
+															maxlength="160"
+															placeholder="Automatic grounding"
+															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
+														/>
+													</label>
+													<button
+														type="button"
+														onclick={() => openRerun(editor)}
+														disabled={editor.identity.enrichment_mode === 'disabled' ||
+															Boolean(editor.activeJob) ||
+															Boolean(pendingAction)}
+														class="h-9 rounded border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+														>{editor.identity.enrichment_mode === 'disabled'
+															? 'Enrichment disabled'
+															: editor.activeJob
+																? 'Rerun queued'
+																: 'Rerun enrichment'}</button
+													>
+													<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
+														Used to identify local businesses during research; not treated as
+														headquarters.
+													</p>
+												</div>
 												<button
 													type="button"
 													onclick={() => openReset(editor)}
@@ -1806,6 +1857,20 @@
 				class="space-y-4 px-5 py-5"
 			>
 				<input type="hidden" name="brand_slug" value={rerunning.brand_slug} />
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Enrichment location anchor</span>
+					<input
+						name="enrichment_location_anchor"
+						bind:value={rerunAnchor}
+						maxlength="160"
+						placeholder="Automatic coordinate/address grounding"
+						class="mt-1 w-full rounded border-zinc-300 text-sm"
+					/>
+					<span class="mt-1 block text-xs leading-5 text-zinc-500"
+						>Used to identify local businesses during research; not treated as headquarters. Clear
+						it to return to automatic grounding.</span
+					>
+				</label>
 				<div>
 					<p class="text-sm font-medium text-zinc-900">{rerunning.brand_slug}</p>
 					<p class="mt-1 text-xs text-zinc-500">

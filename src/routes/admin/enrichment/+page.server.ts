@@ -100,6 +100,7 @@ type BrandIdentityRow = {
 	is_demo: boolean;
 	match_policy: string;
 	enrichment_mode: 'auto' | 'manual_only' | 'disabled';
+	enrichment_location_anchor: string | null;
 };
 
 type BrandAliasRow = {
@@ -240,7 +241,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const [identitiesResult, aliasesResult] = await Promise.all([
 			locals.supabase
 				.from('brands')
-				.select('slug,display,website,wikidata,status,is_demo,match_policy,enrichment_mode')
+				.select(
+					'slug,display,website,wikidata,status,is_demo,match_policy,enrichment_mode,enrichment_location_anchor'
+				)
 				.in('slug', editorBrandSlugs),
 			locals.supabase
 				.from('brand_aliases')
@@ -768,6 +771,7 @@ export const actions: Actions = {
 	rerunBrand: async ({ request, locals }) => {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
+		const locationAnchor = String(form.get('enrichment_location_anchor') ?? '').trim();
 		if (!slug) {
 			return fail(400, {
 				ok: false,
@@ -792,6 +796,28 @@ export const actions: Actions = {
 				ok: false,
 				action: 'rerunBrand',
 				message: `Enrichment is disabled for ${slug}. Change its mode in the brand catalog first.`
+			});
+		}
+		if (locationAnchor.length > 160) {
+			return fail(400, {
+				ok: false,
+				action: 'rerunBrand',
+				message: 'The enrichment location anchor must be 160 characters or fewer.'
+			});
+		}
+		const { error: anchorError } = await locals.supabase.rpc(
+			'admin_set_brand_enrichment_location_anchor',
+			{
+				p_brand_slug: slug,
+				p_location_anchor: locationAnchor || null
+			}
+		);
+		if (anchorError) {
+			console.error('[enrichment] rerunBrand anchor', anchorError);
+			return fail(400, {
+				ok: false,
+				action: 'rerunBrand',
+				message: anchorError.message || 'The enrichment location anchor could not be saved.'
 			});
 		}
 		return invokeEnrichment(
