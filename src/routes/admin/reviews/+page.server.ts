@@ -96,6 +96,12 @@ type BrandRow = {
 	enrichment_location_anchor: string | null;
 };
 
+type RegionCodeRow = {
+	code: string;
+	country_code: string;
+	region_name: string;
+};
+
 type ReviewRawResponseRow = {
 	id: string;
 	raw_response: Record<string, unknown> | null;
@@ -272,22 +278,27 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	if (q) candidateQuery = candidateQuery.ilike('name', `%${q}%`);
 
-	const [candidateResult, summaryResult, aliasResult, brandResult] = await Promise.all([
-		candidateQuery,
-		locals.supabase
-			.schema('ingest')
-			.from('osm_candidate_pipeline_states')
-			.select('pipeline_state')
-			.limit(10000),
-		locals.supabase
-			.from('brand_aliases')
-			.select('brand_slug,normalized_name,alias_display,match_mode')
-			.limit(5000),
-		locals.supabase
-			.from('brands')
-			.select('slug,display,website,wikidata,enrichment_location_anchor')
-			.limit(5000)
-	]);
+	const [candidateResult, summaryResult, aliasResult, brandResult, regionCodeResult] =
+		await Promise.all([
+			candidateQuery,
+			locals.supabase
+				.schema('ingest')
+				.from('osm_candidate_pipeline_states')
+				.select('pipeline_state')
+				.limit(10000),
+			locals.supabase
+				.from('brand_aliases')
+				.select('brand_slug,normalized_name,alias_display,match_mode')
+				.limit(5000),
+			locals.supabase
+				.from('brands')
+				.select('slug,display,website,wikidata,enrichment_location_anchor')
+				.limit(5000),
+			locals.supabase
+				.from('region_codes')
+				.select('code,country_code,region_name')
+				.order('code', { ascending: true })
+		]);
 
 	if (candidateResult.error) {
 		console.error(candidateResult.error);
@@ -297,8 +308,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		console.error(summaryResult.error);
 		throw error(500, `Failed to load review counts: ${summaryResult.error.message}`);
 	}
-	if (aliasResult.error || brandResult.error) {
-		const sourceError = aliasResult.error ?? brandResult.error;
+	if (aliasResult.error || brandResult.error || regionCodeResult.error) {
+		const sourceError = aliasResult.error ?? brandResult.error ?? regionCodeResult.error;
 		console.error(sourceError);
 		throw error(500, `Failed to load brand aliases: ${sourceError?.message}`);
 	}
@@ -401,12 +412,42 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		similarAliasesByCandidate,
 		suggestedLocationAnchors,
 		brandAnchorsBySlug,
+		regionCodes: (regionCodeResult.data ?? []) as RegionCodeRow[],
 		reviewTab,
 		q
 	};
 };
 
 export const actions: Actions = {
+	reconcileRegion: async ({ request, locals }) => {
+		if (!locals.isAdmin) throw error(403, 'Forbidden');
+
+		const form = await request.formData();
+		const candidateId = String(form.get('candidate_id') ?? '').trim();
+		const regionCode = String(form.get('region_code') ?? '').trim();
+		const note = String(form.get('note') ?? '').trim() || null;
+
+		if (!candidateId || !regionCode) {
+			throw redirect(
+				303,
+				reviewsRedirect(form, { toast: 'region_failed', msg: 'missing_candidate_or_region' })
+			);
+		}
+		await requireActionableCandidate(locals, candidateId, form, 'region_failed');
+
+		const { error: rpcError } = await locals.supabase.rpc('admin_reconcile_osm_candidate_region', {
+			p_candidate_id: candidateId,
+			p_region_code: regionCode,
+			p_note: note
+		});
+
+		if (rpcError) {
+			throw redirect(303, reviewsRedirect(form, { toast: 'region_failed', msg: rpcError.message }));
+		}
+
+		throw redirect(303, reviewsRedirect(form, { toast: 'region_reconciled', region: regionCode }));
+	},
+
 	approve: async ({ request, locals }) => {
 		if (!locals.isAdmin) throw error(403, 'Forbidden');
 

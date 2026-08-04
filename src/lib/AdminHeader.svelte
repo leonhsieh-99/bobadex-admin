@@ -19,6 +19,8 @@
 		approve_failed: { kind: 'error', text: 'Approve failed' },
 		reject_failed: { kind: 'error', text: 'Reject failed' },
 		merge_failed: { kind: 'error', text: 'Merge failed' },
+		region_reconciled: { kind: 'success', text: 'Candidate region updated' },
+		region_failed: { kind: 'error', text: 'Region update failed' },
 		grid_updated: { kind: 'success', text: 'Grid settings saved' },
 		grid_failed: { kind: 'error', text: 'Grid update failed' },
 		import_started: { kind: 'success', text: 'Region import started' },
