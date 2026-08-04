@@ -370,7 +370,7 @@
 	function openRerun(dossier: PublishableDossier) {
 		rerunning = dossier;
 		rerunAnchor = anchorDraft(dossier);
-		rerunSourceUrl = sourceDrafts[dossier.brand_slug] ?? dossier.identity.website ?? '';
+		rerunSourceUrl = sourceDrafts[dossier.brand_slug] ?? publicationWebsite(dossier);
 		rerunNote = noteDrafts[dossier.brand_slug] ?? '';
 		rerunError = '';
 	}
@@ -437,7 +437,7 @@
 		publishing = dossier;
 		publishError = '';
 		publishIdentityDisplay = dossier.identity.display;
-		publishIdentityWebsite = dossier.identity.website ?? '';
+		publishIdentityWebsite = publicationWebsite(dossier);
 		publishIdentityWikidata = dossier.identity.wikidata ?? '';
 		publishMatchPolicy = isBrandMatchPolicy(dossier.recommended_match_policy)
 			? dossier.recommended_match_policy
@@ -464,6 +464,13 @@
 	function factText(dossier: PublishableDossier, key: string) {
 		const value = dossier.profile_facts?.[key];
 		return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+	}
+
+	function publicationWebsite(dossier: PublishableDossier) {
+		const proposedWebsite = dossier.profile_facts?.official_website;
+		return typeof proposedWebsite === 'string' && proposedWebsite.trim()
+			? proposedWebsite.trim()
+			: (dossier.identity.website ?? '');
 	}
 
 	function factList(dossier: PublishableDossier, key: string) {
@@ -1301,7 +1308,7 @@
 												>Verified website/source URL</span
 											>
 											<input
-												value={sourceDrafts[dossier.brand_slug] ?? dossier.identity.website ?? ''}
+												value={sourceDrafts[dossier.brand_slug] ?? publicationWebsite(dossier)}
 												oninput={(event) => setSourceDraft(dossier, event.currentTarget.value)}
 												placeholder="https://…"
 												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
@@ -1594,9 +1601,7 @@
 															>Verified source URL</span
 														>
 														<input
-															value={sourceDrafts[editor.brand_slug] ??
-																editor.identity.website ??
-																''}
+															value={sourceDrafts[editor.brand_slug] ?? publicationWebsite(editor)}
 															oninput={(event) => setSourceDraft(editor, event.currentTarget.value)}
 															placeholder="https://…"
 															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
