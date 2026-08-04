@@ -4,7 +4,9 @@ import type { Actions, PageServerLoad } from './$types';
 
 type ImageQuality = 'auto' | 'low' | 'medium' | 'high';
 type PublishMode = 'auto' | 'review' | 'force';
-type ImageView = 'ready' | 'review' | 'history';
+type ImageView = 'ready' | 'generated' | 'review' | 'history';
+
+const MAX_REGENERATION_BATCH = 5;
 
 type BrandRow = {
 	slug: string;
@@ -88,6 +90,20 @@ function publicStorageUrl(bucket: string, path: string | null) {
 	return supabaseAdmin().storage.from(bucket).getPublicUrl(path).data.publicUrl;
 }
 
+function publicStorageThumbnailUrl(bucket: string, path: string | null, size = 128) {
+	if (!path) return null;
+	return supabaseAdmin()
+		.storage.from(bucket)
+		.getPublicUrl(path, {
+			transform: {
+				width: size,
+				height: size,
+				resize: 'contain',
+				quality: 45
+			}
+		}).data.publicUrl;
+}
+
 function candidatePreviewPath(candidate: CandidateRow) {
 	return (
 		candidate.published_storage_path ?? candidate.processed_storage_path ?? candidate.storage_path
@@ -99,7 +115,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const requestedView = url.searchParams.get('view');
 	const view: ImageView =
-		requestedView === 'review' || requestedView === 'history' ? requestedView : 'ready';
+		requestedView === 'generated' || requestedView === 'review' || requestedView === 'history'
+			? requestedView
+			: 'ready';
 	const q = cleanSearch(url.searchParams.get('q')).toLowerCase();
 	const admin = supabaseAdmin();
 	const [brandsResult, dossiersResult, candidatesResult, storage] = await Promise.all([
@@ -160,8 +178,20 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 							candidatePreviewPath(latestCandidate)
 						)
 					: null,
+			latest_candidate_thumbnail_url:
+				storage.ready && storage.isPublic && latestCandidate
+					? publicStorageThumbnailUrl(
+							latestCandidate.storage_bucket || 'shop-media',
+							candidatePreviewPath(latestCandidate),
+							96
+						)
+					: null,
 			icon_url:
-				storage.ready && storage.isPublic ? publicStorageUrl('shop-media', brand.icon_path) : null
+				storage.ready && storage.isPublic ? publicStorageUrl('shop-media', brand.icon_path) : null,
+			icon_thumbnail_url:
+				storage.ready && storage.isPublic
+					? publicStorageThumbnailUrl('shop-media', brand.icon_path)
+					: null
 		};
 	});
 	const filteredBrands = q
@@ -176,6 +206,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			const bReady = b.dossier_status === 'approved' ? 1 : 0;
 			return bReady - aReady || a.display.localeCompare(b.display);
 		});
+	const generatedBrands = filteredBrands
+		.filter((brand) => Boolean(brand.icon_path?.trim()))
+		.sort((a, b) => a.display.localeCompare(b.display));
 	const decoratedCandidates = candidates.map((candidate) => {
 		const brand = brandBySlug.get(candidate.brand_slug);
 		const previewPath = candidatePreviewPath(candidate);
@@ -186,6 +219,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			preview_url:
 				storage.ready && storage.isPublic
 					? publicStorageUrl(candidate.storage_bucket || 'shop-media', previewPath)
+					: null,
+			thumbnail_url:
+				storage.ready && storage.isPublic
+					? publicStorageThumbnailUrl(candidate.storage_bucket || 'shop-media', previewPath, 192)
+					: null,
+			current_icon_url:
+				storage.ready && storage.isPublic
+					? publicStorageUrl('shop-media', brand?.icon_path ?? null)
 					: null
 		};
 	});
@@ -224,6 +265,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		},
 		brands: filteredBrands,
 		iconless,
+		generatedBrands,
 		reviewCandidates,
 		historyCandidates
 	};
@@ -428,5 +470,168 @@ export const actions: Actions = {
 			message: `Generated ${succeeded} icon${succeeded === 1 ? '' : 's'}${failed ? `; ${failed} failed` : ''}.`
 		};
 		return failed ? fail(400, result) : result;
+	},
+
+	regenerateSelected: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, {
+				ok: false,
+				action: 'regenerateSelected',
+				message: 'Admin access required.'
+			});
+		}
+		const form = await request.formData();
+		const slugs = [
+			...new Set(
+				form
+					.getAll('brand_slugs')
+					.map((value) => String(value).trim())
+					.filter(Boolean)
+			)
+		];
+		const quality = formValue(form, 'quality') || 'auto';
+		const direction = formValue(form, 'direction');
+		if (!slugs.length || slugs.length > MAX_REGENERATION_BATCH || !isQuality(quality)) {
+			return fail(400, {
+				ok: false,
+				action: 'regenerateSelected',
+				message: `Select between 1 and ${MAX_REGENERATION_BATCH} brands and a valid quality.`
+			});
+		}
+
+		const storage = await storageReadiness();
+		if (!storage.ready || !storage.isPublic) {
+			return fail(503, {
+				ok: false,
+				action: 'regenerateSelected',
+				message: 'The public shop-media Storage bucket is not configured.'
+			});
+		}
+
+		const { data: brands, error: brandsError } = await supabaseAdmin()
+			.from('brands')
+			.select('slug,display,icon_path')
+			.in('slug', slugs)
+			.eq('status', 'active')
+			.eq('is_demo', false);
+		if (brandsError) {
+			return fail(400, {
+				ok: false,
+				action: 'regenerateSelected',
+				message: brandsError.message
+			});
+		}
+		if (
+			(brands ?? []).length !== slugs.length ||
+			brands?.some((brand) => !brand.icon_path?.trim())
+		) {
+			return fail(409, {
+				ok: false,
+				action: 'regenerateSelected',
+				message: 'Every selected brand must be active and already have a live icon.'
+			});
+		}
+
+		const brandBySlug = new Map((brands ?? []).map((brand) => [brand.slug, brand]));
+		const outcomes: Array<{
+			slug: string;
+			display: string;
+			ok: boolean;
+			candidate_id?: string;
+			message?: string;
+		}> = await Promise.all(
+			slugs.map(async (slug) => {
+				const { data, error: invokeError } = await locals.supabase.functions.invoke(
+					'generate-brand-icon',
+					{
+						body: {
+							brand_slug: slug,
+							quality,
+							publish_mode: 'review',
+							direction: direction || undefined
+						}
+					}
+				);
+				const responseError =
+					data && typeof data === 'object' && 'error' in data && data.error
+						? String(data.error)
+						: null;
+				const candidateId =
+					data && typeof data === 'object' && 'candidate_id' in data
+						? String(data.candidate_id ?? '')
+						: '';
+				return {
+					slug,
+					display: brandBySlug.get(slug)?.display ?? slug,
+					ok: !invokeError && !responseError && Boolean(candidateId),
+					candidate_id: candidateId || undefined,
+					message:
+						responseError ?? (invokeError ? await functionErrorMessage(invokeError) : undefined)
+				};
+			})
+		);
+
+		const succeeded = outcomes.filter((outcome) => outcome.ok).length;
+		const failed = outcomes.length - succeeded;
+		const result = {
+			ok: failed === 0,
+			action: 'regenerateSelected',
+			outcomes,
+			candidateIds: outcomes.flatMap((outcome) =>
+				outcome.ok && outcome.candidate_id ? [outcome.candidate_id] : []
+			),
+			message: `Generated ${succeeded} replacement${succeeded === 1 ? '' : 's'} for review${failed ? `; ${failed} failed` : ''}.`
+		};
+		return succeeded === 0 ? fail(400, result) : result;
+	},
+
+	rejectCandidate: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, {
+				ok: false,
+				action: 'rejectCandidate',
+				message: 'Admin access required.'
+			});
+		}
+		const form = await request.formData();
+		const candidateId = formValue(form, 'candidate_id');
+		if (!candidateId) {
+			return fail(400, {
+				ok: false,
+				action: 'rejectCandidate',
+				message: 'A candidate is required.'
+			});
+		}
+
+		const now = new Date().toISOString();
+		const { data: candidate, error: rejectError } = await supabaseAdmin()
+			.schema('mod')
+			.from('brand_icon_candidates')
+			.update({ status: 'rejected', rejected_at: now, updated_at: now })
+			.eq('id', candidateId)
+			.eq('status', 'generated')
+			.select('id')
+			.maybeSingle();
+		if (rejectError) {
+			return fail(400, {
+				ok: false,
+				action: 'rejectCandidate',
+				message: rejectError.message
+			});
+		}
+		if (!candidate) {
+			return fail(409, {
+				ok: false,
+				action: 'rejectCandidate',
+				message: 'This draft is no longer available for review.'
+			});
+		}
+
+		return {
+			ok: true,
+			action: 'rejectCandidate',
+			candidateId,
+			message: 'Kept the current icon and rejected the regenerated draft.'
+		};
 	}
 };

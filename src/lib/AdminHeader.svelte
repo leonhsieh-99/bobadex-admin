@@ -80,6 +80,11 @@
 		>
 			<a href={withBase('/admin')} class={navLink}>Dashboard</a>
 			<a href={withBase('/admin/brands/catalog')} class={navLink}>Brands</a>
+			<span class="mx-1 h-6 w-px shrink-0 bg-zinc-300" role="separator" aria-orientation="vertical"
+			></span>
+			<span class="hidden shrink-0 px-1 text-[10px] font-semibold text-zinc-400 uppercase lg:inline"
+				>Pipeline</span
+			>
 			<a href={withBase('/admin/imports')} class={navLink}>Imports</a>
 			<a href={withBase('/admin/reviews')} class={navLink}>
 				Reviews

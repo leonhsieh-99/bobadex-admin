@@ -14,7 +14,10 @@ type PipelineState =
 	| 'applied_approved'
 	| 'applied_blocked'
 	| 'applied_merged'
+	| 'applied_rejected'
 	| 'awaiting_current_llm_review'
+	| 'llm_processing'
+	| 'llm_failed'
 	| 'not_reviewed_yet'
 	| 'waiting_manual_review'
 	| 'waiting_region_reconciliation';
@@ -127,9 +130,12 @@ type ApproveResult = {
 const reviewTabs: Array<{ id: ReviewTab; states: PipelineState[] }> = [
 	{ id: 'manual', states: ['waiting_manual_review'] },
 	{ id: 'region', states: ['waiting_region_reconciliation'] },
-	{ id: 'awaiting', states: ['awaiting_current_llm_review'] },
+	{ id: 'awaiting', states: ['awaiting_current_llm_review', 'llm_processing', 'llm_failed'] },
 	{ id: 'not_reviewed', states: ['not_reviewed_yet'] },
-	{ id: 'history', states: ['applied_approved', 'applied_blocked', 'applied_merged'] }
+	{
+		id: 'history',
+		states: ['applied_approved', 'applied_blocked', 'applied_merged', 'applied_rejected']
+	}
 ];
 
 const actionableStates: PipelineState[] = [

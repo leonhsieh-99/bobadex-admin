@@ -9,11 +9,13 @@
 		display: string;
 		icon_path: string | null;
 		icon_url: string | null;
+		icon_thumbnail_url: string | null;
 		created_at: string;
 		dossier_status: string | null;
 		dossier_updated_at: string | null;
 		latest_candidate_status: string | null;
 		latest_candidate_url: string | null;
+		latest_candidate_thumbnail_url: string | null;
 	};
 
 	type Candidate = {
@@ -33,10 +35,12 @@
 		publication_strategy: string;
 		published_at: string | null;
 		preview_url: string | null;
+		thumbnail_url: string | null;
+		current_icon_url: string | null;
 	};
 
 	export let data: {
-		view: 'ready' | 'review' | 'history';
+		view: 'ready' | 'generated' | 'review' | 'history';
 		q: string;
 		storage: { ready: boolean; isPublic: boolean; error: string | null };
 		metrics: {
@@ -50,6 +54,7 @@
 		};
 		brands: Brand[];
 		iconless: Brand[];
+		generatedBrands: Brand[];
 		reviewCandidates: Candidate[];
 		historyCandidates: Candidate[];
 	};
@@ -65,7 +70,15 @@
 	let publishing: Candidate | null = null;
 	let pendingAction = '';
 	let modalError = '';
+	let selectedRegenerationSlugs = new Set<string>();
+	let regenerationConfirm = false;
+	let regenerationQuality: 'auto' | 'low' | 'medium' | 'high' = 'auto';
+	let regenerationDirection = '';
+	let comparisonQueue: Candidate[] = [];
+	let comparisonTotal = 0;
+	let comparisonCompleted = 0;
 	$: selectedBrand = data.brands.find((brand) => brand.slug === selectedSlug) ?? null;
+	$: comparisonCandidate = comparisonQueue[0] ?? null;
 
 	const number = new Intl.NumberFormat('en-US');
 
@@ -101,7 +114,27 @@
 		selectedSlug = '';
 		direction = '';
 		confirmReplace = false;
+		regenerationConfirm = false;
+		comparisonQueue = [];
+		comparisonTotal = 0;
+		comparisonCompleted = 0;
 		modalError = '';
+	}
+
+	function toggleRegeneration(slug: string) {
+		const next = new Set(selectedRegenerationSlugs);
+		if (next.has(slug)) next.delete(slug);
+		else if (next.size < 5) next.add(slug);
+		selectedRegenerationSlugs = next;
+	}
+
+	function openRegeneration(slugs?: string[]) {
+		if (slugs) selectedRegenerationSlugs = new Set(slugs.slice(0, 5));
+		if (!selectedRegenerationSlugs.size) return;
+		regenerationQuality = 'auto';
+		regenerationDirection = '';
+		modalError = '';
+		regenerationConfirm = true;
 	}
 
 	function actionEnhance(action: string): SubmitFunction {
@@ -125,6 +158,31 @@
 
 				if (result.type === 'success') {
 					toasts.success(message);
+					if (action === 'regenerateSelected') {
+						const regenerationResult = resultData as Record<string, unknown> | null;
+						const candidateIds =
+							regenerationResult && Array.isArray(regenerationResult.candidateIds)
+								? regenerationResult.candidateIds.filter(
+										(candidateId: unknown): candidateId is string => typeof candidateId === 'string'
+									)
+								: [];
+						regenerationConfirm = false;
+						selectedRegenerationSlugs = new Set();
+						await invalidateAll();
+						comparisonQueue = candidateIds.flatMap((candidateId: string) => {
+							const candidate = data.reviewCandidates.find((item) => item.id === candidateId);
+							return candidate ? [candidate] : [];
+						});
+						comparisonTotal = comparisonQueue.length;
+						comparisonCompleted = 0;
+						return;
+					}
+					if (action === 'publishComparison' || action === 'rejectComparison') {
+						comparisonQueue = comparisonQueue.slice(1);
+						comparisonCompleted += 1;
+						await invalidateAll();
+						return;
+					}
 					generating = false;
 					publishing = null;
 					await invalidateAll();
@@ -161,6 +219,11 @@
 		if (status === 'failed') return 'bg-red-100 text-red-800';
 		if (status === 'generating' || status === 'processing') return 'bg-blue-100 text-blue-800';
 		return 'bg-zinc-100 text-zinc-700';
+	}
+
+	function selectionLabel() {
+		const count = selectedRegenerationSlugs.size;
+		return count === 1 ? 'Regenerate 1 brand' : `Regenerate ${count} brands`;
 	}
 </script>
 
@@ -218,9 +281,9 @@
 		class="sticky top-[65px] z-30 flex gap-6 overflow-x-auto border-y border-zinc-200 bg-white/95 px-1 backdrop-blur"
 		aria-label="Image generation views"
 	>
-		{#each [{ id: 'ready', label: 'Ready', count: data.metrics.iconless }, { id: 'review', label: 'Review', count: data.reviewCandidates.length }, { id: 'history', label: 'History', count: data.historyCandidates.length }] as tab (tab.id)}
+		{#each [{ id: 'ready', label: 'Ready', count: data.metrics.iconless }, { id: 'generated', label: 'Generated', count: data.generatedBrands.length }, { id: 'review', label: 'Review', count: data.reviewCandidates.length }, { id: 'history', label: 'History', count: data.historyCandidates.length }] as tab (tab.id)}
 			<a
-				href={pageUrl(tab.id as 'ready' | 'review' | 'history')}
+				href={pageUrl(tab.id as 'ready' | 'generated' | 'review' | 'history')}
 				class="shrink-0 border-b-2 px-1 py-3 text-sm {data.view === tab.id
 					? 'border-zinc-950 font-semibold text-zinc-950'
 					: 'border-transparent text-zinc-600 hover:text-zinc-950'}"
@@ -270,10 +333,24 @@
 					{pendingAction === 'generateBatch' ? 'Running…' : 'Run small batch'}
 				</button>
 			</form>
+		{:else if data.view === 'generated'}
+			<div class="flex items-center gap-3">
+				<span class="text-xs text-zinc-500 tabular-nums">
+					{selectedRegenerationSlugs.size}/5 selected
+				</span>
+				<button
+					type="button"
+					onclick={() => openRegeneration()}
+					disabled={!selectedRegenerationSlugs.size || Boolean(pendingAction)}
+					class="h-10 rounded bg-zinc-950 px-3 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+				>
+					{selectionLabel()}
+				</button>
+			</div>
 		{/if}
 	</div>
 
-	{#if modalError && !generating && !publishing}
+	{#if modalError && !generating && !publishing && !regenerationConfirm && !comparisonCandidate}
 		<div class="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{modalError}</div>
 	{/if}
 
@@ -311,8 +388,13 @@
 								title={`View generated icon for ${brand.display}`}
 							>
 								<img
-									src={brand.latest_candidate_url}
+									src={brand.latest_candidate_thumbnail_url ?? brand.latest_candidate_url}
 									alt={`Generated icon for ${brand.display}`}
+									width="40"
+									height="40"
+									loading="lazy"
+									decoding="async"
+									fetchpriority="low"
 									class="h-full w-full object-contain"
 								/>
 							</a>
@@ -335,6 +417,82 @@
 					No iconless brands match this search.
 				</p>{/if}
 		</section>
+	{:else if data.view === 'generated'}
+		<section>
+			<div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+				<p class="text-sm text-zinc-600">
+					Select up to five brands. Regenerations stay private until you choose which icon to use.
+				</p>
+				{#if selectedRegenerationSlugs.size}
+					<button
+						type="button"
+						onclick={() => (selectedRegenerationSlugs = new Set())}
+						class="text-sm font-medium text-zinc-600 hover:text-zinc-950"
+					>
+						Clear selection
+					</button>
+				{/if}
+			</div>
+			<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+				{#each data.generatedBrands as brand (brand.slug)}
+					{@const selected = selectedRegenerationSlugs.has(brand.slug)}
+					<article
+						class="relative overflow-hidden rounded-lg border bg-white {selected
+							? 'border-zinc-950 ring-1 ring-zinc-950'
+							: 'border-zinc-200'}"
+					>
+						<label class="absolute top-2 left-2 z-10">
+							<span class="sr-only">Select {brand.display} for regeneration</span>
+							<input
+								type="checkbox"
+								checked={selected}
+								onchange={() => toggleRegeneration(brand.slug)}
+								disabled={!selected && selectedRegenerationSlugs.size >= 5}
+								class="h-5 w-5 rounded border-zinc-400 bg-white text-zinc-950 shadow-sm disabled:opacity-40"
+							/>
+						</label>
+						<button
+							type="button"
+							onclick={() => toggleRegeneration(brand.slug)}
+							disabled={!selected && selectedRegenerationSlugs.size >= 5}
+							class="flex aspect-square w-full items-center justify-center border-b border-zinc-200 bg-[linear-gradient(45deg,#f4f4f5_25%,transparent_25%),linear-gradient(-45deg,#f4f4f5_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f4f4f5_75%),linear-gradient(-45deg,transparent_75%,#f4f4f5_75%)] bg-[length:16px_16px] bg-[position:0_0,0_8px,8px_-8px,-8px_0px] p-4 disabled:cursor-not-allowed"
+						>
+							{#if brand.icon_thumbnail_url ?? brand.icon_url}
+								<img
+									src={brand.icon_thumbnail_url ?? brand.icon_url ?? ''}
+									alt={`Current icon for ${brand.display}`}
+									width="128"
+									height="128"
+									loading="lazy"
+									decoding="async"
+									fetchpriority="low"
+									class="h-full w-full object-contain"
+								/>
+							{/if}
+						</button>
+						<div class="space-y-3 p-3">
+							<div class="min-w-0">
+								<h2 class="truncate text-sm font-semibold text-zinc-950">{brand.display}</h2>
+								<code class="block truncate text-xs text-zinc-500">{brand.slug}</code>
+							</div>
+							<button
+								type="button"
+								onclick={() => openRegeneration([brand.slug])}
+								disabled={!data.storage.ready || !data.storage.isPublic}
+								class="w-full rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-40"
+							>
+								Regenerate
+							</button>
+						</div>
+					</article>
+				{/each}
+			</div>
+			{#if data.generatedBrands.length === 0}
+				<p class="border border-zinc-200 px-5 py-12 text-center text-sm text-zinc-500">
+					No generated icons match this search.
+				</p>
+			{/if}
+		</section>
 	{:else if data.view === 'review'}
 		<section class="divide-y divide-zinc-200 border border-zinc-200 bg-white">
 			{#each data.reviewCandidates as candidate (candidate.id)}
@@ -342,9 +500,14 @@
 					<div
 						class="flex aspect-square items-center justify-center overflow-hidden border border-zinc-200 bg-[linear-gradient(45deg,#f4f4f5_25%,transparent_25%),linear-gradient(-45deg,#f4f4f5_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f4f4f5_75%),linear-gradient(-45deg,transparent_75%,#f4f4f5_75%)] bg-[length:16px_16px] bg-[position:0_0,0_8px,8px_-8px,-8px_0px]"
 					>
-						{#if candidate.preview_url}<img
-								src={candidate.preview_url}
+						{#if candidate.thumbnail_url ?? candidate.preview_url}<img
+								src={candidate.thumbnail_url ?? candidate.preview_url ?? ''}
 								alt={`Draft icon for ${candidate.brand_display}`}
+								width="112"
+								height="112"
+								loading="lazy"
+								decoding="async"
+								fetchpriority="low"
 								class="h-full w-full object-contain"
 							/>{:else}<span class="px-2 text-center text-xs text-zinc-500"
 								>Preview unavailable</span
@@ -425,8 +588,13 @@
 							title={`View ${candidate.status} icon for ${candidate.brand_display}`}
 						>
 							<img
-								src={candidate.preview_url}
+								src={candidate.thumbnail_url ?? candidate.preview_url}
 								alt=""
+								width="48"
+								height="48"
+								loading="lazy"
+								decoding="async"
+								fetchpriority="low"
 								class="h-12 w-12 shrink-0 border border-zinc-200 bg-zinc-50 object-contain"
 							/>
 							<span class="min-w-0">
@@ -465,6 +633,219 @@
 	{#each data.brands as brand (brand.slug)}<option value={brand.slug}>{brand.display}</option
 		>{/each}
 </datalist>
+
+{#if regenerationConfirm}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closeModal()}
+	>
+		<div
+			class="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="regenerate-title"
+		>
+			<header class="border-b border-zinc-200 px-5 py-4">
+				<h2 id="regenerate-title" class="text-lg font-semibold text-zinc-950">
+					Confirm regeneration
+				</h2>
+				<p class="mt-1 text-sm text-zinc-600">
+					Generate {selectedRegenerationSlugs.size} replacement{selectedRegenerationSlugs.size === 1
+						? ''
+						: 's'} for review. Current icons remain live.
+				</p>
+			</header>
+			<form
+				method="post"
+				action="?/regenerateSelected"
+				use:enhance={actionEnhance('regenerateSelected')}
+				class="min-h-0 overflow-y-auto"
+			>
+				{#each [...selectedRegenerationSlugs] as slug (slug)}
+					<input type="hidden" name="brand_slugs" value={slug} />
+				{/each}
+				<div class="space-y-5 px-5 py-5">
+					<div class="max-h-40 divide-y divide-zinc-100 overflow-y-auto border-y border-zinc-200">
+						{#each data.generatedBrands.filter( (brand) => selectedRegenerationSlugs.has(brand.slug) ) as brand (brand.slug)}
+							<div class="flex items-center gap-3 py-2">
+								{#if brand.icon_thumbnail_url ?? brand.icon_url}<img
+										src={brand.icon_thumbnail_url ?? brand.icon_url ?? ''}
+										alt=""
+										width="40"
+										height="40"
+										decoding="async"
+										class="h-10 w-10 shrink-0 object-contain"
+									/>{/if}
+								<div class="min-w-0">
+									<p class="truncate text-sm font-medium text-zinc-900">{brand.display}</p>
+									<code class="block truncate text-xs text-zinc-500">{brand.slug}</code>
+								</div>
+							</div>
+						{/each}
+					</div>
+					<label class="block">
+						<span class="text-sm font-medium text-zinc-800">Quality</span>
+						<select
+							name="quality"
+							bind:value={regenerationQuality}
+							class="mt-1 block w-full rounded border-zinc-300 text-sm"
+						>
+							<option value="auto">Automatic</option>
+							<option value="low">Low</option>
+							<option value="medium">Medium</option>
+							<option value="high">High</option>
+						</select>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-zinc-800">Optional shared art direction</span>
+						<textarea
+							name="direction"
+							bind:value={regenerationDirection}
+							rows="3"
+							maxlength="1000"
+							placeholder="Applied to every selected brand"
+							class="mt-1 block w-full rounded border-zinc-300 text-sm"
+						></textarea>
+					</label>
+					<div class="border-l-4 border-amber-500 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+						This starts {selectedRegenerationSlugs.size} paid image generation request{selectedRegenerationSlugs.size ===
+						1
+							? ''
+							: 's'}. The batch limit is five.
+					</div>
+					{#if modalError}<div
+							class="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+						>
+							{modalError}
+						</div>{/if}
+				</div>
+				<footer class="flex justify-end gap-2 border-t border-zinc-200 bg-zinc-50 px-5 py-4">
+					<button
+						type="button"
+						onclick={closeModal}
+						disabled={Boolean(pendingAction)}
+						class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+					>
+						Cancel
+					</button>
+					<button
+						disabled={Boolean(pendingAction)}
+						class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
+					>
+						{pendingAction === 'regenerateSelected' ? 'Generating…' : 'Confirm regeneration'}
+					</button>
+				</footer>
+			</form>
+		</div>
+	</div>
+{/if}
+
+{#if comparisonCandidate}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+		<div
+			class="flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="comparison-title"
+		>
+			<header class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+				<div>
+					<p class="text-xs font-semibold text-zinc-500 uppercase">
+						{comparisonCompleted + 1} of {comparisonTotal}
+					</p>
+					<h2 id="comparison-title" class="mt-1 text-lg font-semibold text-zinc-950">
+						Choose an icon for {comparisonCandidate.brand_display}
+					</h2>
+				</div>
+				<div class="h-1.5 w-28 overflow-hidden rounded bg-zinc-200" aria-hidden="true">
+					<div
+						class="h-full bg-zinc-950"
+						style={`width: ${((comparisonCompleted + 1) / comparisonTotal) * 100}%`}
+					></div>
+				</div>
+			</header>
+			<div class="min-h-0 overflow-y-auto px-5 py-5">
+				<div class="grid gap-4 sm:grid-cols-2">
+					<section class="overflow-hidden rounded-lg border border-zinc-200">
+						<div class="flex aspect-square items-center justify-center bg-zinc-50 p-5">
+							{#if comparisonCandidate.current_icon_url}<img
+									src={comparisonCandidate.current_icon_url}
+									alt={`Current icon for ${comparisonCandidate.brand_display}`}
+									class="h-full w-full object-contain"
+								/>{/if}
+						</div>
+						<div class="border-t border-zinc-200 p-3">
+							<p class="text-sm font-semibold text-zinc-950">Current icon</p>
+							<p class="text-xs text-zinc-500">Remains live unless you publish the regeneration.</p>
+						</div>
+					</section>
+					<section class="overflow-hidden rounded-lg border border-zinc-950 ring-1 ring-zinc-950">
+						<div class="flex aspect-square items-center justify-center bg-zinc-50 p-5">
+							{#if comparisonCandidate.preview_url}<img
+									src={comparisonCandidate.preview_url}
+									alt={`Regenerated icon for ${comparisonCandidate.brand_display}`}
+									class="h-full w-full object-contain"
+								/>{/if}
+						</div>
+						<div class="border-t border-zinc-200 p-3">
+							<p class="text-sm font-semibold text-zinc-950">Regenerated icon</p>
+							<p class="text-xs text-zinc-500">
+								{comparisonCandidate.model} · {comparisonCandidate.quality} · {comparisonCandidate.creative_mode.replaceAll(
+									'_',
+									' '
+								)}
+							</p>
+						</div>
+					</section>
+				</div>
+				{#if modalError}<div
+						class="mt-4 border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+					>
+						{modalError}
+					</div>{/if}
+			</div>
+			<footer
+				class="flex flex-col-reverse gap-2 border-t border-zinc-200 bg-zinc-50 px-5 py-4 sm:flex-row sm:justify-end"
+			>
+				<button
+					type="button"
+					onclick={closeModal}
+					disabled={Boolean(pendingAction)}
+					class="rounded px-3 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950 disabled:opacity-40"
+				>
+					Review later
+				</button>
+				<form
+					method="post"
+					action="?/rejectCandidate"
+					use:enhance={actionEnhance('rejectComparison')}
+				>
+					<input type="hidden" name="candidate_id" value={comparisonCandidate.id} />
+					<button
+						disabled={Boolean(pendingAction)}
+						class="w-full rounded border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-100 disabled:opacity-40"
+					>
+						{pendingAction === 'rejectComparison' ? 'Saving…' : 'Keep current'}
+					</button>
+				</form>
+				<form
+					method="post"
+					action="?/publishCandidate"
+					use:enhance={actionEnhance('publishComparison')}
+				>
+					<input type="hidden" name="candidate_id" value={comparisonCandidate.id} />
+					<button
+						disabled={Boolean(pendingAction)}
+						class="w-full rounded bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
+					>
+						{pendingAction === 'publishComparison' ? 'Publishing…' : 'Use regenerated'}
+					</button>
+				</form>
+			</footer>
+		</div>
+	</div>
+{/if}
 
 {#if generating}
 	<div
@@ -511,9 +892,12 @@
 										: 'No live icon; auto mode will publish.'}
 								</p>
 							</div>
-							{#if selectedBrand.icon_url}<img
-									src={selectedBrand.icon_url}
+							{#if selectedBrand.icon_thumbnail_url ?? selectedBrand.icon_url}<img
+									src={selectedBrand.icon_thumbnail_url ?? selectedBrand.icon_url ?? ''}
 									alt="Current brand icon"
+									width="56"
+									height="56"
+									decoding="async"
 									class="h-14 w-14 object-contain"
 								/>{/if}
 						</div>

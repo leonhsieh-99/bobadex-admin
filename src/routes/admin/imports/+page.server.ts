@@ -49,15 +49,28 @@ type RegionBoundsRow = {
 };
 
 type ProcessSummaryRow = {
+	id: string;
+	import_job_id: string | null;
+	osm_type: string | null;
+	osm_id: number | null;
+	name: string | null;
+	lat: number | null;
+	lon: number | null;
+	source: string | null;
+	source_key: string | null;
 	process_status: OsmCandidateStatus;
 	process_reason: string | null;
 	match_bucket: string | null;
+	matched_brand_slug: string | null;
 	llm_review_status: LlmReviewStatus | null;
+	llm_review_error: string | null;
+	pipeline_state: string;
 };
 
 type LlmReviewRow = {
 	id: string;
 	candidate_id: string;
+	import_job_id: string | null;
 	model: string | null;
 	action: string | null;
 	proposed_brand_slug: string | null;
@@ -73,7 +86,6 @@ type LlmReviewRow = {
 type CronJobRow = {
 	jobid: number;
 	schedule: string;
-	command: string;
 	nodename?: string | null;
 	active?: boolean | null;
 	jobname?: string | null;
@@ -87,6 +99,45 @@ type CronRunRow = {
 	return_message: string | null;
 };
 
+type ImportCronWorker = {
+	jobid: number | null;
+	jobname: string;
+	label: string;
+	schedule: string | null;
+	configured: boolean;
+	active: boolean;
+	lastStatus: string | null;
+	lastStartedAt: string | null;
+	lastEndedAt: string | null;
+	lastMessage: string | null;
+};
+
+type RegionRunSummary = {
+	id: string;
+	regionKey: string | null;
+	status: JobStatus;
+	createdAt: string;
+	startedAt: string | null;
+	finishedAt: string | null;
+	totalTiles: number;
+	tileStatusCounts: Partial<Record<JobStatus, number>>;
+	totalElements: number;
+	insertedOrUpdated: number;
+	skipped: number;
+	unchanged: number;
+	candidateCount: number;
+	candidateStatusCounts: Partial<Record<OsmCandidateStatus, number>>;
+	pipelineStateCounts: Record<string, number>;
+};
+
+const expectedImportCronWorkers = [
+	{ nameFragment: 'drain-osm-import', label: 'Tile queue drain' },
+	{ nameFragment: 'process-osm-candidates', label: 'Deterministic processing' },
+	{ nameFragment: 'score-osm-candidates', label: 'LLM review' },
+	{ nameFragment: 'apply-safe-osm-reviews', label: 'Safe LLM auto-apply' },
+	{ nameFragment: 'reset-stuck-osm-llm', label: 'Stuck LLM recovery' }
+] as const;
+
 function increment<T extends string>(record: Record<T, number>, key: T, amount = 1) {
 	record[key] = (record[key] ?? 0) + amount;
 }
@@ -97,32 +148,82 @@ function countBy<T extends string>(items: Array<{ status: T }>) {
 	return counts;
 }
 
-export const load: PageServerLoad = async ({ locals }) => {
-	// Jobs
-	const { data: jobs, error: jobsErr } = await locals.supabase
+export const load: PageServerLoad = async ({ locals, url }) => {
+	const { data: regionJobData, error: regionJobsError } = await locals.supabase
 		.schema('ingest')
 		.from('osm_import_jobs')
 		.select(
 			'id,source,status,job_kind,parent_job_id,region_key,tile_index,total_tiles,created_at,started_at,finished_at,stats,note,error_text'
 		)
+		.eq('job_kind', 'region')
 		.order('created_at', { ascending: false })
-		.limit(500);
-	if (jobsErr) {
-		console.error(jobsErr);
-		throw error(500, `Failed to load OSM import jobs: ${jobsErr.message}`);
+		.limit(25);
+	if (regionJobsError) {
+		console.error(regionJobsError);
+		throw error(500, `Failed to load OSM region imports: ${regionJobsError.message}`);
 	}
 
-	const jobRows = (jobs ?? []) as JobRow[];
-	const regionJobs = jobRows.filter((job) => job.job_kind === 'region');
+	const regionJobs = (regionJobData ?? []) as JobRow[];
+	const regionJobIds = regionJobs.map((job) => job.id);
+	const tileJobs: JobRow[] = [];
+	if (regionJobIds.length) {
+		const pageSize = 1000;
+		for (let offset = 0; offset < 10000; offset += pageSize) {
+			const { data: tilePage, error: tileJobsError } = await locals.supabase
+				.schema('ingest')
+				.from('osm_import_jobs')
+				.select(
+					'id,source,status,job_kind,parent_job_id,region_key,tile_index,total_tiles,created_at,started_at,finished_at,stats,note,error_text'
+				)
+				.eq('job_kind', 'tile')
+				.in('parent_job_id', regionJobIds)
+				.order('created_at', { ascending: false })
+				.range(offset, offset + pageSize - 1);
+			if (tileJobsError) {
+				console.error(tileJobsError);
+				throw error(500, `Failed to load OSM tile jobs: ${tileJobsError.message}`);
+			}
+			const rows = (tilePage ?? []) as JobRow[];
+			tileJobs.push(...rows);
+			if (rows.length < pageSize) break;
+		}
+	}
+
+	const jobRows = [...regionJobs, ...tileJobs].sort(
+		(left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+	);
 	const latestRegionJob = regionJobs[0] ?? null;
 	const latestTileJobs = latestRegionJob
-		? jobRows.filter((job) => job.parent_job_id === latestRegionJob.id)
+		? tileJobs.filter((job) => job.parent_job_id === latestRegionJob.id)
 		: [];
+	const latestTileJobIds = new Set(latestTileJobs.map((job) => job.id));
+
+	const processRows: ProcessSummaryRow[] = [];
+	const processPageSize = 1000;
+	for (let offset = 0; offset < 50000; offset += processPageSize) {
+		const { data: processPage, error: processSummaryErr } = await locals.supabase
+			.schema('ingest')
+			.from('osm_candidate_pipeline_states')
+			.select(
+				'id,import_job_id,osm_type,osm_id,name,lat,lon,source,source_key,process_status,process_reason,match_bucket,matched_brand_slug,llm_review_status,llm_review_error,pipeline_state'
+			)
+			.order('id', { ascending: true })
+			.range(offset, offset + processPageSize - 1);
+		if (processSummaryErr) {
+			console.error(processSummaryErr);
+			throw error(500, `Failed to load candidate status summary: ${processSummaryErr.message}`);
+		}
+		const rows = (processPage ?? []) as ProcessSummaryRow[];
+		processRows.push(...rows);
+		if (rows.length < processPageSize) break;
+	}
+	const currentProcessRows = processRows.filter(
+		(row) => row.import_job_id && latestTileJobIds.has(row.import_job_id)
+	);
 
 	const [
 		{ data: regionCodes },
 		{ data: regionBounds },
-		{ data: processSummaryRows, error: processSummaryErr },
 		{ data: llmReviews, error: llmReviewsErr },
 		{ data: cronStatus, error: cronStatusErr }
 	] = await Promise.all([
@@ -136,13 +237,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		locals.supabase
 			.schema('ingest')
 			.from('osm_candidate_pipeline_states')
-			.select('process_status,process_reason,match_bucket,llm_review_status')
-			.limit(10000),
-		locals.supabase
-			.schema('ingest')
-			.from('osm_candidate_pipeline_states')
 			.select(
-				'id:llm_review_id,candidate_id:id,model:llm_model,action:llm_action,proposed_brand_slug:llm_proposed_brand_slug,proposed_display:llm_proposed_display,confidence:llm_confidence,reason:llm_reason,evidence:llm_evidence,sources:llm_sources,auto_decision,created_at:llm_review_created_at'
+				'id:llm_review_id,candidate_id:id,import_job_id,model:llm_model,action:llm_action,proposed_brand_slug:llm_proposed_brand_slug,proposed_display:llm_proposed_display,confidence:llm_confidence,reason:llm_reason,evidence:llm_evidence,sources:llm_sources,auto_decision,created_at:llm_review_created_at'
 			)
 			.not('llm_review_id', 'is', null)
 			.order('llm_review_created_at', { ascending: false })
@@ -150,26 +246,34 @@ export const load: PageServerLoad = async ({ locals }) => {
 		locals.supabase.rpc('admin_pipeline_cron_status')
 	]);
 
-	if (processSummaryErr) {
-		console.error(processSummaryErr);
-		throw error(500, `Failed to load candidate status summary: ${processSummaryErr.message}`);
-	}
 	if (llmReviewsErr) {
 		console.error(llmReviewsErr);
 		throw error(500, `Failed to load LLM review summary: ${llmReviewsErr.message}`);
 	}
 
-	const processRows = (processSummaryRows ?? []) as ProcessSummaryRow[];
 	const candidateStatusCounts = {} as Record<OsmCandidateStatus, number>;
+	const pipelineStateCounts: Record<string, number> = {};
 	const llmReviewStatusCounts = {} as Record<LlmReviewStatus, number>;
 	const matchBucketCounts = {} as Record<string, number>;
 	const processReasonCounts = new Map<
 		string,
 		{ status: OsmCandidateStatus; reason: string; count: number }
 	>();
-	for (const row of processRows) {
+	for (const row of currentProcessRows) {
 		increment(candidateStatusCounts, row.process_status);
-		if (row.llm_review_status) increment(llmReviewStatusCounts, row.llm_review_status);
+		increment(pipelineStateCounts, row.pipeline_state);
+		if (
+			row.pipeline_state === 'not_reviewed_yet' ||
+			row.pipeline_state === 'awaiting_current_llm_review'
+		) {
+			increment(llmReviewStatusCounts, 'pending');
+		} else if (row.pipeline_state === 'llm_processing') {
+			increment(llmReviewStatusCounts, 'processing');
+		} else if (row.pipeline_state === 'llm_failed') {
+			increment(llmReviewStatusCounts, 'failed');
+		} else if (row.llm_review_status === 'reviewed') {
+			increment(llmReviewStatusCounts, 'reviewed');
+		}
 		if (row.match_bucket)
 			matchBucketCounts[row.match_bucket] = (matchBucketCounts[row.match_bucket] ?? 0) + 1;
 		const reason = row.process_reason ?? 'none';
@@ -179,7 +283,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		else processReasonCounts.set(key, { status: row.process_status, reason, count: 1 });
 	}
 
-	const reviewRows = (llmReviews ?? []) as LlmReviewRow[];
+	const reviewRows = ((llmReviews ?? []) as LlmReviewRow[]).filter(
+		(review) => review.import_job_id && latestTileJobIds.has(review.import_job_id)
+	);
 	const llmActionCounts: Record<string, number> = {};
 	const llmAutoDecisionCounts: Record<string, number> = {};
 	for (const review of reviewRows) {
@@ -197,8 +303,102 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const cronJobs = cronPayload?.jobs ?? [];
 	const cronRuns = cronPayload?.runs ?? [];
 	const cronError = cronStatusErr?.message ?? null;
+	const latestCronRunByJob = new Map<number, CronRunRow>();
+	for (const run of cronRuns) {
+		if (!latestCronRunByJob.has(run.jobid)) latestCronRunByJob.set(run.jobid, run);
+	}
+	const importCronWorkers: ImportCronWorker[] = expectedImportCronWorkers.map((expected) => {
+		const job = cronJobs.find((item) =>
+			(item.jobname ?? '').toLowerCase().includes(expected.nameFragment)
+		);
+		if (!job) {
+			return {
+				jobid: null,
+				jobname: expected.nameFragment,
+				label: expected.label,
+				schedule: null,
+				configured: false,
+				active: false,
+				lastStatus: null,
+				lastStartedAt: null,
+				lastEndedAt: null,
+				lastMessage: null
+			};
+		}
+
+		const jobname = job.jobname ?? `cron job ${job.jobid}`;
+		const latestRun = latestCronRunByJob.get(job.jobid);
+		return {
+			jobid: job.jobid,
+			jobname,
+			label: expected.label,
+			schedule: job.schedule,
+			configured: true,
+			active: job.active !== false,
+			lastStatus: latestRun?.status ?? null,
+			lastStartedAt: latestRun?.start_time ?? null,
+			lastEndedAt: latestRun?.end_time ?? null,
+			lastMessage: latestRun?.return_message ?? null
+		};
+	});
+	const importCronLastActivity =
+		importCronWorkers
+			.flatMap((worker) => (worker.lastStartedAt ? [worker.lastStartedAt] : []))
+			.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] ?? null;
+	const importCronConfiguredCount = importCronWorkers.filter((worker) => worker.configured).length;
+	const importCronActiveCount = importCronWorkers.filter(
+		(worker) => worker.configured && worker.active
+	).length;
+	const importCronIssueCount = importCronWorkers.filter(
+		(worker) =>
+			!worker.configured ||
+			!worker.active ||
+			(worker.lastStatus !== null && worker.lastStatus !== 'succeeded')
+	).length;
+
+	const tileParentById = new Map(
+		tileJobs.flatMap((job) => (job.parent_job_id ? [[job.id, job.parent_job_id] as const] : []))
+	);
+	const processRowsByRegion = new Map<string, ProcessSummaryRow[]>();
+	for (const row of processRows) {
+		const parentId = row.import_job_id ? tileParentById.get(row.import_job_id) : null;
+		if (!parentId) continue;
+		const rows = processRowsByRegion.get(parentId) ?? [];
+		rows.push(row);
+		processRowsByRegion.set(parentId, rows);
+	}
+	const regionRunHistory: RegionRunSummary[] = regionJobs.slice(1, 13).map((regionJob) => {
+		const tiles = tileJobs.filter((job) => job.parent_job_id === regionJob.id);
+		const candidateRows = processRowsByRegion.get(regionJob.id) ?? [];
+		const runCandidateStatusCounts = {} as Record<OsmCandidateStatus, number>;
+		const runPipelineStateCounts: Record<string, number> = {};
+		for (const row of candidateRows) {
+			increment(runCandidateStatusCounts, row.process_status);
+			increment(runPipelineStateCounts, row.pipeline_state);
+		}
+		const sumTileStat = (key: string) =>
+			tiles.reduce((total, tile) => total + Number(tile.stats?.[key] ?? 0), 0);
+		return {
+			id: regionJob.id,
+			regionKey: regionJob.region_key,
+			status: regionJob.status,
+			createdAt: regionJob.created_at,
+			startedAt: regionJob.started_at,
+			finishedAt: regionJob.finished_at,
+			totalTiles: regionJob.total_tiles ?? tiles.length,
+			tileStatusCounts: countBy(tiles),
+			totalElements: sumTileStat('total_elements'),
+			insertedOrUpdated: sumTileStat('inserted_or_updated'),
+			skipped: sumTileStat('skipped'),
+			unchanged: sumTileStat('unchanged'),
+			candidateCount: candidateRows.length,
+			candidateStatusCounts: runCandidateStatusCounts,
+			pipelineStateCounts: runPipelineStateCounts
+		};
+	});
 
 	return {
+		view: url.searchParams.get('view') === 'history' ? ('history' as const) : ('current' as const),
 		jobs: jobRows,
 		latestRegionJob,
 		latestTileJobs,
@@ -207,6 +407,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		regionCodes: (regionCodes ?? []) as RegionCodeRow[],
 		regionBounds: (regionBounds ?? []) as RegionBoundsRow[],
 		candidateStatusCounts,
+		currentRunCandidates: currentProcessRows,
+		pipelineStateCounts,
 		llmReviewStatusCounts,
 		matchBucketCounts,
 		processReasonCounts: Array.from(processReasonCounts.values()).sort((a, b) => b.count - a.count),
@@ -215,7 +417,16 @@ export const load: PageServerLoad = async ({ locals }) => {
 		llmAutoDecisionCounts,
 		cronJobs,
 		cronRuns,
-		cronError
+		cronError,
+		regionRunHistory,
+		importCronWorkers,
+		importCronSummary: {
+			expected: expectedImportCronWorkers.length,
+			configured: importCronConfiguredCount,
+			active: importCronActiveCount,
+			issues: importCronIssueCount,
+			lastActivity: importCronLastActivity
+		}
 	};
 };
 
@@ -378,12 +589,9 @@ export const actions: Actions = {
 		const limit = Number(form.get('limit') ?? 25);
 		const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(250, limit)) : 25;
 
-		const { data, error: rpcErr } = await locals.supabase.rpc(
-			'admin_apply_auto_osm_llm_reviews',
-			{
-				p_limit: safeLimit
-			}
-		);
+		const { data, error: rpcErr } = await locals.supabase.rpc('admin_apply_auto_osm_llm_reviews', {
+			p_limit: safeLimit
+		});
 
 		if (rpcErr) {
 			throw redirect(

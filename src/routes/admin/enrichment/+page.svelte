@@ -193,6 +193,7 @@
 			running: number;
 			succeeded: number;
 			failed: number;
+			needsEnrichment: number;
 			publishedProfiles: number;
 			dossiersNeedingReview: number;
 			dueRefreshes: number;
@@ -642,9 +643,9 @@
 
 	<section
 		aria-label="Enrichment metrics"
-		class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7"
+		class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9"
 	>
-		{#each [['Queued', data.metrics.queued, 'text-zinc-950'], ['Running', data.metrics.running, 'text-blue-700'], ['Succeeded', data.metrics.succeeded, 'text-emerald-700'], ['Failed', data.metrics.failed, data.metrics.failed ? 'text-red-700' : 'text-zinc-950'], ['Published', data.metrics.publishedProfiles, 'text-emerald-700'], ['Needs review', data.metrics.dossiersNeedingReview, 'text-amber-700'], ['Due refreshes', data.metrics.dueRefreshes, 'text-zinc-950'], ['Open flags', data.metrics.openIntegrityFlags, data.metrics.openIntegrityFlags ? 'text-red-700' : 'text-zinc-950']] as metric}
+		{#each [['Needs enrichment', data.metrics.needsEnrichment, data.metrics.needsEnrichment ? 'text-amber-700' : 'text-zinc-950'], ['Queued', data.metrics.queued, 'text-zinc-950'], ['Running', data.metrics.running, 'text-blue-700'], ['Succeeded', data.metrics.succeeded, 'text-emerald-700'], ['Failed', data.metrics.failed, data.metrics.failed ? 'text-red-700' : 'text-zinc-950'], ['Published', data.metrics.publishedProfiles, 'text-emerald-700'], ['Needs review', data.metrics.dossiersNeedingReview, 'text-amber-700'], ['Due refreshes', data.metrics.dueRefreshes, 'text-zinc-950'], ['Open flags', data.metrics.openIntegrityFlags, data.metrics.openIntegrityFlags ? 'text-red-700' : 'text-zinc-950']] as metric}
 			<div class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
 				<p class="text-xs font-medium text-zinc-500">{metric[0]}</p>
 				<p class="mt-2 text-2xl font-semibold {metric[2]}">{number.format(Number(metric[1]))}</p>

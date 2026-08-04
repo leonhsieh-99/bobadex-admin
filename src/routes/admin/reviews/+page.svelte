@@ -19,7 +19,10 @@
 		| 'applied_approved'
 		| 'applied_blocked'
 		| 'applied_merged'
+		| 'applied_rejected'
 		| 'awaiting_current_llm_review'
+		| 'llm_processing'
+		| 'llm_failed'
 		| 'not_reviewed_yet'
 		| 'waiting_manual_review'
 		| 'waiting_region_reconciliation';
@@ -112,7 +115,10 @@
 		applied_approved: 'Applied approved',
 		applied_blocked: 'Applied blocked',
 		applied_merged: 'Applied merged',
+		applied_rejected: 'Applied rejected',
 		awaiting_current_llm_review: 'Awaiting current LLM',
+		llm_processing: 'LLM processing',
+		llm_failed: 'LLM failed',
 		not_reviewed_yet: 'Not reviewed',
 		waiting_manual_review: 'Manual review',
 		waiting_region_reconciliation: 'Region reconciliation'

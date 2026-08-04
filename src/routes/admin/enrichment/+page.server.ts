@@ -6,6 +6,10 @@ import type { Actions, PageServerLoad } from './$types';
 
 type JsonRecord = Record<string, unknown>;
 
+type EligibleBrandRow = {
+	slug: string;
+};
+
 type DossierRow = {
 	brand_slug: string;
 	research_run_id: string | null;
@@ -199,13 +203,15 @@ function stringArray(value: unknown) {
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
+	const admin = supabaseAdmin();
 	const [
 		jobsResult,
 		dossiersResult,
 		profilesResult,
 		flagsResult,
 		cronStatusResult,
-		recentRunsResult
+		recentRunsResult,
+		eligibleBrandsResult
 	] = await Promise.all([
 		locals.supabase
 			.schema('ingest')
@@ -238,7 +244,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 				'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
 			)
 			.order('created_at', { ascending: false })
-			.limit(125)
+			.limit(125),
+		admin
+			.from('brands')
+			.select('slug')
+			.eq('status', 'active')
+			.eq('is_demo', false)
+			.neq('enrichment_mode', 'disabled')
 	]);
 
 	const sourceResults = [
@@ -246,7 +258,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		['Dossiers', dossiersResult],
 		['Profiles', profilesResult],
 		['Integrity flags', flagsResult],
-		['Research runs', recentRunsResult]
+		['Research runs', recentRunsResult],
+		['Eligible brands', eligibleBrandsResult]
 	] as const;
 	const sourceErrors: string[] = sourceResults
 		.filter(([, result]) => result.error)
@@ -260,6 +273,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const profiles = (profilesResult.data ?? []) as ProfileRow[];
 	const flags = (flagsResult.data ?? []) as IntegrityFlagRow[];
 	const recentRuns = (recentRunsResult.data ?? []) as ResearchRunRow[];
+	const eligibleBrands = (eligibleBrandsResult.data ?? []) as EligibleBrandRow[];
 	const cronPayload =
 		cronStatusResult.data &&
 		typeof cronStatusResult.data === 'object' &&
@@ -299,7 +313,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				.select('id,brand_slug,normalized_name,alias_display,match_mode')
 				.in('brand_slug', editorBrandSlugs)
 				.order('normalized_name'),
-			locals.supabase
+			admin
 				.schema('mod')
 				.from('brand_review_actions')
 				.select('brand_slug,action,brand_snapshot,created_at')
@@ -391,6 +405,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const sourceById = new Map(sources.map((row) => [row.id, row]));
 	const profileByBrand = new Map(profiles.map((row) => [row.brand_slug, row]));
 	const dossierByBrand = new Map(dossiers.map((row) => [row.brand_slug, row]));
+	const needsEnrichment = eligibleBrands.filter((brand) => !dossierByBrand.has(brand.slug)).length;
 	const dossierByRunId = new Map(
 		dossiers.flatMap((row) => (row.research_run_id ? [[row.research_run_id, row] as const] : []))
 	);
@@ -568,6 +583,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			running: jobStatusCounts.running ?? 0,
 			succeeded: jobStatusCounts.succeeded ?? 0,
 			failed: jobStatusCounts.failed ?? 0,
+			needsEnrichment,
 			publishedProfiles: profiles.length,
 			dossiersNeedingReview: activeReviewDossiers.length,
 			dueRefreshes: dossiers.filter(
