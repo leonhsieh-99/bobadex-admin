@@ -49,6 +49,7 @@
 		run?: {
 			id: string;
 			model: string | null;
+			researcher_version: string | null;
 			customer_summary_draft: string | null;
 			creative_brief_draft: Record<string, unknown> | string | null;
 			error_text: string | null;
@@ -72,6 +73,7 @@
 		run: {
 			id: string;
 			model: string | null;
+			researcher_version: string | null;
 			customer_summary_draft: string | null;
 			creative_brief_draft: Record<string, unknown> | string | null;
 			error_text: string | null;
@@ -99,6 +101,11 @@
 			publication_method: string | null;
 			published_at: string | null;
 		} | null;
+		archivedLegacySnapshot: {
+			action: string;
+			created_at: string;
+			brand_snapshot: Record<string, unknown> | null;
+		} | null;
 		osmLocations: Array<{
 			id: string;
 			name: string | null;
@@ -116,9 +123,34 @@
 		trigger_kind: string;
 		status: string;
 		attempt_count: number;
+		max_attempts: number;
+		available_at: string;
+		claimed_at: string | null;
+		lease_expires_at: string | null;
 		last_error: string | null;
+		paused: boolean;
+		controlled: boolean;
 		created_at: string;
 		completed_at?: string | null;
+		run: {
+			id: string;
+			status: string;
+			researcherVersion: string | null;
+			startedAt: string | null;
+			completedAt: string | null;
+			error: string | null;
+			executedQueries: string[];
+			retrievedSources: Array<{ url: string | null; title: string | null }>;
+			retainedSources: Array<{ id: string; url: string; title: string | null }>;
+			gate: {
+				status: string;
+				version: string | null;
+				identityConfidence: number | null;
+				hasAdequateInput: boolean;
+				hasBlockingFlag: boolean;
+				locationAnchor: string | null;
+			};
+		} | null;
 	};
 
 	type PublishedProfile = {
@@ -154,6 +186,7 @@
 		metrics: {
 			queued: number;
 			running: number;
+			succeeded: number;
 			failed: number;
 			publishedProfiles: number;
 			dossiersNeedingReview: number;
@@ -161,6 +194,8 @@
 			openIntegrityFlags: number;
 		};
 		dossiers: Dossier[];
+		v8Dossiers: Dossier[];
+		legacyDossiers: Dossier[];
 		activeJobs: EnrichmentJob[];
 		publishedProfiles: PublishedProfile[];
 		recentJobs: EnrichmentJob[];
@@ -174,7 +209,11 @@
 	let deleteError = '';
 	let rerunning: PublishableDossier | null = null;
 	let rerunAnchor = '';
+	let rerunSourceUrl = '';
+	let rerunNote = '';
 	let anchorDrafts: Record<string, string> = {};
+	let sourceDrafts: Record<string, string> = {};
+	let noteDrafts: Record<string, string> = {};
 	let rerunError = '';
 	let resetting: PublishableDossier | null = null;
 	let resetReason = '';
@@ -198,7 +237,8 @@
 		match_mode: string;
 	}> = [];
 	let pendingAction = '';
-	let activeTab: 'review' | 'queue' | 'published' = 'review';
+	let activeTab: 'v8' | 'review' | 'queue' | 'published' = data.v8Dossiers.length ? 'v8' : 'review';
+	let cohortCount = 1;
 	let refreshing = false;
 	let liveCron = data.cron;
 	let cronRefreshing = false;
@@ -241,6 +281,15 @@
 		return JSON.stringify(value, null, 2);
 	}
 
+	function archivedDossier(dossier: Dossier) {
+		const snapshot = dossier.archivedLegacySnapshot?.brand_snapshot;
+		if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+		const legacy = snapshot.dossier;
+		return legacy && typeof legacy === 'object' && !Array.isArray(legacy)
+			? (legacy as Record<string, unknown>)
+			: null;
+	}
+
 	function flagDescription(details: unknown) {
 		if (typeof details === 'string') return details;
 		if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
@@ -278,7 +327,10 @@
 				if (result.type === 'success') {
 					toasts.success(message);
 					if (action === 'deleteFalsePositive') closeDelete();
-					if (action === 'rerunBrand') closeRerun();
+					if (action === 'runControlled') {
+						closeRerun();
+						activeTab = 'queue';
+					}
 					if (action === 'resetEnrichment') closeReset();
 					if (action === 'markClosed') closeMarkClosed();
 					if (action === 'reviewAndPublish') closePublish();
@@ -290,7 +342,7 @@
 					return;
 				}
 				if (action === 'deleteFalsePositive') deleteError = message;
-				if (action === 'rerunBrand') rerunError = message;
+				if (action === 'runControlled') rerunError = message;
 				if (action === 'resetEnrichment') resetError = message;
 				if (action === 'markClosed') closeError = message;
 				if (action === 'reviewAndPublish') publishError = message;
@@ -318,6 +370,8 @@
 	function openRerun(dossier: PublishableDossier) {
 		rerunning = dossier;
 		rerunAnchor = anchorDraft(dossier);
+		rerunSourceUrl = sourceDrafts[dossier.brand_slug] ?? dossier.identity.website ?? '';
+		rerunNote = noteDrafts[dossier.brand_slug] ?? '';
 		rerunError = '';
 	}
 
@@ -327,6 +381,14 @@
 
 	function setAnchorDraft(dossier: PublishableDossier, value: string) {
 		anchorDrafts = { ...anchorDrafts, [dossier.brand_slug]: value };
+	}
+
+	function setSourceDraft(dossier: PublishableDossier, value: string) {
+		sourceDrafts = { ...sourceDrafts, [dossier.brand_slug]: value };
+	}
+
+	function setNoteDraft(dossier: PublishableDossier, value: string) {
+		noteDrafts = { ...noteDrafts, [dossier.brand_slug]: value };
 	}
 
 	function openReset(dossier: PublishableDossier) {
@@ -366,6 +428,8 @@
 	function closeRerun() {
 		rerunning = null;
 		rerunAnchor = '';
+		rerunSourceUrl = '';
+		rerunNote = '';
 		rerunError = '';
 	}
 
@@ -550,7 +614,7 @@
 		aria-label="Enrichment metrics"
 		class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7"
 	>
-		{#each [['Queued', data.metrics.queued, 'text-zinc-950'], ['Running', data.metrics.running, 'text-blue-700'], ['Failed', data.metrics.failed, data.metrics.failed ? 'text-red-700' : 'text-zinc-950'], ['Published', data.metrics.publishedProfiles, 'text-emerald-700'], ['Needs review', data.metrics.dossiersNeedingReview, 'text-amber-700'], ['Due refreshes', data.metrics.dueRefreshes, 'text-zinc-950'], ['Open flags', data.metrics.openIntegrityFlags, data.metrics.openIntegrityFlags ? 'text-red-700' : 'text-zinc-950']] as metric}
+		{#each [['Queued', data.metrics.queued, 'text-zinc-950'], ['Running', data.metrics.running, 'text-blue-700'], ['Succeeded', data.metrics.succeeded, 'text-emerald-700'], ['Failed', data.metrics.failed, data.metrics.failed ? 'text-red-700' : 'text-zinc-950'], ['Published', data.metrics.publishedProfiles, 'text-emerald-700'], ['Needs review', data.metrics.dossiersNeedingReview, 'text-amber-700'], ['Due refreshes', data.metrics.dueRefreshes, 'text-zinc-950'], ['Open flags', data.metrics.openIntegrityFlags, data.metrics.openIntegrityFlags ? 'text-red-700' : 'text-zinc-950']] as metric}
 			<div class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
 				<p class="text-xs font-medium text-zinc-500">{metric[0]}</p>
 				<p class="mt-2 text-2xl font-semibold {metric[2]}">{number.format(Number(metric[1]))}</p>
@@ -570,57 +634,74 @@
 			<div class="lg:pr-6">
 				<div class="flex items-start justify-between gap-4">
 					<div>
-						<h4 class="font-semibold text-zinc-950">Automatic selection</h4>
+						<h4 class="font-semibold text-zinc-950">Controlled v8 cohort</h4>
 						<p class="mt-1 text-sm text-zinc-500">
-							Queue the next eligible brands without pasting slugs.
+							Queue a small audit cohort for deliberate pipeline testing.
 						</p>
 					</div>
 					<span class="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700"
-						>Maximum 500</span
+						>Maximum 25</span
 					>
 				</div>
 
 				<form
 					method="post"
-					action="?/campaign"
-					use:enhance={actionEnhance('campaign')}
+					action="?/controlledCohort"
+					use:enhance={actionEnhance('controlledCohort')}
+					onsubmit={(event) => {
+						const estimate = (cohortCount * 0.005).toFixed(3);
+						if (
+							!window.confirm(
+								`Queue up to ${cohortCount} controlled v8 audit${cohortCount === 1 ? '' : 's'}? Estimated Search API cost: $${estimate}, excluding synthesis.`
+							)
+						)
+							event.preventDefault();
+					}}
 					class="mt-4 grid gap-4 sm:grid-cols-2"
 				>
-					<label class="sm:col-span-2">
-						<span class="text-sm font-medium text-zinc-800">Campaign type</span>
+					<label>
+						<span class="text-sm font-medium text-zinc-800">Cohort size</span>
 						<select
-							name="trigger_kind"
+							name="count"
+							bind:value={cohortCount}
 							class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm focus:border-zinc-500 focus:ring-zinc-500"
 						>
-							<option value="backfill">Backfill · never researched</option>
-							<option value="audit">Audit · least recently researched</option>
-							<option value="scheduled_refresh">Scheduled refresh · currently due</option>
+							<option value={1}>1 brand</option>
+							<option value={5}>5 brands</option>
+							<option value={10}>10 brands</option>
+							<option value={25}>25 brands</option>
 						</select>
 					</label>
 					<label>
-						<span class="text-sm font-medium text-zinc-800">Brands to select</span>
-						<input
-							name="count"
-							type="number"
-							min="1"
-							max="500"
-							step="1"
-							value="100"
-							required
-							class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm tabular-nums focus:border-zinc-500 focus:ring-zinc-500"
-						/>
+						<span class="text-sm font-medium text-zinc-800">Location anchor</span>
+						<select
+							name="anchor_filter"
+							class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+						>
+							<option value="any">Any anchor state</option>
+							<option value="present">Anchor present</option>
+							<option value="missing">Anchor missing</option>
+						</select>
 					</label>
-					<label>
-						<span class="text-sm font-medium text-zinc-800">Process immediately</span>
+					<div class="flex flex-wrap gap-x-5 gap-y-2 sm:col-span-2">
+						<label class="flex items-center gap-2 text-sm text-zinc-700"
+							><input type="checkbox" name="local_only" class="rounded border-zinc-300" /> Local identity</label
+						>
+						<label class="flex items-center gap-2 text-sm text-zinc-700"
+							><input type="checkbox" name="missing_website" class="rounded border-zinc-300" /> Missing
+							website</label
+						>
+						<label class="flex items-center gap-2 text-sm text-zinc-700"
+							><input type="checkbox" name="prior_failures" class="rounded border-zinc-300" /> Prior
+							failures</label
+						>
+					</div>
+					<label class="sm:col-span-2">
+						<span class="text-sm font-medium text-zinc-800">Test note</span>
 						<input
-							name="limit"
-							type="number"
-							min="1"
-							max="5"
-							step="1"
-							value="5"
-							required
-							class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm tabular-nums focus:border-zinc-500 focus:ring-zinc-500"
+							name="note"
+							placeholder="Purpose of this cohort"
+							class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
 						/>
 					</label>
 					<div class="sm:col-span-2">
@@ -628,10 +709,17 @@
 							class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
 							disabled={Boolean(pendingAction)}
 						>
-							{pendingAction === 'campaign' ? 'Starting campaign…' : 'Start counted campaign'}
+							{pendingAction === 'controlledCohort'
+								? 'Queuing tests…'
+								: `Queue ${cohortCount} controlled test${cohortCount === 1 ? '' : 's'}`}
 						</button>
 						<p class="mt-2 text-xs text-zinc-500">
-							The selected remainder stays queued for subsequent worker or cron runs.
+							Estimated Search API cost: ${(cohortCount * 0.005).toLocaleString('en-US', {
+								style: 'currency',
+								currency: 'USD',
+								minimumFractionDigits: 3
+							})}. Synthesis cost is additional. Local identity includes corroboration-required and
+							manual-review brands.
 						</p>
 					</div>
 				</form>
@@ -862,7 +950,7 @@
 
 	<nav class="sticky top-0 z-20 -mx-5 border-y border-zinc-200 bg-white/95 px-5 backdrop-blur">
 		<div class="flex gap-6 overflow-x-auto" aria-label="Enrichment views">
-			{#each [['review', 'Needs review', data.dossiers.length], ['queue', 'Queue', data.activeJobs.length], ['published', 'Published', data.publishedProfiles.length]] as tab}
+			{#each [['v8', 'V8 review', data.v8Dossiers.length], ['review', 'Legacy review', data.legacyDossiers.length], ['queue', 'Runs', data.activeJobs.length], ['published', 'Published', data.publishedProfiles.length]] as tab}
 				<button
 					type="button"
 					onclick={() => (activeTab = tab[0] as typeof activeTab)}
@@ -887,20 +975,24 @@
 		</div>
 	</nav>
 
-	{#if activeTab === 'review'}
+	{#if activeTab === 'v8' || activeTab === 'review'}
+		{@const visibleDossiers = activeTab === 'v8' ? data.v8Dossiers : data.legacyDossiers}
 		<section>
 			<div class="mb-4 flex items-end justify-between gap-4">
 				<div>
-					<h3 class="text-lg font-semibold text-zinc-950">Dossiers needing review</h3>
+					<h3 class="text-lg font-semibold text-zinc-950">
+						{activeTab === 'v8' ? 'V8 dossiers needing review' : 'Legacy dossiers needing review'}
+					</h3>
 					<p class="mt-1 text-sm text-zinc-500">
 						Claims, citations, and integrity signals from the current research run.
 					</p>
 				</div>
-				<span class="text-sm text-zinc-500 tabular-nums">{data.dossiers.length} dossiers</span>
+				<span class="text-sm text-zinc-500 tabular-nums">{visibleDossiers.length} dossiers</span>
 			</div>
 
 			<div class="space-y-5">
-				{#each data.dossiers as dossier}
+				{#each visibleDossiers as dossier}
+					{@const legacyDossier = archivedDossier(dossier)}
 					<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
 						<header
 							class="flex flex-col gap-3 border-b border-zinc-200 px-5 py-4 sm:flex-row sm:items-start sm:justify-between"
@@ -929,9 +1021,11 @@
 									{/if}
 								</div>
 								<p class="mt-1 text-xs text-zinc-500">
-									Updated {relativeDate(dossier.updated_at)}{dossier.run?.model
-										? ` · ${dossier.run.model}`
-										: ''}
+									Updated {relativeDate(dossier.updated_at)}{dossier.run?.researcher_version
+										? ` · ${dossier.run.researcher_version}`
+										: dossier.run?.model
+											? ` · ${dossier.run.model}`
+											: ''}
 								</p>
 							</div>
 							<div class="grid grid-cols-3 gap-4 text-right text-xs sm:grid-cols-5">
@@ -970,13 +1064,33 @@
 
 						<div class="grid gap-6 px-5 py-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(280px,0.55fr)]">
 							<div class="min-w-0 space-y-6">
-								<section>
-									<h5 class="text-xs font-semibold text-zinc-500 uppercase">Draft summary</h5>
-									<p class="mt-2 text-sm leading-6 whitespace-pre-wrap text-zinc-700">
-										{dossier.run?.customer_summary_draft ??
-											dossier.customer_summary ??
-											'No draft summary was produced.'}
-									</p>
+								<section class={activeTab === 'v8' ? 'grid gap-4 md:grid-cols-2' : ''}>
+									<div class={activeTab === 'v8' ? 'border-l-2 border-blue-500 pl-3' : ''}>
+										<h5 class="text-xs font-semibold text-zinc-500 uppercase">
+											{activeTab === 'v8' ? 'New v8 dossier' : 'Draft summary'}
+										</h5>
+										<p class="mt-2 text-sm leading-6 whitespace-pre-wrap text-zinc-700">
+											{dossier.run?.customer_summary_draft ??
+												dossier.customer_summary ??
+												'No draft summary was produced.'}
+										</p>
+									</div>
+									{#if activeTab === 'v8'}
+										<div class="border-l-2 border-zinc-300 pl-3">
+											<h5 class="text-xs font-semibold text-zinc-500 uppercase">
+												Archived legacy snapshot
+											</h5>
+											<p class="mt-2 text-sm leading-6 whitespace-pre-wrap text-zinc-700">
+												{legacyDossier && typeof legacyDossier.customer_summary === 'string'
+													? legacyDossier.customer_summary
+													: (dossier.profile?.summary ??
+														'No archived legacy dossier is available.')}
+											</p>
+											{#if dossier.archivedLegacySnapshot}<p class="mt-1 text-xs text-zinc-500">
+													Archived {relativeDate(dossier.archivedLegacySnapshot.created_at)}
+												</p>{/if}
+										</div>
+									{/if}
 								</section>
 
 								<section>
@@ -1169,7 +1283,7 @@
 									>
 										Review and publish
 									</button>
-									<div class="grid gap-1 sm:grid-cols-[minmax(13rem,18rem)_auto] sm:items-end">
+									<div class="grid w-full gap-2 sm:grid-cols-3 lg:max-w-3xl">
 										<label class="block">
 											<span class="text-[11px] font-medium text-zinc-600"
 												>Enrichment location anchor</span
@@ -1182,22 +1296,38 @@
 												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
 											/>
 										</label>
+										<label class="block">
+											<span class="text-[11px] font-medium text-zinc-600"
+												>Verified website/source URL</span
+											>
+											<input
+												value={sourceDrafts[dossier.brand_slug] ?? dossier.identity.website ?? ''}
+												oninput={(event) => setSourceDraft(dossier, event.currentTarget.value)}
+												placeholder="https://…"
+												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
+											/>
+										</label>
+										<label class="block">
+											<span class="text-[11px] font-medium text-zinc-600">Test note</span>
+											<input
+												value={noteDrafts[dossier.brand_slug] ?? ''}
+												oninput={(event) => setNoteDraft(dossier, event.currentTarget.value)}
+												placeholder="What this run should verify"
+												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
+											/>
+										</label>
 										<button
 											type="button"
 											onclick={() => openRerun(dossier)}
-											disabled={dossier.identity.enrichment_mode === 'disabled' ||
-												Boolean(dossier.activeJob) ||
-												Boolean(pendingAction)}
-											class="h-9 rounded border border-blue-200 bg-white px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-											>{dossier.identity.enrichment_mode === 'disabled'
-												? 'Enrichment disabled'
-												: dossier.activeJob
-													? 'Rerun queued'
-													: 'Rerun enrichment'}</button
+											disabled={Boolean(dossier.activeJob) || Boolean(pendingAction)}
+											class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-3"
+											>{dossier.activeJob
+												? 'Controlled run queued'
+												: 'Run controlled enrichment'}</button
 										>
-										<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
+										<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-3">
 											Used to identify local businesses during research; not treated as
-											headquarters.
+											headquarters. Controlled runs switch the brand to manual only.
 										</p>
 									</div>
 									<button
@@ -1205,7 +1335,7 @@
 										onclick={() => openReset(dossier)}
 										disabled={Boolean(pendingAction)}
 										class="rounded border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
-										>Reset enrichment</button
+										>{activeTab === 'v8' ? 'Reject and leave disabled' : 'Reset enrichment'}</button
 									>
 								</div>
 								<div
@@ -1237,76 +1367,165 @@
 						</footer>
 					</article>
 				{/each}
-				{#if data.dossiers.length === 0}<div
+				{#if visibleDossiers.length === 0}<div
 						class="border-y border-zinc-200 py-14 text-center text-sm text-zinc-500"
 					>
-						No dossiers currently need review.
+						No {activeTab === 'v8' ? 'v8' : 'legacy'} dossiers currently need review.
 					</div>{/if}
 			</div>
 		</section>
 	{:else if activeTab === 'queue'}
 		<section>
 			<div class="mb-3">
-				<h3 class="text-lg font-semibold text-zinc-950">Enrichment queue</h3>
+				<h3 class="text-lg font-semibold text-zinc-950">Enrichment runs</h3>
 				<p class="mt-1 text-sm text-zinc-500">
-					Queued and running work updates automatically every five seconds.
+					Live job, retrieval, evidence-gate, and retry status. Active work refreshes every five
+					seconds.
 				</p>
 			</div>
-			<div class="overflow-x-auto rounded-lg border border-zinc-200 bg-white">
-				<table class="min-w-full divide-y divide-zinc-200 text-left text-sm">
-					<thead class="bg-zinc-50 text-xs text-zinc-500 uppercase"
-						><tr
-							><th class="px-4 py-3 font-medium">Brand</th><th class="px-4 py-3 font-medium"
-								>Trigger</th
-							><th class="px-4 py-3 font-medium">Status</th><th class="px-4 py-3 font-medium"
-								>Attempts</th
-							><th class="px-4 py-3 font-medium">Created</th></tr
-						></thead
-					><tbody class="divide-y divide-zinc-100"
-						>{#each data.activeJobs as job}<tr
-								><td class="max-w-xs truncate px-4 py-3 font-medium text-zinc-900"
-									>{job.brand_slug}</td
-								><td class="px-4 py-3 text-zinc-600">{job.trigger_kind}</td><td class="px-4 py-3"
-									><span class="rounded px-2 py-1 text-xs font-medium {statusClasses(job.status)}"
-										>{job.status}</span
-									>{#if job.last_error}<p class="mt-1 max-w-md text-xs text-red-700">
-											{job.last_error}
-										</p>{/if}</td
-								><td class="px-4 py-3 text-zinc-600 tabular-nums">{job.attempt_count}</td><td
-									class="px-4 py-3 text-zinc-500">{relativeDate(job.created_at)}</td
-								></tr
-							>{/each}{#if data.activeJobs.length === 0}<tr
-								><td colspan="5" class="px-4 py-10 text-center text-zinc-500"
-									>The enrichment queue is clear.</td
-								></tr
-							>{/if}</tbody
-					>
-				</table>
-			</div>
-		</section>
-
-		<section>
-			<div class="mb-3">
-				<h3 class="text-lg font-semibold text-zinc-950">Recent activity</h3>
-				<p class="mt-1 text-sm text-zinc-500">Latest completed and failed worker attempts.</p>
-			</div>
-			<div class="divide-y divide-zinc-100 rounded-lg border border-zinc-200 bg-white">
-				{#each data.recentJobs.filter((job) => !['queued', 'running'].includes(job.status)) as job}
-					<div
-						class="grid gap-2 px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
-					>
-						<div class="min-w-0">
-							<p class="truncate font-medium text-zinc-900">{job.brand_slug}</p>
-							<p class="mt-0.5 text-xs text-zinc-500">{job.trigger_kind}</p>
+			<div class="space-y-3">
+				{#each data.recentJobs as job}
+					<details class="rounded-lg border border-zinc-200 bg-white open:shadow-sm">
+						<summary class="flex cursor-pointer list-none flex-wrap items-center gap-3 px-4 py-3">
+							<div class="min-w-0 flex-1">
+								<p class="truncate text-sm font-semibold text-zinc-950">{job.brand_slug}</p>
+								<p class="mt-0.5 font-mono text-[11px] text-zinc-500">{job.id}</p>
+							</div>
+							{#if job.controlled}<span
+									class="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700"
+									>Controlled</span
+								>{/if}
+							{#if job.paused}<span
+									class="rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
+									>Paused</span
+								>{/if}
+							<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(job.status)}"
+								>{job.status}</span
+							>
+							<span class="text-xs text-zinc-500"
+								>{job.attempt_count}/{job.max_attempts} attempts · {relativeDate(
+									job.completed_at ?? job.created_at
+								)}</span
+							>
+						</summary>
+						<div class="border-t border-zinc-200 px-4 py-4">
+							<div class="grid gap-4 text-sm md:grid-cols-4">
+								<div>
+									<p class="text-xs text-zinc-500">Researcher</p>
+									<p class="mt-1 font-medium text-zinc-900">
+										{job.run?.researcherVersion ?? 'Waiting for worker'}
+									</p>
+								</div>
+								<div>
+									<p class="text-xs text-zinc-500">Identity/location gate</p>
+									<p class="mt-1 font-medium text-zinc-900 capitalize">
+										{job.run?.gate.status ?? 'Pending'}
+									</p>
+									{#if job.run?.gate.locationAnchor}<p class="mt-1 text-xs text-zinc-500">
+											{job.run.gate.locationAnchor}
+										</p>{/if}
+									<p class="mt-1 text-xs text-zinc-500">
+										Derived from persisted identity confidence, input adequacy, blocking flags, and
+										the location anchor.
+									</p>
+								</div>
+								<div>
+									<p class="text-xs text-zinc-500">Sources</p>
+									<p class="mt-1 font-medium text-zinc-900">
+										{job.run?.retrievedSources.length ?? 0} retrieved · {job.run?.retainedSources
+											.length ?? 0} retained
+									</p>
+								</div>
+								<div>
+									<p class="text-xs text-zinc-500">Retry state</p>
+									<p class="mt-1 font-medium text-zinc-900">
+										{Math.max(0, job.max_attempts - job.attempt_count)} retries remaining
+									</p>
+									{#if job.lease_expires_at}<p class="mt-1 text-xs text-zinc-500">
+											Lease until {new Date(job.lease_expires_at).toLocaleTimeString()}
+										</p>{/if}
+								</div>
+							</div>
+							{#if job.last_error || job.run?.error}<div
+									class="mt-4 border-l-2 border-red-400 bg-red-50 px-3 py-2 text-sm text-red-800"
+								>
+									{job.last_error ?? job.run?.error}
+								</div>{/if}
+							<div class="mt-4 grid gap-4 lg:grid-cols-3">
+								<div>
+									<h4 class="text-xs font-semibold text-zinc-500 uppercase">
+										Executed search queries
+									</h4>
+									<ol class="mt-2 list-decimal space-y-1 pl-5 text-xs text-zinc-700">
+										{#each job.run?.executedQueries ?? [] as query}<li>
+												{query}
+											</li>{/each}{#if !job.run?.executedQueries.length}<li
+												class="list-none text-zinc-500"
+											>
+												No queries recorded yet.
+											</li>{/if}
+									</ol>
+								</div>
+								<div>
+									<h4 class="text-xs font-semibold text-zinc-500 uppercase">Retrieved sources</h4>
+									<div class="mt-2 flex flex-wrap gap-2">
+										{#each job.run?.retrievedSources ?? [] as source}{#if source.url}<a
+													href={source.url}
+													target="_blank"
+													rel="noreferrer"
+													class="max-w-full truncate rounded border border-zinc-200 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
+													>{source.title ?? source.url}</a
+												>{/if}{/each}{#if !job.run?.retrievedSources.length}<span
+												class="text-xs text-zinc-500">No retrieved sources yet.</span
+											>{/if}
+									</div>
+								</div>
+								<div>
+									<h4 class="text-xs font-semibold text-zinc-500 uppercase">Retained citations</h4>
+									<div class="mt-2 flex flex-wrap gap-2">
+										{#each job.run?.retainedSources ?? [] as source}<a
+												href={source.url}
+												target="_blank"
+												rel="noreferrer"
+												class="max-w-full truncate rounded border border-zinc-200 px-2 py-1 text-xs text-blue-700 hover:bg-zinc-50"
+												>{source.title ?? source.url}</a
+											>{/each}{#if !job.run?.retainedSources.length}<span
+												class="text-xs text-zinc-500">No retained sources yet.</span
+											>{/if}
+									</div>
+								</div>
+							</div>
+							{#if job.controlled && job.status === 'queued'}
+								<form
+									method="post"
+									action="?/controlledJobState"
+									use:enhance={actionEnhance('controlledJobState')}
+									class="mt-4 flex gap-2 border-t border-zinc-200 pt-3"
+								>
+									<input type="hidden" name="job_id" value={job.id} />
+									<button
+										name="job_action"
+										value={job.paused ? 'resume' : 'pause'}
+										class="rounded border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+										disabled={Boolean(pendingAction)}
+										>{job.paused ? 'Resume test' : 'Pause test'}</button
+									>
+									<button
+										name="job_action"
+										value="cancel"
+										class="rounded border border-red-200 px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50"
+										disabled={Boolean(pendingAction)}>Cancel test</button
+									>
+								</form>
+							{/if}
 						</div>
-						<span class="w-fit rounded px-2 py-1 text-xs font-medium {statusClasses(job.status)}">
-							{job.status}
-						</span>
-						<span class="text-xs text-zinc-500"
-							>{relativeDate(job.completed_at ?? job.created_at)}</span
-						>
-					</div>
+					</details>
 				{/each}
+				{#if data.recentJobs.length === 0}<div
+						class="border-y border-zinc-200 py-12 text-center text-sm text-zinc-500"
+					>
+						No enrichment runs yet.
+					</div>{/if}
 			</div>
 		</section>
 	{:else}
@@ -1357,9 +1576,7 @@
 													class="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
 													>Edit and republish</button
 												>
-												<div
-													class="grid gap-1 sm:grid-cols-[minmax(12rem,16rem)_auto] sm:items-end"
-												>
+												<div class="grid w-full gap-2 sm:grid-cols-3">
 													<label class="block">
 														<span class="text-[11px] font-medium text-zinc-600"
 															>Enrichment location anchor</span
@@ -1372,20 +1589,38 @@
 															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
 														/>
 													</label>
+													<label class="block">
+														<span class="text-[11px] font-medium text-zinc-600"
+															>Verified source URL</span
+														>
+														<input
+															value={sourceDrafts[editor.brand_slug] ??
+																editor.identity.website ??
+																''}
+															oninput={(event) => setSourceDraft(editor, event.currentTarget.value)}
+															placeholder="https://…"
+															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
+														/>
+													</label>
+													<label class="block">
+														<span class="text-[11px] font-medium text-zinc-600">Test note</span>
+														<input
+															value={noteDrafts[editor.brand_slug] ?? ''}
+															oninput={(event) => setNoteDraft(editor, event.currentTarget.value)}
+															placeholder="What this run should verify"
+															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
+														/>
+													</label>
 													<button
 														type="button"
 														onclick={() => openRerun(editor)}
-														disabled={editor.identity.enrichment_mode === 'disabled' ||
-															Boolean(editor.activeJob) ||
-															Boolean(pendingAction)}
-														class="h-9 rounded border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-														>{editor.identity.enrichment_mode === 'disabled'
-															? 'Enrichment disabled'
-															: editor.activeJob
-																? 'Rerun queued'
-																: 'Rerun enrichment'}</button
+														disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
+														class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50 sm:col-span-3"
+														>{editor.activeJob
+															? 'Controlled run queued'
+															: 'Run controlled enrichment'}</button
 													>
-													<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
+													<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-3">
 														Used to identify local businesses during research; not treated as
 														headquarters.
 													</p>
@@ -1843,17 +2078,17 @@
 		>
 			<div class="border-b border-zinc-200 px-5 py-4">
 				<h3 id="rerun-title" class="text-lg font-semibold text-zinc-950">
-					Rerun brand enrichment?
+					Run controlled enrichment?
 				</h3>
 				<p class="mt-1 text-sm text-zinc-600">
-					This queues a fresh audit for the brand. It will always return for manual review and may
-					run now or during the next cron drain.
+					This switches the brand to manual only, saves the research inputs, and queues one v8 audit
+					for cron processing.
 				</p>
 			</div>
 			<form
 				method="post"
-				action="?/rerunBrand"
-				use:enhance={actionEnhance('rerunBrand')}
+				action="?/runControlled"
+				use:enhance={actionEnhance('runControlled')}
 				class="space-y-4 px-5 py-5"
 			>
 				<input type="hidden" name="brand_slug" value={rerunning.brand_slug} />
@@ -1871,10 +2106,34 @@
 						it to return to automatic grounding.</span
 					>
 				</label>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Verified website/source URL</span>
+					<input
+						name="verified_source_url"
+						type="url"
+						bind:value={rerunSourceUrl}
+						placeholder="https://…"
+						class="mt-1 w-full rounded border-zinc-300 text-sm"
+					/>
+					<span class="mt-1 block text-xs text-zinc-500"
+						>Optional trusted seed for this run only.</span
+					>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Test note</span>
+					<textarea
+						name="note"
+						rows="3"
+						bind:value={rerunNote}
+						placeholder="What should this run verify?"
+						class="mt-1 w-full rounded border-zinc-300 text-sm"
+					></textarea>
+				</label>
 				<div>
 					<p class="text-sm font-medium text-zinc-900">{rerunning.brand_slug}</p>
 					<p class="mt-1 text-xs text-zinc-500">
-						The current dossier remains available until the new research run completes.
+						The current dossier remains available until the new research run completes. The job ID
+						will be shown in the success toast and Runs tab.
 					</p>
 				</div>
 				{#if rerunError}
@@ -1893,7 +2152,7 @@
 						class="rounded bg-blue-700 px-3 py-2 text-sm font-medium text-white hover:bg-blue-800 disabled:opacity-50"
 						disabled={Boolean(pendingAction)}
 					>
-						{pendingAction === 'rerunBrand' ? 'Queuing…' : 'Confirm rerun'}
+						{pendingAction === 'runControlled' ? 'Queuing…' : 'Confirm controlled run'}
 					</button>
 				</div>
 			</form>
@@ -1915,11 +2174,13 @@
 		>
 			<div class="border-b border-zinc-200 px-5 py-4">
 				<h3 id="reset-title" class="text-lg font-semibold text-zinc-950">
-					Reset brand enrichment?
+					{resetting.run?.researcher_version === 'brand-v8-deterministic-search'
+						? 'Reject v8 dossier and disable enrichment?'
+						: 'Reset brand enrichment?'}
 				</h3>
 				<p class="mt-1 text-sm text-zinc-600">
 					This immediately unpublishes the profile, archives the current dossier, supersedes its
-					claims, cancels active enrichment work, and disables enrichment for the brand.
+					claims, cancels active enrichment work, and leaves enrichment disabled for the brand.
 				</p>
 			</div>
 			<form

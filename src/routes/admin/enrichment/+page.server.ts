@@ -26,13 +26,18 @@ type DossierRow = {
 
 type ResearchRunRow = {
 	id: string;
+	job_id: string | null;
 	brand_slug: string;
 	status: string;
 	provider: string | null;
 	model: string | null;
+	researcher_version: string | null;
+	input_snapshot: JsonRecord | null;
+	raw_response: JsonRecord | null;
 	customer_summary_draft: string | null;
 	creative_brief_draft: JsonRecord | string | null;
 	overall_confidence: number | null;
+	started_at: string | null;
 	completed_at: string | null;
 	error_text: string | null;
 	quality_metrics: JsonRecord | null;
@@ -128,9 +133,21 @@ type EnrichmentJobRow = {
 	trigger_kind: string;
 	status: string;
 	attempt_count: number;
+	max_attempts: number;
+	available_at: string;
+	claimed_at: string | null;
+	lease_expires_at: string | null;
 	last_error: string | null;
+	trigger_context: JsonRecord;
 	created_at: string;
 	completed_at: string | null;
+};
+
+type ReviewActionRow = {
+	brand_slug: string;
+	action: string;
+	brand_snapshot: JsonRecord | null;
+	created_at: string;
 };
 
 type CronJobRow = {
@@ -166,40 +183,70 @@ function readMetric(metrics: JsonRecord | null, key: string) {
 	return typeof value === 'number' ? value : null;
 }
 
+function recordArray(value: unknown) {
+	return Array.isArray(value)
+		? value.filter(
+				(item): item is JsonRecord =>
+					Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+			)
+		: [];
+}
+
+function stringArray(value: unknown) {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === 'string')
+		: [];
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
-	const [jobsResult, dossiersResult, profilesResult, flagsResult, cronStatusResult] =
-		await Promise.all([
-			locals.supabase
-				.schema('ingest')
-				.from('brand_enrichment_jobs')
-				.select(
-					'id,brand_slug,trigger_kind,status,attempt_count,last_error,created_at,completed_at'
-				)
-				.order('created_at', { ascending: false })
-				.limit(250),
-			locals.supabase
-				.schema('mod')
-				.from('brand_dossiers')
-				.select(
-					'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method,recommended_match_policy,match_policy_route,match_policy_evidence'
-				)
-				.order('updated_at', { ascending: false }),
-			locals.supabase
-				.from('brand_profiles')
-				.select('brand_slug,summary,summary_confidence,publication_method,published_at,updated_at'),
-			locals.supabase
-				.schema('mod')
-				.from('brand_integrity_flags')
-				.select('id,brand_slug,severity,status,title,details,recommended_action,last_seen_at')
-				.order('last_seen_at', { ascending: false }),
-			locals.supabase.rpc('admin_brand_enrichment_cron_status')
-		]);
+	const [
+		jobsResult,
+		dossiersResult,
+		profilesResult,
+		flagsResult,
+		cronStatusResult,
+		recentRunsResult
+	] = await Promise.all([
+		locals.supabase
+			.schema('ingest')
+			.from('brand_enrichment_jobs')
+			.select(
+				'id,brand_slug,trigger_kind,status,attempt_count,max_attempts,available_at,claimed_at,lease_expires_at,last_error,trigger_context,created_at,completed_at'
+			)
+			.order('created_at', { ascending: false })
+			.limit(250),
+		locals.supabase
+			.schema('mod')
+			.from('brand_dossiers')
+			.select(
+				'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method,recommended_match_policy,match_policy_route,match_policy_evidence'
+			)
+			.order('updated_at', { ascending: false }),
+		locals.supabase
+			.from('brand_profiles')
+			.select('brand_slug,summary,summary_confidence,publication_method,published_at,updated_at'),
+		locals.supabase
+			.schema('mod')
+			.from('brand_integrity_flags')
+			.select('id,brand_slug,severity,status,title,details,recommended_action,last_seen_at')
+			.order('last_seen_at', { ascending: false }),
+		locals.supabase.rpc('admin_brand_enrichment_cron_status'),
+		locals.supabase
+			.schema('ingest')
+			.from('brand_research_runs')
+			.select(
+				'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
+			)
+			.order('created_at', { ascending: false })
+			.limit(60)
+	]);
 
 	const sourceResults = [
 		['Enrichment jobs', jobsResult],
 		['Dossiers', dossiersResult],
 		['Profiles', profilesResult],
-		['Integrity flags', flagsResult]
+		['Integrity flags', flagsResult],
+		['Research runs', recentRunsResult]
 	] as const;
 	const sourceErrors: string[] = sourceResults
 		.filter(([, result]) => result.error)
@@ -212,6 +259,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const dossiers = (dossiersResult.data ?? []) as DossierRow[];
 	const profiles = (profilesResult.data ?? []) as ProfileRow[];
 	const flags = (flagsResult.data ?? []) as IntegrityFlagRow[];
+	const recentRuns = (recentRunsResult.data ?? []) as ResearchRunRow[];
 	const cronPayload =
 		cronStatusResult.data &&
 		typeof cronStatusResult.data === 'object' &&
@@ -229,16 +277,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 		...new Set([...reviewBrandSlugs, ...profiles.map((profile) => profile.brand_slug)])
 	];
 
-	let runs: ResearchRunRow[] = [];
+	let runs: ResearchRunRow[] = recentRuns;
 	let claims: ClaimRow[] = [];
 	let claimSources: ClaimSourceRow[] = [];
 	let sources: SourceRow[] = [];
 	let brandIdentities: BrandIdentityRow[] = [];
 	let brandAliases: BrandAliasRow[] = [];
 	let osmLocations: OsmLocationRow[] = [];
+	let reviewActions: ReviewActionRow[] = [];
 
 	if (editorBrandSlugs.length) {
-		const [identitiesResult, aliasesResult] = await Promise.all([
+		const [identitiesResult, aliasesResult, reviewActionsResult] = await Promise.all([
 			locals.supabase
 				.from('brands')
 				.select(
@@ -249,7 +298,15 @@ export const load: PageServerLoad = async ({ locals }) => {
 				.from('brand_aliases')
 				.select('id,brand_slug,normalized_name,alias_display,match_mode')
 				.in('brand_slug', editorBrandSlugs)
-				.order('normalized_name')
+				.order('normalized_name'),
+			locals.supabase
+				.schema('mod')
+				.from('brand_review_actions')
+				.select('brand_slug,action,brand_snapshot,created_at')
+				.in('brand_slug', editorBrandSlugs)
+				.in('action', ['reset_enrichment', 'edit_and_republish', 'approve_brand_review'])
+				.order('created_at', { ascending: false })
+				.limit(500)
 		]);
 		if (identitiesResult.error) {
 			console.error('[enrichment] Brand identities', identitiesResult.error);
@@ -259,8 +316,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 			console.error('[enrichment] Brand aliases', aliasesResult.error);
 			sourceErrors.push('Brand aliases');
 		}
+		if (reviewActionsResult.error) {
+			console.error('[enrichment] Review history', reviewActionsResult.error);
+			sourceErrors.push('Review history');
+		}
 		brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
 		brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
+		reviewActions = (reviewActionsResult.data ?? []) as ReviewActionRow[];
 	}
 
 	if (reviewBrandSlugs.length) {
@@ -278,32 +340,33 @@ export const load: PageServerLoad = async ({ locals }) => {
 		osmLocations = (osmLocationsResult.data ?? []) as OsmLocationRow[];
 	}
 
-	if (runIds.length) {
+	const detailRunIds = [...new Set([...runIds, ...recentRuns.map((run) => run.id)])];
+	if (detailRunIds.length) {
 		const [runsResult, claimsResult, claimSourcesResult, sourcesResult] = await Promise.all([
 			locals.supabase
 				.schema('ingest')
 				.from('brand_research_runs')
 				.select(
-					'id,brand_slug,status,provider,model,customer_summary_draft,creative_brief_draft,overall_confidence,completed_at,error_text,quality_metrics'
+					'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
 				)
-				.in('id', runIds),
+				.in('id', detailRunIds),
 			locals.supabase
 				.schema('ingest')
 				.from('brand_research_claims')
 				.select(
 					'id,run_id,brand_slug,claim_key,claim_value,confidence,evidence_assessment,review_status,materiality,rationale'
 				)
-				.in('run_id', runIds),
+				.in('run_id', detailRunIds),
 			locals.supabase
 				.schema('ingest')
 				.from('brand_research_claim_sources')
 				.select('run_id,claim_id,source_id,citation_role,evidence_excerpt')
-				.in('run_id', runIds),
+				.in('run_id', detailRunIds),
 			locals.supabase
 				.schema('ingest')
 				.from('brand_research_sources')
 				.select('id,run_id,source_type,url,title,publisher,published_at,excerpt,credibility')
-				.in('run_id', runIds)
+				.in('run_id', detailRunIds)
 		]);
 
 		const detailResults = [
@@ -331,8 +394,71 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const identityByBrand = new Map(brandIdentities.map((row) => [row.slug, row]));
 	const openFlags = flags.filter((row) => row.status !== 'resolved' && row.status !== 'closed');
 	const jobStatusCounts = countByStatus(jobs);
-	const activeJobs = jobs.filter((row) => row.status === 'queued' || row.status === 'running');
-	const latestActiveJobByBrand = new Map<string, EnrichmentJobRow>();
+	const runByJobId = new Map<string, ResearchRunRow>();
+	for (const run of runs) {
+		if (run.job_id && !runByJobId.has(run.job_id)) runByJobId.set(run.job_id, run);
+	}
+	const legacySnapshotByBrand = new Map<string, ReviewActionRow>();
+	for (const action of reviewActions) {
+		if (!legacySnapshotByBrand.has(action.brand_slug)) {
+			legacySnapshotByBrand.set(action.brand_slug, action);
+		}
+	}
+	const monitoredJobs = jobs.map((job) => {
+		const run = runByJobId.get(job.id) ?? null;
+		const rawResponse = run?.raw_response ?? null;
+		const retrievedSources = recordArray(rawResponse?.search_results).map((source) => ({
+			url: typeof source.url === 'string' ? source.url : null,
+			title: typeof source.title === 'string' ? source.title : null
+		}));
+		const retainedSources = run ? sources.filter((source) => source.run_id === run.id) : [];
+		const identityConfidence = readMetric(run?.quality_metrics ?? null, 'identity_confidence');
+		const hasAdequateInput = run?.quality_metrics?.has_adequate_input === true;
+		const hasBlockingFlag = run?.quality_metrics?.has_blocking_flag === true;
+		const gateStatus = !run
+			? 'pending'
+			: run.status === 'failed'
+				? 'failed'
+				: !hasAdequateInput || hasBlockingFlag || (identityConfidence ?? 0) < 0.85
+					? 'review'
+					: 'passed';
+		return {
+			...job,
+			paused: job.trigger_context?.controlled_paused === true,
+			controlled: job.trigger_context?.manual_request === true,
+			run: run
+				? {
+						id: run.id,
+						status: run.status,
+						researcherVersion: run.researcher_version,
+						startedAt: run.started_at,
+						completedAt: run.completed_at,
+						error: run.error_text,
+						executedQueries: stringArray(rawResponse?.executed_queries),
+						retrievedSources,
+						retainedSources,
+						gate: {
+							status: gateStatus,
+							version:
+								typeof run.quality_metrics?.gate_version === 'string'
+									? run.quality_metrics.gate_version
+									: null,
+							identityConfidence,
+							hasAdequateInput,
+							hasBlockingFlag,
+							locationAnchor:
+								typeof job.trigger_context?.location_anchor === 'string'
+									? job.trigger_context.location_anchor
+									: null
+						}
+					}
+				: null
+		};
+	});
+	const activeJobs = monitoredJobs.filter(
+		(row) => row.status === 'queued' || row.status === 'running'
+	);
+	const latestActiveJobByBrand = new Map<string, (typeof monitoredJobs)[number]>();
 	for (const job of activeJobs) {
 		if (!latestActiveJobByBrand.has(job.brand_slug)) {
 			latestActiveJobByBrand.set(job.brand_slug, job);
@@ -370,6 +496,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				claims: dossierClaims,
 				integrityFlags: openFlags.filter((flag) => flag.brand_slug === dossier.brand_slug),
 				profile: profileByBrand.get(dossier.brand_slug) ?? null,
+				archivedLegacySnapshot: legacySnapshotByBrand.get(dossier.brand_slug) ?? null,
 				activeJob: latestActiveJobByBrand.get(dossier.brand_slug) ?? null,
 				osmLocations: osmLocations.filter(
 					(location) => location.matched_brand_slug === dossier.brand_slug
@@ -395,6 +522,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 			}
 			return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
 		});
+	const v8Dossiers = enrichedDossiers.filter(
+		(dossier) => dossier.run?.researcher_version === 'brand-v8-deterministic-search'
+	);
+	const legacyDossiers = enrichedDossiers.filter(
+		(dossier) => dossier.run?.researcher_version !== 'brand-v8-deterministic-search'
+	);
 	const publishedProfiles = profiles
 		.map((profile) => {
 			const dossier = dossierByBrand.get(profile.brand_slug);
@@ -420,6 +553,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		metrics: {
 			queued: jobStatusCounts.queued ?? 0,
 			running: jobStatusCounts.running ?? 0,
+			succeeded: jobStatusCounts.succeeded ?? 0,
 			failed: jobStatusCounts.failed ?? 0,
 			publishedProfiles: profiles.length,
 			dossiersNeedingReview: activeReviewDossiers.length,
@@ -429,9 +563,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 			openIntegrityFlags: openFlags.length
 		},
 		dossiers: enrichedDossiers,
+		v8Dossiers,
+		legacyDossiers,
 		activeJobs,
 		publishedProfiles,
-		recentJobs: jobs.slice(0, 20),
+		recentJobs: monitoredJobs.slice(0, 50),
 		sourceErrors: [...new Set(sourceErrors)],
 		cron: {
 			serverTime: cronPayload?.server_time ?? null,
@@ -642,11 +778,9 @@ async function invokeEnrichment(
 	const message =
 		action === 'drain' && claimed != null
 			? `Claimed ${claimed} queued enrichment job${claimed === 1 ? '' : 's'}.`
-			: action === 'rerunBrand' && enqueued != null && claimed != null
-				? `${enqueued === 1 ? successMessage : 'No new audit was queued; an active job may already exist.'} The worker claimed ${claimed} queued job${claimed === 1 ? '' : 's'}.`
-				: enqueued != null && claimed != null
-					? `Queued ${enqueued} brand${enqueued === 1 ? '' : 's'}; processing ${claimed} now.`
-					: successMessage;
+			: enqueued != null && claimed != null
+				? `Queued ${enqueued} brand${enqueued === 1 ? '' : 's'}; processing ${claimed} now.`
+				: successMessage;
 
 	return { ok: true, action, data, message };
 }
@@ -768,64 +902,129 @@ export const actions: Actions = {
 		),
 	disableCron: async ({ locals }) =>
 		setCronEnabled(locals, false, 'disableCron', 'Disabled the automatic enrichment queue worker.'),
-	rerunBrand: async ({ request, locals }) => {
+	runControlled: async ({ request, locals }) => {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
 		const locationAnchor = String(form.get('enrichment_location_anchor') ?? '').trim();
+		const verifiedSourceUrl = String(form.get('verified_source_url') ?? '').trim();
+		const note = String(form.get('note') ?? '').trim();
 		if (!slug) {
 			return fail(400, {
 				ok: false,
-				action: 'rerunBrand',
+				action: 'runControlled',
 				message: 'A brand slug is required.'
-			});
-		}
-		const { data: brand, error: brandError } = await locals.supabase
-			.from('brands')
-			.select('enrichment_mode')
-			.eq('slug', slug)
-			.maybeSingle();
-		if (brandError) {
-			return fail(400, {
-				ok: false,
-				action: 'rerunBrand',
-				message: brandError.message
-			});
-		}
-		if (!brand || brand.enrichment_mode === 'disabled') {
-			return fail(409, {
-				ok: false,
-				action: 'rerunBrand',
-				message: `Enrichment is disabled for ${slug}. Change its mode in the brand catalog first.`
 			});
 		}
 		if (locationAnchor.length > 160) {
 			return fail(400, {
 				ok: false,
-				action: 'rerunBrand',
+				action: 'runControlled',
 				message: 'The enrichment location anchor must be 160 characters or fewer.'
 			});
 		}
-		const { error: anchorError } = await locals.supabase.rpc(
-			'admin_set_brand_enrichment_location_anchor',
-			{
-				p_brand_slug: slug,
-				p_location_anchor: locationAnchor || null
+		if (verifiedSourceUrl) {
+			try {
+				const parsed = new URL(verifiedSourceUrl);
+				if (!['http:', 'https:'].includes(parsed.protocol))
+					throw new Error('Unsupported protocol.');
+			} catch {
+				return fail(400, {
+					ok: false,
+					action: 'runControlled',
+					message: 'Enter a valid HTTP or HTTPS verified source URL.'
+				});
 			}
-		);
-		if (anchorError) {
-			console.error('[enrichment] rerunBrand anchor', anchorError);
+		}
+		const { data, error } = await locals.supabase.rpc('admin_queue_brand_enrichment', {
+			p_brand_slug: slug,
+			p_location_anchor: locationAnchor || null,
+			p_verified_source_url: verifiedSourceUrl || null,
+			p_note: note || null
+		});
+		if (error) {
+			console.error('[enrichment] runControlled', error);
 			return fail(400, {
 				ok: false,
-				action: 'rerunBrand',
-				message: anchorError.message || 'The enrichment location anchor could not be saved.'
+				action: 'runControlled',
+				message: error.message || 'The controlled enrichment job could not be queued.'
 			});
 		}
-		return invokeEnrichment(
-			locals,
-			{ brand_slugs: [slug], trigger_kind: 'audit', limit: 1 },
-			'rerunBrand',
-			`Queued a fresh enrichment audit for ${slug}.`
-		);
+		const payload = data && typeof data === 'object' ? (data as JsonRecord) : {};
+		const jobId = typeof payload.job_id === 'string' ? payload.job_id : null;
+		return {
+			ok: true,
+			action: 'runControlled',
+			jobId,
+			message: `Queued controlled v8 audit ${jobId ?? ''} for ${slug}.`.replace('  ', ' ')
+		};
+	},
+	controlledCohort: async ({ request, locals }) => {
+		const form = await request.formData();
+		const count = integerField(form, 'count', 1, 25);
+		const anchorFilter = String(form.get('anchor_filter') ?? 'any');
+		if (
+			!count ||
+			![1, 5, 10, 25].includes(count) ||
+			!['any', 'present', 'missing'].includes(anchorFilter)
+		) {
+			return fail(400, {
+				ok: false,
+				action: 'controlledCohort',
+				message: 'Choose a cohort size of 1, 5, 10, or 25 and a valid anchor filter.'
+			});
+		}
+		const { data, error } = await locals.supabase.rpc('admin_queue_brand_enrichment_cohort', {
+			p_count: count,
+			p_local_only: form.get('local_only') === 'on',
+			p_missing_website: form.get('missing_website') === 'on',
+			p_anchor_filter: anchorFilter,
+			p_prior_failures: form.get('prior_failures') === 'on',
+			p_note: String(form.get('note') ?? '').trim() || null
+		});
+		if (error) {
+			console.error('[enrichment] controlledCohort', error);
+			return fail(400, {
+				ok: false,
+				action: 'controlledCohort',
+				message: error.message || 'The controlled cohort could not be queued.'
+			});
+		}
+		const payload = data && typeof data === 'object' ? (data as JsonRecord) : {};
+		const queuedCount = typeof payload.queued_count === 'number' ? payload.queued_count : 0;
+		return {
+			ok: true,
+			action: 'controlledCohort',
+			message: `Queued ${queuedCount} controlled v8 test${queuedCount === 1 ? '' : 's'}.`
+		};
+	},
+	controlledJobState: async ({ request, locals }) => {
+		const form = await request.formData();
+		const jobId = String(form.get('job_id') ?? '').trim();
+		const requestedAction = String(form.get('job_action') ?? '').trim();
+		if (!jobId || !['pause', 'resume', 'cancel'].includes(requestedAction)) {
+			return fail(400, {
+				ok: false,
+				action: 'controlledJobState',
+				message: 'Choose a valid controlled job action.'
+			});
+		}
+		const { error } = await locals.supabase.rpc('admin_set_controlled_enrichment_job_state', {
+			p_job_id: jobId,
+			p_action: requestedAction
+		});
+		if (error) {
+			console.error('[enrichment] controlledJobState', error);
+			return fail(400, {
+				ok: false,
+				action: 'controlledJobState',
+				message: error.message || 'The controlled job could not be updated.'
+			});
+		}
+		return {
+			ok: true,
+			action: 'controlledJobState',
+			message: `${requestedAction === 'pause' ? 'Paused' : requestedAction === 'resume' ? 'Resumed' : 'Cancelled'} controlled job ${jobId}.`
+		};
 	},
 	reviewAndPublish: async ({ request, locals }) => {
 		const form = await request.formData();
