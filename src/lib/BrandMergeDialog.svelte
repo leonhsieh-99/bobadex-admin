@@ -8,7 +8,9 @@
 		display: string;
 		website: string | null;
 		wikidata: string | null;
+		enrichment_location_anchor: string | null;
 		matched_alias: string | null;
+		observed_osm_nodes: number;
 	};
 
 	export let source: { slug: string; display: string };
@@ -159,6 +161,9 @@
 						{#if selected}
 							<p class="mt-1 font-semibold text-zinc-950">{selected.display}</p>
 							<code class="text-xs break-all text-zinc-500">{selected.slug}</code>
+							{#if selected.enrichment_location_anchor}
+								<p class="mt-1 text-xs text-zinc-500">{selected.enrichment_location_anchor}</p>
+							{/if}
 						{:else}
 							<p class="mt-1 text-sm text-zinc-500">Select an active canonical brand.</p>
 						{/if}
@@ -213,6 +218,10 @@
 											>{brand.display}</span
 										>
 										<code class="block truncate text-xs text-zinc-500">{brand.slug}</code>
+										<span class="block truncate text-xs text-zinc-500">
+											{brand.enrichment_location_anchor ?? 'No location anchor'} · {brand.observed_osm_nodes}
+											OSM {brand.observed_osm_nodes === 1 ? 'node' : 'nodes'}
+										</span>
 									</span>
 									{#if brand.matched_alias}
 										<span class="shrink-0 text-xs text-zinc-500">via {brand.matched_alias}</span>
@@ -306,8 +315,8 @@
 								class="mt-0.5 rounded border-zinc-300 text-zinc-950"
 							/>
 							<span>
-								Require a post-merge enrichment review. Leave this off when the target's
-								existing profile remains valid.
+								Require a post-merge enrichment review. Leave this off when the target's existing
+								profile remains valid.
 							</span>
 						</label>
 					</section>

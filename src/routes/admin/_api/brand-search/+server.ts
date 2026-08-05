@@ -5,6 +5,7 @@ type BrandResult = {
 	display: string;
 	website: string | null;
 	wikidata: string | null;
+	enrichment_location_anchor: string | null;
 	matched_alias: string | null;
 	observed_osm_nodes: number;
 };
@@ -27,7 +28,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const [brandResult, aliasResult] = await Promise.all([
 		locals.supabase
 			.from('brands')
-			.select('slug,display,website,wikidata')
+			.select('slug,display,website,wikidata,enrichment_location_anchor')
 			.or(`display.ilike.%${query}%,slug.ilike.%${query}%`)
 			.eq('status', 'active')
 			.eq('is_demo', false)
@@ -56,7 +57,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (missingSlugs.length) {
 		const { data: aliasBrands, error: aliasBrandError } = await locals.supabase
 			.from('brands')
-			.select('slug,display,website,wikidata')
+			.select('slug,display,website,wikidata,enrichment_location_anchor')
 			.in('slug', missingSlugs)
 			.eq('status', 'active')
 			.eq('is_demo', false);

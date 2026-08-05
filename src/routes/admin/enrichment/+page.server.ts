@@ -935,6 +935,10 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
 		const locationAnchor = String(form.get('enrichment_location_anchor') ?? '').trim();
+		const expectedCanonicalName = String(form.get('expected_canonical_name') ?? '').trim();
+		const expectedOrigin = String(form.get('expected_origin') ?? '').trim();
+		const expectedOfficialWebsite = String(form.get('expected_official_website') ?? '').trim();
+		const verifiedSourceKind = String(form.get('verified_source_kind') ?? 'unknown');
 		const verifiedSourceUrl = String(form.get('verified_source_url') ?? '').trim();
 		if (!slug) {
 			return fail(400, {
@@ -950,22 +954,52 @@ export const actions: Actions = {
 				message: 'The enrichment location anchor must be 160 characters or fewer.'
 			});
 		}
-		if (verifiedSourceUrl) {
+		if (expectedCanonicalName.length > 160 || expectedOrigin.length > 160) {
+			return fail(400, {
+				ok: false,
+				action: 'rerunEnrichment',
+				message: 'Canonical-name and origin guidance must be 160 characters or fewer.'
+			});
+		}
+		if (
+			![
+				'unknown',
+				'official_brand',
+				'regional_operator',
+				'directory_listing',
+				'independent_source'
+			].includes(verifiedSourceKind)
+		) {
+			return fail(400, {
+				ok: false,
+				action: 'rerunEnrichment',
+				message: 'Choose a valid source relationship.'
+			});
+		}
+		for (const [value, label] of [
+			[expectedOfficialWebsite, 'expected official website'],
+			[verifiedSourceUrl, 'verified source URL']
+		] as const) {
+			if (!value) continue;
 			try {
-				const parsed = new URL(verifiedSourceUrl);
+				const parsed = new URL(value);
 				if (!['http:', 'https:'].includes(parsed.protocol))
 					throw new Error('Unsupported protocol.');
 			} catch {
 				return fail(400, {
 					ok: false,
 					action: 'rerunEnrichment',
-					message: 'Enter a valid HTTP or HTTPS verified source URL.'
+					message: `Enter a valid HTTP or HTTPS ${label}.`
 				});
 			}
 		}
 		const { data, error } = await locals.supabase.rpc('admin_queue_brand_enrichment', {
 			p_brand_slug: slug,
 			p_location_anchor: locationAnchor || null,
+			p_expected_canonical_name: expectedCanonicalName || null,
+			p_expected_origin: expectedOrigin || null,
+			p_expected_official_website: expectedOfficialWebsite || null,
+			p_verified_source_kind: verifiedSourceKind,
 			p_verified_source_url: verifiedSourceUrl || null,
 			p_note: null
 		});

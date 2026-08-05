@@ -209,15 +209,17 @@
 		cron: CronState;
 	};
 
-	let deleting: Dossier | null = null;
+	let deleting: PublishableDossier | null = null;
 	let deleteConfirmation = '';
 	let deleteNote = '';
 	let deleteError = '';
 	let rerunning: PublishableDossier | null = null;
 	let rerunAnchor = '';
+	let rerunExpectedCanonicalName = '';
+	let rerunExpectedOrigin = '';
+	let rerunOfficialWebsite = '';
+	let rerunSourceKind = 'unknown';
 	let rerunSourceUrl = '';
-	let anchorDrafts: Record<string, string> = {};
-	let sourceDrafts: Record<string, string> = {};
 	let rerunError = '';
 	let resetting: PublishableDossier | null = null;
 	let resetReason = '';
@@ -375,7 +377,7 @@
 		};
 	}
 
-	function openDelete(dossier: Dossier) {
+	function openDelete(dossier: PublishableDossier) {
 		deleting = dossier;
 		deleteConfirmation = '';
 		deleteNote = '';
@@ -391,21 +393,13 @@
 
 	function openRerun(dossier: PublishableDossier) {
 		rerunning = dossier;
-		rerunAnchor = anchorDraft(dossier);
-		rerunSourceUrl = sourceDrafts[dossier.brand_slug] ?? publicationWebsite(dossier);
+		rerunAnchor = dossier.identity.enrichment_location_anchor ?? '';
+		rerunExpectedCanonicalName = dossier.identity.display;
+		rerunExpectedOrigin = factText(dossier, 'founded_place');
+		rerunOfficialWebsite = publicationWebsite(dossier);
+		rerunSourceKind = 'unknown';
+		rerunSourceUrl = '';
 		rerunError = '';
-	}
-
-	function anchorDraft(dossier: PublishableDossier) {
-		return anchorDrafts[dossier.brand_slug] ?? dossier.identity.enrichment_location_anchor ?? '';
-	}
-
-	function setAnchorDraft(dossier: PublishableDossier, value: string) {
-		anchorDrafts = { ...anchorDrafts, [dossier.brand_slug]: value };
-	}
-
-	function setSourceDraft(dossier: PublishableDossier, value: string) {
-		sourceDrafts = { ...sourceDrafts, [dossier.brand_slug]: value };
 	}
 
 	function openReset(dossier: PublishableDossier) {
@@ -445,6 +439,10 @@
 	function closeRerun() {
 		rerunning = null;
 		rerunAnchor = '';
+		rerunExpectedCanonicalName = '';
+		rerunExpectedOrigin = '';
+		rerunOfficialWebsite = '';
+		rerunSourceKind = 'unknown';
 		rerunSourceUrl = '';
 		rerunError = '';
 	}
@@ -1315,42 +1313,13 @@
 									>
 										Review and publish
 									</button>
-									<div class="grid w-full gap-2 sm:grid-cols-2 lg:max-w-3xl">
-										<label class="block">
-											<span class="text-[11px] font-medium text-zinc-600"
-												>Enrichment location anchor</span
-											>
-											<input
-												value={anchorDraft(dossier)}
-												oninput={(event) => setAnchorDraft(dossier, event.currentTarget.value)}
-												maxlength="160"
-												placeholder="Automatic grounding"
-												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
-											/>
-										</label>
-										<label class="block">
-											<span class="text-[11px] font-medium text-zinc-600"
-												>Verified website/source URL</span
-											>
-											<input
-												value={sourceDrafts[dossier.brand_slug] ?? publicationWebsite(dossier)}
-												oninput={(event) => setSourceDraft(dossier, event.currentTarget.value)}
-												placeholder="https://…"
-												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
-											/>
-										</label>
-										<button
-											type="button"
-											onclick={() => openRerun(dossier)}
-											disabled={Boolean(dossier.activeJob) || Boolean(pendingAction)}
-											class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2"
-											>{dossier.activeJob ? 'Enrichment rerun queued' : 'Rerun enrichment'}</button
-										>
-										<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
-											Used to identify local businesses during research; not treated as
-											headquarters. Add context here when the original research missed it.
-										</p>
-									</div>
+									<button
+										type="button"
+										onclick={() => openRerun(dossier)}
+										disabled={Boolean(dossier.activeJob) || Boolean(pendingAction)}
+										class="rounded border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+										>{dossier.activeJob ? 'Enrichment rerun queued' : 'Rerun enrichment'}</button
+									>
 									<button
 										type="button"
 										onclick={() => openReset(dossier)}
@@ -1630,7 +1599,9 @@
 								</td>
 								<td class="px-4 py-3">
 									{#if editor}
-										<div class="grid min-w-[22rem] gap-2">
+										<div
+											class="grid min-w-[42rem] gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+										>
 											<div class="flex flex-wrap items-center gap-2">
 												<button
 													type="button"
@@ -1639,44 +1610,15 @@
 													class="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
 													>Edit and republish</button
 												>
-												<div class="grid w-full gap-2 sm:grid-cols-2">
-													<label class="block">
-														<span class="text-[11px] font-medium text-zinc-600"
-															>Enrichment location anchor</span
-														>
-														<input
-															value={anchorDraft(editor)}
-															oninput={(event) => setAnchorDraft(editor, event.currentTarget.value)}
-															maxlength="160"
-															placeholder="Automatic grounding"
-															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
-														/>
-													</label>
-													<label class="block">
-														<span class="text-[11px] font-medium text-zinc-600"
-															>Verified source URL</span
-														>
-														<input
-															value={sourceDrafts[editor.brand_slug] ?? publicationWebsite(editor)}
-															oninput={(event) => setSourceDraft(editor, event.currentTarget.value)}
-															placeholder="https://…"
-															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
-														/>
-													</label>
-													<button
-														type="button"
-														onclick={() => openRerun(editor)}
-														disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
-														class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50 sm:col-span-2"
-														>{editor.activeJob
-															? 'Enrichment rerun queued'
-															: 'Rerun enrichment'}</button
-													>
-													<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
-														Used to identify local businesses during research; not treated as
-														headquarters. Add context here when the original research missed it.
-													</p>
-												</div>
+												<button
+													type="button"
+													onclick={() => openRerun(editor)}
+													disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
+													class="rounded border border-blue-200 bg-white px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+													>{editor.activeJob
+														? 'Enrichment rerun queued'
+														: 'Rerun enrichment'}</button
+												>
 												<button
 													type="button"
 													onclick={() => openReset(editor)}
@@ -1685,7 +1627,9 @@
 													>Reset enrichment</button
 												>
 											</div>
-											<div class="flex flex-wrap items-center gap-2 border-t border-zinc-200 pt-2">
+											<div
+												class="flex flex-wrap items-center gap-2 border-t border-zinc-200 pt-2 lg:justify-end lg:border-t-0 lg:border-l lg:pt-0 lg:pl-3"
+											>
 												<button
 													type="button"
 													onclick={() => openMerge(editor)}
@@ -1699,6 +1643,13 @@
 													disabled={Boolean(pendingAction)}
 													class="rounded border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
 													>Mark closed</button
+												>
+												<button
+													type="button"
+													onclick={() => openDelete(editor)}
+													disabled={Boolean(pendingAction)}
+													class="rounded border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+													>Delete false positive</button
 												>
 											</div>
 										</div>
@@ -2123,7 +2074,7 @@
 		onclick={(event) => event.currentTarget === event.target && closeRerun()}
 	>
 		<div
-			class="w-full max-w-lg rounded-lg bg-white shadow-xl"
+			class="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl"
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="rerun-title"
@@ -2141,6 +2092,12 @@
 				class="space-y-4 px-5 py-5"
 			>
 				<input type="hidden" name="brand_slug" value={rerunning.brand_slug} />
+				<div>
+					<p class="text-sm font-semibold text-zinc-950">Location grounding</p>
+					<p class="mt-1 text-xs text-zinc-500">
+						Use this for a local business or ambiguous location. It is not treated as headquarters.
+					</p>
+				</div>
 				<label class="block">
 					<span class="text-sm font-medium text-zinc-800">Enrichment location anchor</span>
 					<input
@@ -2155,6 +2112,63 @@
 						it to return to automatic grounding.</span
 					>
 				</label>
+				<div class="border-t border-zinc-200 pt-4">
+					<p class="text-sm font-semibold text-zinc-950">Research guidance</p>
+					<p class="mt-1 text-xs text-zinc-500">
+						Optional hypotheses for this run. Evidence and citations are still required before
+						publication.
+					</p>
+				</div>
+				<div class="grid gap-4 sm:grid-cols-2">
+					<label class="block">
+						<span class="text-sm font-medium text-zinc-800">Expected canonical name</span>
+						<input
+							name="expected_canonical_name"
+							bind:value={rerunExpectedCanonicalName}
+							maxlength="160"
+							placeholder="Gotcha Fresh Tea"
+							class="mt-1 w-full rounded border-zinc-300 text-sm"
+						/>
+					</label>
+					<label class="block">
+						<span class="text-sm font-medium text-zinc-800">Expected brand origin</span>
+						<input
+							name="expected_origin"
+							bind:value={rerunExpectedOrigin}
+							maxlength="160"
+							placeholder="Australia"
+							class="mt-1 w-full rounded border-zinc-300 text-sm"
+						/>
+					</label>
+				</div>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Expected official website</span>
+					<input
+						name="expected_official_website"
+						type="url"
+						bind:value={rerunOfficialWebsite}
+						maxlength="2048"
+						placeholder="https://brand.example"
+						class="mt-1 w-full rounded border-zinc-300 text-sm"
+					/>
+					<span class="mt-1 block text-xs text-zinc-500">
+						Research hint only; this does not directly overwrite the published website.
+					</span>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Source relationship</span>
+					<select
+						name="verified_source_kind"
+						bind:value={rerunSourceKind}
+						class="mt-1 w-full rounded border-zinc-300 text-sm"
+					>
+						<option value="unknown">Not specified</option>
+						<option value="official_brand">Official global brand</option>
+						<option value="regional_operator">Regional operator or franchise</option>
+						<option value="directory_listing">Directory listing</option>
+						<option value="independent_source">Independent source</option>
+					</select>
+				</label>
 				<label class="block">
 					<span class="text-sm font-medium text-zinc-800">Verified website/source URL</span>
 					<input
@@ -2164,9 +2178,10 @@
 						placeholder="https://…"
 						class="mt-1 w-full rounded border-zinc-300 text-sm"
 					/>
-					<span class="mt-1 block text-xs text-zinc-500"
-						>Optional trusted seed for this run only.</span
-					>
+					<span class="mt-1 block text-xs text-zinc-500">
+						Optional research seed. Directory pages support identity and location but are not
+						published as the official website.
+					</span>
 				</label>
 				<div>
 					<p class="text-sm font-medium text-zinc-900">{rerunning.brand_slug}</p>

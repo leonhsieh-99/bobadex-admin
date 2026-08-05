@@ -87,6 +87,7 @@
 		display: string;
 		website: string | null;
 		wikidata: string | null;
+		enrichment_location_anchor: string | null;
 		matched_alias: string | null;
 		observed_osm_nodes: number;
 	};
@@ -409,7 +410,9 @@
 										</span>
 									</div>
 									<p class="truncate text-xs text-zinc-500">
-										{brand.slug}{brand.matched_alias ? ` · alias: ${brand.matched_alias}` : ''}
+										{brand.slug}{brand.enrichment_location_anchor
+											? ` · ${brand.enrichment_location_anchor}`
+											: ''}{brand.matched_alias ? ` · alias: ${brand.matched_alias}` : ''}
 									</p>
 								</div>
 								<div class="flex shrink-0 items-center gap-3 text-xs">
