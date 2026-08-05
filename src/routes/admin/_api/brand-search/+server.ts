@@ -6,6 +6,7 @@ type BrandResult = {
 	website: string | null;
 	wikidata: string | null;
 	matched_alias: string | null;
+	observed_osm_nodes: number;
 };
 
 const json = (body: unknown, status = 200) =>
@@ -45,7 +46,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const results = new Map<string, BrandResult>();
 	for (const brand of brandResult.data ?? []) {
-		results.set(brand.slug, { ...brand, matched_alias: null });
+		results.set(brand.slug, { ...brand, matched_alias: null, observed_osm_nodes: 0 });
 	}
 
 	const aliasRows = aliasResult.data ?? [];
@@ -64,7 +65,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			const alias = aliasRows.find((row) => row.brand_slug === brand.slug);
 			results.set(brand.slug, {
 				...brand,
-				matched_alias: alias?.alias_display ?? alias?.normalized_name ?? null
+				matched_alias: alias?.alias_display ?? alias?.normalized_name ?? null,
+				observed_osm_nodes: 0
 			});
 		}
 	}
@@ -73,6 +75,30 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		const existing = results.get(alias.brand_slug);
 		if (existing && !existing.matched_alias) {
 			existing.matched_alias = alias.alias_display ?? alias.normalized_name;
+		}
+	}
+
+	const resultSlugs = [...results.keys()];
+	if (resultSlugs.length) {
+		const { data: observedNodes, error: observedNodesError } = await locals.supabase
+			.schema('ingest')
+			.from('osm_candidate_pipeline_states')
+			.select('id,source_key,matched_brand_slug')
+			.in('matched_brand_slug', resultSlugs)
+			.limit(5000);
+
+		if (observedNodesError) return json({ error: observedNodesError.message }, 500);
+
+		const nodeKeysByBrand = new Map<string, Set<string>>();
+		for (const node of observedNodes ?? []) {
+			if (!node.matched_brand_slug) continue;
+			const keys = nodeKeysByBrand.get(node.matched_brand_slug) ?? new Set<string>();
+			keys.add(node.source_key || node.id);
+			nodeKeysByBrand.set(node.matched_brand_slug, keys);
+		}
+
+		for (const result of results.values()) {
+			result.observed_osm_nodes = nodeKeysByBrand.get(result.slug)?.size ?? 0;
 		}
 	}
 

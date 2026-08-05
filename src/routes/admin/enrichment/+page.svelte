@@ -216,10 +216,8 @@
 	let rerunning: PublishableDossier | null = null;
 	let rerunAnchor = '';
 	let rerunSourceUrl = '';
-	let rerunNote = '';
 	let anchorDrafts: Record<string, string> = {};
 	let sourceDrafts: Record<string, string> = {};
-	let noteDrafts: Record<string, string> = {};
 	let rerunError = '';
 	let resetting: PublishableDossier | null = null;
 	let resetReason = '';
@@ -351,7 +349,7 @@
 				if (result.type === 'success') {
 					toasts.success(message);
 					if (action === 'deleteFalsePositive') closeDelete();
-					if (action === 'runControlled') {
+					if (action === 'rerunEnrichment') {
 						closeRerun();
 						activeTab = 'queue';
 					}
@@ -366,7 +364,7 @@
 					return;
 				}
 				if (action === 'deleteFalsePositive') deleteError = message;
-				if (action === 'runControlled') rerunError = message;
+				if (action === 'rerunEnrichment') rerunError = message;
 				if (action === 'resetEnrichment') resetError = message;
 				if (action === 'markClosed') closeError = message;
 				if (action === 'reviewAndPublish') publishError = message;
@@ -395,7 +393,6 @@
 		rerunning = dossier;
 		rerunAnchor = anchorDraft(dossier);
 		rerunSourceUrl = sourceDrafts[dossier.brand_slug] ?? publicationWebsite(dossier);
-		rerunNote = noteDrafts[dossier.brand_slug] ?? '';
 		rerunError = '';
 	}
 
@@ -409,10 +406,6 @@
 
 	function setSourceDraft(dossier: PublishableDossier, value: string) {
 		sourceDrafts = { ...sourceDrafts, [dossier.brand_slug]: value };
-	}
-
-	function setNoteDraft(dossier: PublishableDossier, value: string) {
-		noteDrafts = { ...noteDrafts, [dossier.brand_slug]: value };
 	}
 
 	function openReset(dossier: PublishableDossier) {
@@ -453,7 +446,6 @@
 		rerunning = null;
 		rerunAnchor = '';
 		rerunSourceUrl = '';
-		rerunNote = '';
 		rerunError = '';
 	}
 
@@ -1323,7 +1315,7 @@
 									>
 										Review and publish
 									</button>
-									<div class="grid w-full gap-2 sm:grid-cols-3 lg:max-w-3xl">
+									<div class="grid w-full gap-2 sm:grid-cols-2 lg:max-w-3xl">
 										<label class="block">
 											<span class="text-[11px] font-medium text-zinc-600"
 												>Enrichment location anchor</span
@@ -1347,27 +1339,16 @@
 												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
 											/>
 										</label>
-										<label class="block">
-											<span class="text-[11px] font-medium text-zinc-600">Test note</span>
-											<input
-												value={noteDrafts[dossier.brand_slug] ?? ''}
-												oninput={(event) => setNoteDraft(dossier, event.currentTarget.value)}
-												placeholder="What this run should verify"
-												class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
-											/>
-										</label>
 										<button
 											type="button"
 											onclick={() => openRerun(dossier)}
 											disabled={Boolean(dossier.activeJob) || Boolean(pendingAction)}
-											class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-3"
-											>{dossier.activeJob
-												? 'Controlled run queued'
-												: 'Run controlled enrichment'}</button
+											class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2"
+											>{dossier.activeJob ? 'Enrichment rerun queued' : 'Rerun enrichment'}</button
 										>
-										<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-3">
+										<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
 											Used to identify local businesses during research; not treated as
-											headquarters. Controlled runs switch the brand to manual only.
+											headquarters. Add context here when the original research missed it.
 										</p>
 									</div>
 									<button
@@ -1658,7 +1639,7 @@
 													class="rounded bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
 													>Edit and republish</button
 												>
-												<div class="grid w-full gap-2 sm:grid-cols-3">
+												<div class="grid w-full gap-2 sm:grid-cols-2">
 													<label class="block">
 														<span class="text-[11px] font-medium text-zinc-600"
 															>Enrichment location anchor</span
@@ -1682,27 +1663,18 @@
 															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
 														/>
 													</label>
-													<label class="block">
-														<span class="text-[11px] font-medium text-zinc-600">Test note</span>
-														<input
-															value={noteDrafts[editor.brand_slug] ?? ''}
-															oninput={(event) => setNoteDraft(editor, event.currentTarget.value)}
-															placeholder="What this run should verify"
-															class="mt-1 h-9 w-full rounded border-zinc-300 px-2 text-xs"
-														/>
-													</label>
 													<button
 														type="button"
 														onclick={() => openRerun(editor)}
 														disabled={Boolean(editor.activeJob) || Boolean(pendingAction)}
-														class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50 sm:col-span-3"
+														class="h-9 w-fit rounded border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50 sm:col-span-2"
 														>{editor.activeJob
-															? 'Controlled run queued'
-															: 'Run controlled enrichment'}</button
+															? 'Enrichment rerun queued'
+															: 'Rerun enrichment'}</button
 													>
-													<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-3">
+													<p class="text-[11px] leading-4 text-zinc-500 sm:col-span-2">
 														Used to identify local businesses during research; not treated as
-														headquarters.
+														headquarters. Add context here when the original research missed it.
 													</p>
 												</div>
 												<button
@@ -2157,18 +2129,15 @@
 			aria-labelledby="rerun-title"
 		>
 			<div class="border-b border-zinc-200 px-5 py-4">
-				<h3 id="rerun-title" class="text-lg font-semibold text-zinc-950">
-					Run controlled enrichment?
-				</h3>
+				<h3 id="rerun-title" class="text-lg font-semibold text-zinc-950">Rerun enrichment?</h3>
 				<p class="mt-1 text-sm text-zinc-600">
-					This switches the brand to manual only, saves the research inputs, and queues one v8 audit
-					for cron processing.
+					Save any missing research context and queue a fresh enrichment run for cron processing.
 				</p>
 			</div>
 			<form
 				method="post"
-				action="?/runControlled"
-				use:enhance={actionEnhance('runControlled')}
+				action="?/rerunEnrichment"
+				use:enhance={actionEnhance('rerunEnrichment')}
 				class="space-y-4 px-5 py-5"
 			>
 				<input type="hidden" name="brand_slug" value={rerunning.brand_slug} />
@@ -2199,16 +2168,6 @@
 						>Optional trusted seed for this run only.</span
 					>
 				</label>
-				<label class="block">
-					<span class="text-sm font-medium text-zinc-800">Test note</span>
-					<textarea
-						name="note"
-						rows="3"
-						bind:value={rerunNote}
-						placeholder="What should this run verify?"
-						class="mt-1 w-full rounded border-zinc-300 text-sm"
-					></textarea>
-				</label>
 				<div>
 					<p class="text-sm font-medium text-zinc-900">{rerunning.brand_slug}</p>
 					<p class="mt-1 text-xs text-zinc-500">
@@ -2232,7 +2191,7 @@
 						class="rounded bg-blue-700 px-3 py-2 text-sm font-medium text-white hover:bg-blue-800 disabled:opacity-50"
 						disabled={Boolean(pendingAction)}
 					>
-						{pendingAction === 'runControlled' ? 'Queuing…' : 'Confirm controlled run'}
+						{pendingAction === 'rerunEnrichment' ? 'Queuing…' : 'Confirm rerun'}
 					</button>
 				</div>
 			</form>

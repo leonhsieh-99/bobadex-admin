@@ -88,6 +88,7 @@
 		website: string | null;
 		wikidata: string | null;
 		matched_alias: string | null;
+		observed_osm_nodes: number;
 	};
 
 	export let data: {
@@ -187,17 +188,17 @@
 		}
 	}
 
-	function setMergeSlug(candidateId: string, slug: string, suggestedAnchor = '') {
+	function setMergeSlug(candidateId: string, slug: string) {
 		mergeSlugs = { ...mergeSlugs, [candidateId]: slug };
 		mergeAnchorDrafts = {
 			...mergeAnchorDrafts,
-			[candidateId]: data.brandAnchorsBySlug[slug] ?? suggestedAnchor
+			[candidateId]: data.brandAnchorsBySlug[slug] ?? ''
 		};
 		mergeAnchorEdited = { ...mergeAnchorEdited, [candidateId]: false };
 	}
 
-	function mergeAnchorValue(candidateId: string, brandSlug: string, suggestedAnchor: string) {
-		return mergeAnchorDrafts[candidateId] ?? data.brandAnchorsBySlug[brandSlug] ?? suggestedAnchor;
+	function mergeAnchorValue(candidateId: string, brandSlug: string) {
+		return mergeAnchorDrafts[candidateId] ?? data.brandAnchorsBySlug[brandSlug] ?? '';
 	}
 
 	function setMergeAnchor(candidateId: string, anchor: string) {
@@ -397,7 +398,16 @@
 								class="flex items-center justify-between gap-4 border-b border-zinc-100 px-3 py-2.5 last:border-b-0"
 							>
 								<div class="min-w-0">
-									<p class="truncate text-sm font-medium text-zinc-950">{brand.display}</p>
+									<div class="flex items-center gap-2">
+										<p class="truncate text-sm font-medium text-zinc-950">{brand.display}</p>
+										<span
+											class="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600"
+										>
+											{brand.observed_osm_nodes} OSM {brand.observed_osm_nodes === 1
+												? 'node'
+												: 'nodes'}
+										</span>
+									</div>
 									<p class="truncate text-xs text-zinc-500">
 										{brand.slug}{brand.matched_alias ? ` · alias: ${brand.matched_alias}` : ''}
 									</p>
@@ -754,8 +764,7 @@
 											<button
 												type="button"
 												class="rounded bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-800 hover:bg-zinc-200"
-												on:click={() =>
-													setMergeSlug(candidate.id, suggestion.brand_slug, suggestedAnchor)}
+												on:click={() => setMergeSlug(candidate.id, suggestion.brand_slug)}
 												>Use</button
 											>
 										</div>
@@ -885,8 +894,7 @@
 											class="w-full rounded-md border-zinc-300 px-3 py-2 font-mono text-xs"
 											placeholder="Existing brand slug"
 											value={mergeSlug}
-											on:input={(event) =>
-												setMergeSlug(candidate.id, event.currentTarget.value, suggestedAnchor)}
+											on:input={(event) => setMergeSlug(candidate.id, event.currentTarget.value)}
 										/></label
 									>
 									<label class="block">
@@ -902,8 +910,8 @@
 											name="enrichment_location_anchor"
 											maxlength="160"
 											class="mt-1 w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
-											placeholder="Automatic coordinate/address grounding"
-											value={mergeAnchorValue(candidate.id, mergeSlug, suggestedAnchor)}
+											placeholder="Leave blank for automatic grounding"
+											value={mergeAnchorValue(candidate.id, mergeSlug)}
 											on:input={(event) => setMergeAnchor(candidate.id, event.currentTarget.value)}
 										/>
 										<input
@@ -914,7 +922,7 @@
 										<span class="mt-1 block text-[11px] leading-4 text-zinc-500"
 											>{destinationAnchor && !mergeAnchorEdited[candidate.id]
 												? 'The destination anchor will be preserved unless you edit this field.'
-												: 'Used to identify local businesses during research; not treated as headquarters.'}</span
+												: 'Optional correction for ambiguous local brands; leave blank for automatic grounding.'}</span
 										>
 									</label>
 									<label class="block"

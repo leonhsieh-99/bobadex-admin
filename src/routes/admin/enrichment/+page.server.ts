@@ -931,23 +931,22 @@ export const actions: Actions = {
 		),
 	disableCron: async ({ locals }) =>
 		setCronEnabled(locals, false, 'disableCron', 'Disabled the automatic enrichment queue worker.'),
-	runControlled: async ({ request, locals }) => {
+	rerunEnrichment: async ({ request, locals }) => {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
 		const locationAnchor = String(form.get('enrichment_location_anchor') ?? '').trim();
 		const verifiedSourceUrl = String(form.get('verified_source_url') ?? '').trim();
-		const note = String(form.get('note') ?? '').trim();
 		if (!slug) {
 			return fail(400, {
 				ok: false,
-				action: 'runControlled',
+				action: 'rerunEnrichment',
 				message: 'A brand slug is required.'
 			});
 		}
 		if (locationAnchor.length > 160) {
 			return fail(400, {
 				ok: false,
-				action: 'runControlled',
+				action: 'rerunEnrichment',
 				message: 'The enrichment location anchor must be 160 characters or fewer.'
 			});
 		}
@@ -959,7 +958,7 @@ export const actions: Actions = {
 			} catch {
 				return fail(400, {
 					ok: false,
-					action: 'runControlled',
+					action: 'rerunEnrichment',
 					message: 'Enter a valid HTTP or HTTPS verified source URL.'
 				});
 			}
@@ -968,23 +967,23 @@ export const actions: Actions = {
 			p_brand_slug: slug,
 			p_location_anchor: locationAnchor || null,
 			p_verified_source_url: verifiedSourceUrl || null,
-			p_note: note || null
+			p_note: null
 		});
 		if (error) {
-			console.error('[enrichment] runControlled', error);
+			console.error('[enrichment] rerunEnrichment', error);
 			return fail(400, {
 				ok: false,
-				action: 'runControlled',
-				message: error.message || 'The controlled enrichment job could not be queued.'
+				action: 'rerunEnrichment',
+				message: error.message || 'The enrichment rerun could not be queued.'
 			});
 		}
 		const payload = data && typeof data === 'object' ? (data as JsonRecord) : {};
 		const jobId = typeof payload.job_id === 'string' ? payload.job_id : null;
 		return {
 			ok: true,
-			action: 'runControlled',
+			action: 'rerunEnrichment',
 			jobId,
-			message: `Queued controlled v8 audit ${jobId ?? ''} for ${slug}.`.replace('  ', ' ')
+			message: `Queued enrichment rerun ${jobId ?? ''} for ${slug}.`.replace('  ', ' ')
 		};
 	},
 	controlledCohort: async ({ request, locals }) => {
