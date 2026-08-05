@@ -490,9 +490,9 @@ export const actions: Actions = {
 		if (!locals.isAdmin) throw error(403, 'Forbidden');
 
 		const form = await request.formData();
-		const limit = Number(form.get('limit') ?? 5);
+		const limit = Number(form.get('limit') ?? 2);
 		const { error: invokeErr } = await locals.supabase.functions.invoke('drain-osm-import-queue', {
-			body: { limit: Number.isFinite(limit) ? limit : 5 }
+			body: { limit: Number.isFinite(limit) ? Math.max(1, Math.min(2, limit)) : 2 }
 		});
 
 		if (invokeErr) {
@@ -503,6 +503,31 @@ export const actions: Actions = {
 		}
 
 		throw redirect(303, '/admin/imports?toast=queue_drained');
+	},
+
+	retryFailedTiles: async ({ request, locals }) => {
+		if (!locals.isAdmin) throw error(403, 'Forbidden');
+
+		const form = await request.formData();
+		const parentJobId = String(form.get('parent_job_id') ?? '');
+		if (!parentJobId) {
+			throw redirect(303, '/admin/imports?toast=retry_failed&msg=missing_region_job');
+		}
+
+		const { data, error: rpcErr } = await locals.supabase.rpc(
+			'admin_retry_failed_osm_import_tiles',
+			{ p_parent_job_id: parentJobId }
+		);
+
+		if (rpcErr) {
+			throw redirect(
+				303,
+				`/admin/imports?toast=retry_failed&msg=${encodeURIComponent(rpcErr.message)}`
+			);
+		}
+
+		const requeued = (data as { requeued_tiles?: number } | null)?.requeued_tiles ?? 0;
+		throw redirect(303, `/admin/imports?toast=retry_started&count=${requeued}`);
 	},
 
 	processDeterministic: async ({ request, locals }) => {

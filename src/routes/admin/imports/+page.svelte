@@ -169,6 +169,10 @@
 	$: latestTileDone =
 		(data.latestTileStatusCounts.succeeded ?? 0) + (data.latestTileStatusCounts.failed ?? 0);
 	$: latestTilePercent = latestTileTotal ? Math.round((latestTileDone / latestTileTotal) * 100) : 0;
+	$: latestImportActive =
+		(data.latestTileStatusCounts.queued ?? 0) +
+		(data.latestTileStatusCounts.running ?? 0) +
+		(data.latestTileStatusCounts.retry_waiting ?? 0);
 	$: bucketCandidates = selectedBucket
 		? data.currentRunCandidates.filter((candidate) =>
 				selectedBucket?.kind === 'process'
@@ -492,6 +496,24 @@
 						<p class="text-xs text-gray-500">
 							Created {formatDate(data.latestRegionJob.created_at)}
 						</p>
+						{#if (data.latestTileStatusCounts.failed ?? 0) > 0}
+							<form
+								method="POST"
+								action="?/retryFailedTiles"
+								use:enhance={enhancePipelineAction}
+							>
+								<input type="hidden" name="parent_job_id" value={data.latestRegionJob.id} />
+								<button
+									class="w-full rounded-md border border-rose-300 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+									disabled={latestImportActive > 0}
+									title={latestImportActive > 0
+										? 'Wait for queued, running, and retrying tiles to finish'
+										: 'Requeue only failed tiles'}
+								>
+									Retry {data.latestTileStatusCounts.failed} failed tiles
+								</button>
+							</form>
+						{/if}
 					</div>
 				{:else}
 					<p class="mt-3 text-sm text-gray-500">No region import has been started yet.</p>
@@ -518,8 +540,8 @@
 							name="limit"
 							type="number"
 							min="1"
-							max="50"
-							value="5"
+							max="2"
+							value="2"
 							class="w-20 rounded-md border-gray-300 px-2 py-1.5 text-sm"
 						/>
 						<button class="rounded-md bg-gray-950 px-3 py-1.5 text-sm font-semibold text-white"
