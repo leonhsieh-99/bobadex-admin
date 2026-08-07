@@ -5,6 +5,8 @@ import type { Actions, PageServerLoad } from './$types';
 
 type BrandStatus = 'active' | 'retired' | 'merged';
 type BrandEnrichmentMode = 'auto' | 'manual_only' | 'disabled';
+type CatalogSort = 'attention' | 'node_count' | 'display' | 'created_at';
+type CatalogSortDir = 'asc' | 'desc';
 
 type CatalogRow = {
 	slug: string;
@@ -20,6 +22,7 @@ type CatalogRow = {
 	alias_count: number;
 	region_codes: string[];
 	shop_count: number;
+	node_count: number;
 	profile_state: string;
 	profile_summary: string | null;
 	profile_confidence: number | null;
@@ -32,6 +35,8 @@ type CatalogRow = {
 };
 
 const pageSize = 50;
+const catalogSorts = new Set<CatalogSort>(['attention', 'node_count', 'display', 'created_at']);
+const catalogSortDirs = new Set<CatalogSortDir>(['asc', 'desc']);
 
 function cleanSearch(value: string | null) {
 	return (value ?? '')
@@ -76,6 +81,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			: null;
 	const region = cleanSearch(url.searchParams.get('region'));
 	const attentionOnly = url.searchParams.get('attention') === '1';
+	const requestedSort = url.searchParams.get('sort');
+	const sort: CatalogSort = catalogSorts.has(requestedSort as CatalogSort)
+		? (requestedSort as CatalogSort)
+		: 'node_count';
+	const requestedSortDir = url.searchParams.get('dir');
+	const sortDir: CatalogSortDir = catalogSortDirs.has(requestedSortDir as CatalogSortDir)
+		? (requestedSortDir as CatalogSortDir)
+		: 'desc';
 	const page = Math.max(1, Number.parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
 
 	const [catalogResult, regionsResult] = await Promise.all([
@@ -85,7 +98,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			p_region_code: region || null,
 			p_attention_only: attentionOnly,
 			p_page: page,
-			p_page_size: pageSize
+			p_page_size: pageSize,
+			p_sort: sort,
+			p_sort_dir: sortDir
 		}),
 		locals.supabase
 			.from('region_codes')
@@ -131,7 +146,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	return {
 		brands,
 		regions: regionsResult.data ?? [],
-		filters: { q, status: status ?? '', region, attentionOnly },
+		filters: { q, status: status ?? '', region, attentionOnly, sort, sortDir },
 		pagination: {
 			page,
 			pageSize,

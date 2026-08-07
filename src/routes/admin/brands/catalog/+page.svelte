@@ -11,6 +11,8 @@
 
 	type BrandStatus = 'active' | 'retired' | 'merged';
 	type BrandEnrichmentMode = 'auto' | 'manual_only' | 'disabled';
+	type CatalogSort = 'attention' | 'node_count' | 'display' | 'created_at';
+	type CatalogSortDir = 'asc' | 'desc';
 	type Brand = {
 		slug: string;
 		display: string;
@@ -25,6 +27,7 @@
 		alias_count: number;
 		region_codes: string[];
 		shop_count: number;
+		node_count: number;
 		profile_state: string;
 		profile_summary: string | null;
 		profile_confidence: number | null;
@@ -102,7 +105,14 @@
 	export let data: {
 		brands: Brand[];
 		regions: Array<{ code: string; country_code: string; region_name: string }>;
-		filters: { q: string; status: string; region: string; attentionOnly: boolean };
+		filters: {
+			q: string;
+			status: string;
+			region: string;
+			attentionOnly: boolean;
+			sort: CatalogSort;
+			sortDir: CatalogSortDir;
+		};
 		pagination: { page: number; pageSize: number; total: number; pageCount: number };
 	};
 
@@ -160,6 +170,8 @@
 			status: data.filters.status,
 			region: data.filters.region,
 			attention: data.filters.attentionOnly,
+			sort: data.filters.sort,
+			dir: data.filters.sortDir,
 			page: data.pagination.page,
 			...overrides
 		};
@@ -168,6 +180,8 @@
 		if (values.status) params.set('status', String(values.status));
 		if (values.region) params.set('region', String(values.region));
 		if (values.attention) params.set('attention', '1');
+		if (values.sort && values.sort !== 'node_count') params.set('sort', String(values.sort));
+		if (values.dir && values.dir !== 'desc') params.set('dir', String(values.dir));
 		if (Number(values.page) > 1) params.set('page', String(values.page));
 		return `/admin/brands/catalog${params.size ? `?${params}` : ''}`;
 	}
@@ -407,7 +421,7 @@
 	</nav>
 
 	<section class="sticky top-[65px] z-30 border-y border-zinc-200 bg-white/95 py-3 backdrop-blur">
-		<div class="grid gap-2 md:grid-cols-[minmax(240px,1fr)_180px_220px_auto]">
+		<div class="grid gap-2 md:grid-cols-[minmax(240px,1fr)_160px_200px_160px_120px_auto]">
 			<label class="relative block">
 				<span class="sr-only">Search brands</span>
 				<svg
@@ -451,6 +465,26 @@
 						>{region.region_name} ({region.code})</option
 					>{/each}
 			</select>
+			<select
+				value={data.filters.sort}
+				onchange={(event) => updateFilters({ sort: event.currentTarget.value })}
+				class="h-10 rounded border-zinc-300 text-sm focus:border-zinc-500 focus:ring-zinc-500"
+				aria-label="Sort by"
+			>
+				<option value="node_count">Node count</option>
+				<option value="attention">Needs attention</option>
+				<option value="display">Name</option>
+				<option value="created_at">Created</option>
+			</select>
+			<select
+				value={data.filters.sortDir}
+				onchange={(event) => updateFilters({ dir: event.currentTarget.value })}
+				class="h-10 rounded border-zinc-300 text-sm focus:border-zinc-500 focus:ring-zinc-500"
+				aria-label="Sort direction"
+			>
+				<option value="desc">Desc</option>
+				<option value="asc">Asc</option>
+			</select>
 			<label
 				class="inline-flex h-10 items-center gap-2 rounded border border-zinc-300 px-3 text-sm text-zinc-700"
 			>
@@ -467,11 +501,11 @@
 
 	<section class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
 		<div class="overflow-x-auto">
-			<table class="w-full min-w-[1080px] table-fixed text-left text-sm">
+			<table class="w-full min-w-[1160px] table-fixed text-left text-sm">
 				<colgroup
 					><col class="w-10" /><col class="w-72" /><col class="w-28" /><col class="w-44" /><col
 						class="w-24"
-					/><col class="w-36" /><col class="w-24" /><col class="w-32" /><col
+					/><col class="w-24" /><col class="w-36" /><col class="w-24" /><col class="w-32" /><col
 						class="w-28"
 					/></colgroup
 				>
@@ -481,12 +515,12 @@
 							class="px-3 py-3 font-medium">Status</th
 						><th class="px-3 py-3 font-medium">Regions</th><th class="px-3 py-3 font-medium"
 							>Locations</th
-						><th class="px-3 py-3 font-medium">Identity</th><th class="px-3 py-3 font-medium"
-							>Profile</th
-						><th class="px-3 py-3 font-medium">Integrity</th><th class="px-3 py-3 font-medium"
-							>Updated</th
-						></tr
-					>
+						><th class="px-3 py-3 font-medium">Nodes</th><th class="px-3 py-3 font-medium"
+							>Identity</th
+						><th class="px-3 py-3 font-medium">Profile</th><th class="px-3 py-3 font-medium"
+							>Integrity</th
+						><th class="px-3 py-3 font-medium">Updated</th>
+					</tr>
 				</thead>
 				<tbody class="divide-y divide-zinc-100">
 					{#each data.brands as brand}
@@ -596,6 +630,11 @@
 									>{/if}</td
 							>
 							<td class="px-3 py-3"
+								><strong class="font-medium text-zinc-900">{brand.node_count}</strong
+								>{#if brand.node_count === 0}<span class="ml-1 text-xs text-amber-700">none</span
+									>{/if}</td
+							>
+							<td class="px-3 py-3"
 								><div class="flex items-center gap-2">
 									{#if brand.website}<a
 											href={brand.website}
@@ -631,7 +670,7 @@
 						</tr>
 						{#if expandedSlug === brand.slug}
 							<tr>
-								<td colspan="9" class="bg-zinc-50 px-5 py-5">
+								<td colspan="10" class="bg-zinc-50 px-5 py-5">
 									{#if detailLoading === brand.slug}<p class="text-sm text-zinc-500">
 											Loading brand details…
 										</p>
@@ -863,7 +902,7 @@
 						{/if}
 					{/each}
 					{#if data.brands.length === 0}<tr
-							><td colspan="9" class="px-6 py-16 text-center text-sm text-zinc-500"
+							><td colspan="10" class="px-6 py-16 text-center text-sm text-zinc-500"
 								>No brands match these filters.</td
 							></tr
 						>{/if}
