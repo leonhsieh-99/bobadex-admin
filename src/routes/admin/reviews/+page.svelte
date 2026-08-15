@@ -99,7 +99,6 @@
 		latestReviewByCandidate: Record<string, LatestReview>;
 		similarAliasesByCandidate: Record<string, AliasSuggestion[]>;
 		suggestedLocationAnchors: Record<string, string>;
-		brandAnchorsBySlug: Record<string, string | null>;
 		regionCodes: Array<{ code: string; country_code: string; region_name: string }>;
 		reviewTab: ReviewTab;
 		q: string;
@@ -136,8 +135,6 @@
 	let brandSearchTimer: ReturnType<typeof setTimeout> | null = null;
 	let brandSearchBox: HTMLDivElement | null = null;
 	let mergeSlugs: Record<string, string> = {};
-	let mergeAnchorDrafts: Record<string, string> = {};
-	let mergeAnchorEdited: Record<string, boolean> = {};
 
 	$: if (data.q !== lastSyncedQ) {
 		searchTerm = data.q;
@@ -191,20 +188,6 @@
 
 	function setMergeSlug(candidateId: string, slug: string) {
 		mergeSlugs = { ...mergeSlugs, [candidateId]: slug };
-		mergeAnchorDrafts = {
-			...mergeAnchorDrafts,
-			[candidateId]: data.brandAnchorsBySlug[slug] ?? ''
-		};
-		mergeAnchorEdited = { ...mergeAnchorEdited, [candidateId]: false };
-	}
-
-	function mergeAnchorValue(candidateId: string, brandSlug: string) {
-		return mergeAnchorDrafts[candidateId] ?? data.brandAnchorsBySlug[brandSlug] ?? '';
-	}
-
-	function setMergeAnchor(candidateId: string, anchor: string) {
-		mergeAnchorDrafts = { ...mergeAnchorDrafts, [candidateId]: anchor };
-		mergeAnchorEdited = { ...mergeAnchorEdited, [candidateId]: true };
 	}
 
 	async function copySlug(slug: string) {
@@ -505,7 +488,6 @@
 				latestReview?.proposed_brand_slug ??
 				candidate.matched_brand_slug ??
 				''}
-			{@const destinationAnchor = data.brandAnchorsBySlug[mergeSlug] ?? null}
 			{@const canAct = candidate.pipeline_state === 'waiting_manual_review'}
 			{@const canReconcile = candidate.pipeline_state === 'waiting_region_reconciliation'}
 			<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
@@ -847,22 +829,105 @@
 											value={latestReview?.proposed_display ?? candidate.name ?? ''}
 										/></label
 									>
-									<label class="block">
-										<span class="text-[11px] font-medium text-zinc-600"
-											>Enrichment location anchor</span
+									<details open class="border-y border-zinc-200 py-2">
+										<summary
+											class="cursor-pointer text-[11px] font-semibold text-zinc-600 uppercase"
 										>
-										<input
-											name="enrichment_location_anchor"
-											maxlength="160"
-											class="mt-1 w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
-											placeholder="Automatic coordinate/address grounding"
-											value={suggestedAnchor}
-										/>
-										<span class="mt-1 block text-[11px] leading-4 text-zinc-500"
-											>Used to identify local businesses during research; not treated as
-											headquarters.</span
-										>
-									</label>
+											Initial research scope
+										</summary>
+										<div class="mt-3 space-y-3">
+											<div
+												class="border-l-2 border-teal-400 bg-teal-50 px-3 py-2 text-[11px] leading-4 text-teal-900"
+											>
+												<p class="font-medium">Automatic geographic context</p>
+												<p class="mt-0.5">
+													{suggestedAnchor ||
+														locationLabel(candidate)}{candidate.detected_region_key ||
+													candidate.region_key
+														? ` · ${candidate.detected_region_key ?? candidate.region_key}`
+														: ''}
+												</p>
+												<p class="mt-1 text-teal-800">
+													The attached node will be reverse-geocoded automatically. Add fields below
+													only to constrain or correct research.
+												</p>
+											</div>
+											<label class="block">
+												<span class="text-[11px] font-medium text-zinc-600">Identity basis</span>
+												<select
+													name="scope_identity_basis"
+													class="mt-1 w-full rounded-md border-zinc-300 px-2 py-2 text-xs"
+												>
+													<option value="">Not specified</option>
+													<option value="official">Official identity</option>
+													<option value="multi_location_cluster">Multi-location cluster</option>
+													<option value="local">Local business</option>
+													<option value="ambiguous">Ambiguous identity</option>
+												</select>
+											</label>
+											<div class="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+												<select
+													name="scope_market_role"
+													aria-label="Market role"
+													class="rounded-md border-zinc-300 px-2 text-xs"
+												>
+													<option value="include">Include</option><option value="prefer"
+														>Prefer</option
+													><option value="exclude">Exclude</option>
+												</select>
+												<input
+													name="scope_market"
+													maxlength="2048"
+													class="min-w-0 rounded-md border-zinc-300 px-3 py-2 text-xs"
+													placeholder="Market, e.g. Australia or US-CA"
+												/>
+											</div>
+											<div class="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+												<select
+													name="scope_location_role"
+													aria-label="Location observation role"
+													class="rounded-md border-zinc-300 px-2 text-xs"
+												>
+													<option value="prefer">Prefer</option><option value="include"
+														>Include</option
+													><option value="exclude">Exclude</option>
+												</select>
+												<input
+													name="scope_location_observation"
+													maxlength="2048"
+													class="min-w-0 rounded-md border-zinc-300 px-3 py-2 text-xs"
+													placeholder="Optional location override"
+												/>
+											</div>
+											<div class="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+												<select
+													name="scope_url_role"
+													aria-label="URL role"
+													class="rounded-md border-zinc-300 px-2 text-xs"
+												>
+													<option value="include">Include</option><option value="prefer"
+														>Prefer</option
+													><option value="exclude">Exclude</option>
+												</select>
+												<input
+													type="url"
+													name="scope_url"
+													maxlength="2048"
+													class="min-w-0 rounded-md border-zinc-300 px-3 py-2 text-xs"
+													placeholder="Optional website or source override"
+												/>
+											</div>
+											<label class="flex items-start gap-2 text-[11px] leading-4 text-zinc-600">
+												<input
+													type="checkbox"
+													name="scope_identity_verified"
+													value="true"
+													class="mt-0.5 rounded border-zinc-300"
+												/>
+												Human-verified identity boundary
+											</label>
+										</div>
+									</details>
 									<label class="block"
 										><span class="sr-only">Approval note</span><input
 											name="note"
@@ -900,34 +965,10 @@
 											on:input={(event) => setMergeSlug(candidate.id, event.currentTarget.value)}
 										/></label
 									>
-									<label class="block">
-										<span
-											class="flex items-center justify-between gap-2 text-[11px] font-medium text-zinc-600"
-										>
-											<span>Enrichment location anchor</span>
-											{#if destinationAnchor}<span class="font-normal text-zinc-500"
-													>Destination anchor</span
-												>{/if}
-										</span>
-										<input
-											name="enrichment_location_anchor"
-											maxlength="160"
-											class="mt-1 w-full rounded-md border-zinc-300 px-3 py-2 text-xs"
-											placeholder="Leave blank for automatic grounding"
-											value={mergeAnchorValue(candidate.id, mergeSlug)}
-											on:input={(event) => setMergeAnchor(candidate.id, event.currentTarget.value)}
-										/>
-										<input
-											type="hidden"
-											name="update_enrichment_location_anchor"
-											value={mergeAnchorEdited[candidate.id] ? 'true' : 'false'}
-										/>
-										<span class="mt-1 block text-[11px] leading-4 text-zinc-500"
-											>{destinationAnchor && !mergeAnchorEdited[candidate.id]
-												? 'The destination anchor will be preserved unless you edit this field.'
-												: 'Optional correction for ambiguous local brands; leave blank for automatic grounding.'}</span
-										>
-									</label>
+									<p class="text-[11px] leading-4 text-zinc-500">
+										The destination brand's saved research scope is preserved. Adjust it from
+										Enrichment before rerunning research.
+									</p>
 									<label class="block"
 										><span class="sr-only">Merge note</span><input
 											name="note"

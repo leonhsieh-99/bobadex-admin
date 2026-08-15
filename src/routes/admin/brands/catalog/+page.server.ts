@@ -1,6 +1,7 @@
 import { fail } from '@sveltejs/kit';
 import { isBrandMatchPolicy } from '$lib/brand-match-policy';
 import { mergeBrands } from '$lib/server/brand-merge.server';
+import { initialResearchScopeFromForm } from '$lib/server/enrichment-research-scope.server';
 import type { Actions, PageServerLoad } from './$types';
 
 type BrandStatus = 'active' | 'retired' | 'merged';
@@ -23,6 +24,9 @@ type CatalogRow = {
 	region_codes: string[];
 	shop_count: number;
 	node_count: number;
+	location_count: number;
+	manual_location_count: number;
+	location_review_count: number;
 	profile_state: string;
 	profile_summary: string | null;
 	profile_confidence: number | null;
@@ -32,6 +36,14 @@ type CatalogRow = {
 	last_activity_at: string;
 	total_count: number;
 	enrichment_mode: BrandEnrichmentMode;
+};
+
+type LocationCountRow = {
+	brand_slug: string;
+	location_count: number | string;
+	osm_node_count: number | string;
+	manual_location_count: number | string;
+	location_review_count: number | string;
 };
 
 const pageSize = 50;
@@ -47,6 +59,10 @@ function cleanSearch(value: string | null) {
 
 function formValue(form: FormData, key: string) {
 	return String(form.get(key) ?? '').trim();
+}
+
+function isUuid(value: string) {
+	return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function actionError(data: unknown, fallback: string) {
@@ -84,11 +100,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const requestedSort = url.searchParams.get('sort');
 	const sort: CatalogSort = catalogSorts.has(requestedSort as CatalogSort)
 		? (requestedSort as CatalogSort)
-		: 'node_count';
+		: 'display';
 	const requestedSortDir = url.searchParams.get('dir');
 	const sortDir: CatalogSortDir = catalogSortDirs.has(requestedSortDir as CatalogSortDir)
 		? (requestedSortDir as CatalogSortDir)
-		: 'desc';
+		: sort === 'display'
+			? 'asc'
+			: 'desc';
 	const page = Math.max(1, Number.parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
 
 	const [catalogResult, regionsResult] = await Promise.all([
@@ -117,19 +135,31 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		console.error('[brand catalog regions]', regionsResult.error);
 	}
 
-	const catalogRows = (catalogResult.data ?? []) as Omit<CatalogRow, 'enrichment_mode'>[];
-	const modeResult = catalogRows.length
-		? await locals.supabase
+	const catalogRows = (catalogResult.data ?? []) as Omit<
+		CatalogRow,
+		'enrichment_mode' | 'location_count' | 'manual_location_count' | 'location_review_count'
+	>[];
+	const [modeResult, locationCountsResult] = catalogRows.length
+		? await Promise.all([
+			locals.supabase
 				.from('brands')
 				.select('slug,enrichment_mode')
 				.in(
 					'slug',
 					catalogRows.map((brand) => brand.slug)
-				)
-		: { data: [], error: null };
+				),
+			locals.supabase.rpc('admin_get_brand_location_counts', {
+				p_brand_slugs: catalogRows.map((brand) => brand.slug)
+			})
+		])
+		: [{ data: [], error: null }, { data: [], error: null }];
 	if (modeResult.error) {
 		console.error('[brand catalog enrichment modes]', modeResult.error);
 		throw new Error(`Failed to load enrichment modes: ${modeResult.error.message}`);
+	}
+	if (locationCountsResult.error) {
+		console.error('[brand catalog location counts]', locationCountsResult.error);
+		throw new Error(`Failed to load location counts: ${locationCountsResult.error.message}`);
 	}
 	const modeBySlug = new Map(
 		(modeResult.data ?? []).map((brand) => [
@@ -137,9 +167,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			brand.enrichment_mode as BrandEnrichmentMode
 		])
 	);
+	const locationCountsBySlug = new Map(
+		((locationCountsResult.data ?? []) as LocationCountRow[]).map((row) => [row.brand_slug, row])
+	);
 	const brands: CatalogRow[] = catalogRows.map((brand) => ({
 		...brand,
-		enrichment_mode: modeBySlug.get(brand.slug) ?? 'auto'
+		enrichment_mode: modeBySlug.get(brand.slug) ?? 'auto',
+		location_count: Number(locationCountsBySlug.get(brand.slug)?.location_count ?? 0),
+		node_count: Number(locationCountsBySlug.get(brand.slug)?.osm_node_count ?? 0),
+		manual_location_count: Number(locationCountsBySlug.get(brand.slug)?.manual_location_count ?? 0),
+		location_review_count: Number(locationCountsBySlug.get(brand.slug)?.location_review_count ?? 0)
 	}));
 	const total = Number(brands[0]?.total_count ?? 0);
 
@@ -167,6 +204,7 @@ export const actions: Actions = {
 		const matchPolicy = formValue(form, 'identity_match_policy');
 		const enrichmentMode = formValue(form, 'identity_enrichment_mode');
 		let aliases: string[];
+		let regionCodes: string[];
 		try {
 			const parsed = JSON.parse(formValue(form, 'identity_aliases') || '[]');
 			if (!Array.isArray(parsed) || parsed.some((alias) => typeof alias !== 'string')) {
@@ -179,6 +217,20 @@ export const actions: Actions = {
 				action: 'updateIdentity',
 				brandSlug: slug,
 				message: error instanceof Error ? error.message : 'Aliases could not be read.'
+			});
+		}
+		try {
+			const parsed = JSON.parse(formValue(form, 'identity_regions') || '[]');
+			if (!Array.isArray(parsed) || parsed.some((code) => typeof code !== 'string')) {
+				throw new Error('Regions must be a list of region codes.');
+			}
+			regionCodes = [...new Set(parsed.map((code) => code.trim()).filter(Boolean))];
+		} catch (error) {
+			return fail(400, {
+				ok: false,
+				action: 'updateIdentity',
+				brandSlug: slug,
+				message: error instanceof Error ? error.message : 'Regions could not be read.'
 			});
 		}
 		if (
@@ -199,10 +251,11 @@ export const actions: Actions = {
 			});
 		}
 
-		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity_v4', {
+		const { data, error } = await locals.supabase.rpc('admin_update_brand_identity_v6', {
 			p_brand_slug: slug,
 			p_display: display,
 			p_aliases: aliases,
+			p_region_codes: regionCodes,
 			p_website: website || null,
 			p_wikidata: wikidata || null,
 			p_match_policy: matchPolicy,
@@ -237,6 +290,146 @@ export const actions: Actions = {
 				aliasesAdded > 0
 					? `Saved ${aliasesAdded} new alias${aliasesAdded === 1 ? '' : 'es'} for ${display}.`
 					: `Updated ${display}.`
+		};
+	},
+
+	createManualLocation: async ({ request, locals }) => {
+		if (!locals.isAdmin) return fail(403, { ok: false, message: 'Admin access required.' });
+		const form = await request.formData();
+		const slug = formValue(form, 'brand_slug');
+		const inputKind = formValue(form, 'location_input_kind');
+		const address = formValue(form, 'location_address');
+		const sourceUrl = formValue(form, 'location_source_url');
+		const verificationStatus = formValue(form, 'location_verification_status');
+		const latitudeValue = formValue(form, 'location_lat');
+		const longitudeValue = formValue(form, 'location_lon');
+		const latitude = Number(latitudeValue);
+		const longitude = Number(longitudeValue);
+
+		if (!slug || !['coordinates', 'address'].includes(inputKind)) {
+			return fail(400, {
+				ok: false,
+				action: 'createManualLocation',
+				brandSlug: slug,
+				message: !slug ? 'Brand is required.' : 'Choose coordinates or address.'
+			});
+		}
+		if (inputKind === 'address' && !address) {
+			return fail(400, {
+				ok: false,
+				action: 'createManualLocation',
+				brandSlug: slug,
+				message: 'Address is required.'
+			});
+		}
+		if (
+			inputKind === 'coordinates' &&
+			(!latitudeValue ||
+				!longitudeValue ||
+				!Number.isFinite(latitude) ||
+				latitude < -90 ||
+				latitude > 90 ||
+				!Number.isFinite(longitude) ||
+				longitude < -180 ||
+				longitude > 180)
+		) {
+			return fail(400, {
+				ok: false,
+				action: 'createManualLocation',
+				brandSlug: slug,
+				message: 'Enter valid latitude and longitude values.'
+			});
+		}
+		if (!/^https?:\/\/\S+$/i.test(sourceUrl)) {
+			return fail(400, {
+				ok: false,
+				action: 'createManualLocation',
+				brandSlug: slug,
+				message: 'A valid source URL is required.'
+			});
+		}
+		if (!['verified', 'needs_review', 'unverified'].includes(verificationStatus)) {
+			return fail(400, {
+				ok: false,
+				action: 'createManualLocation',
+				brandSlug: slug,
+				message: 'Choose a valid verification status.'
+			});
+		}
+
+		const { data, error } = await locals.supabase.functions.invoke(
+			'drain-brand-location-geocode',
+			{
+				body: {
+					action: 'create_manual_location',
+					brand_slug: slug,
+					input_kind: inputKind,
+					lat: inputKind === 'coordinates' ? latitude : null,
+					lon: inputKind === 'coordinates' ? longitude : null,
+					address: inputKind === 'address' ? address : null,
+					source_url: sourceUrl,
+					note: formValue(form, 'location_note') || null,
+					verification_status: verificationStatus
+				}
+			}
+		);
+		const responseError = actionError(data, '');
+		if (error || responseError) {
+			return fail(400, {
+				ok: false,
+				action: 'createManualLocation',
+				brandSlug: slug,
+				message: responseError || (await functionErrorMessage(error))
+			});
+		}
+
+		return {
+			ok: true,
+			action: 'createManualLocation',
+			brandSlug: slug,
+			data,
+			message: 'Manual location created and queued for geographic resolution.'
+		};
+	},
+
+	resolveLocationMatch: async ({ request, locals }) => {
+		if (!locals.isAdmin) return fail(403, { ok: false, message: 'Admin access required.' });
+		const form = await request.formData();
+		const brandSlug = formValue(form, 'brand_slug');
+		const locationId = formValue(form, 'location_id');
+		const resolution = formValue(form, 'resolution');
+		if (!isUuid(locationId) || !['attach_to_suggested', 'keep_separate'].includes(resolution)) {
+			return fail(400, {
+				ok: false,
+				action: 'resolveLocationMatch',
+				brandSlug,
+				message: 'Choose a valid storefront resolution.'
+			});
+		}
+
+		const { data, error } = await locals.supabase.rpc('admin_resolve_brand_location_match', {
+			p_location_id: locationId,
+			p_resolution: resolution,
+			p_note: formValue(form, 'note') || null
+		});
+		if (error) {
+			return fail(400, {
+				ok: false,
+				action: 'resolveLocationMatch',
+				brandSlug,
+				message: error.message
+			});
+		}
+
+		return {
+			ok: true,
+			action: 'resolveLocationMatch',
+			brandSlug,
+			data,
+			message:
+				resolution === 'attach_to_suggested'
+					? 'Evidence attached to the existing storefront.'
+					: 'Kept as a separate storefront.'
 		};
 	},
 
@@ -343,6 +536,104 @@ export const actions: Actions = {
 				message: error instanceof Error ? error.message : 'Could not merge these brands.'
 			});
 		}
+	},
+
+	repairOsmNode: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, {
+				ok: false,
+				action: 'repairOsmNode',
+				message: 'Admin access required.'
+			});
+		}
+
+		const form = await request.formData();
+		const candidateId = formValue(form, 'candidate_id');
+		const sourceBrandSlug = formValue(form, 'source_brand_slug');
+		const disposition = formValue(form, 'disposition');
+		const reason = formValue(form, 'reason');
+		const newDisplay = formValue(form, 'new_display');
+		let researchScope;
+		try {
+			researchScope = initialResearchScopeFromForm(form);
+		} catch (scopeError) {
+			return fail(400, {
+				ok: false,
+				action: 'repairOsmNode',
+				brandSlug: sourceBrandSlug,
+				message: scopeError instanceof Error ? scopeError.message : 'Research scope is invalid.'
+			});
+		}
+
+		if (
+			!isUuid(candidateId) ||
+			!sourceBrandSlug ||
+			!['remove', 'create_brand'].includes(disposition) ||
+			!reason
+		) {
+			return fail(400, {
+				ok: false,
+				action: 'repairOsmNode',
+				brandSlug: sourceBrandSlug,
+				message: !reason ? 'A reason is required.' : 'The OSM node repair request is invalid.'
+			});
+		}
+
+		if (disposition === 'create_brand' && !newDisplay) {
+			return fail(400, {
+				ok: false,
+				action: 'repairOsmNode',
+				brandSlug: sourceBrandSlug,
+				message: 'A display name is required for the new brand.'
+			});
+		}
+
+		if (reason.length > 1000) {
+			return fail(400, {
+				ok: false,
+				action: 'repairOsmNode',
+				brandSlug: sourceBrandSlug,
+				message: 'The reason must be 1,000 characters or fewer.'
+			});
+		}
+
+		const { data, error } = await locals.supabase.rpc(
+			'admin_remove_osm_node_from_brand_with_scope',
+			{
+				p_candidate_id: candidateId,
+				p_source_brand_slug: sourceBrandSlug,
+				p_disposition: disposition,
+				p_reason: reason,
+				p_new_display: disposition === 'create_brand' ? newDisplay : null,
+				p_research_scope: disposition === 'create_brand' ? researchScope : {}
+			}
+		);
+
+		if (error) {
+			return fail(400, {
+				ok: false,
+				action: 'repairOsmNode',
+				brandSlug: sourceBrandSlug,
+				message: error.message
+			});
+		}
+
+		const result = data as {
+			disposition?: string;
+			new_brand_display?: string;
+			new_brand_slug?: string;
+			enrichment_job_id?: string;
+		};
+		return {
+			ok: true,
+			action: 'repairOsmNode',
+			brandSlug: sourceBrandSlug,
+			data,
+			message:
+				result.disposition === 'create_brand'
+					? `Created ${result.new_brand_display ?? result.new_brand_slug} and queued enrichment.`
+					: 'Removed the OSM node from the brand.'
+		};
 	},
 
 	deleteBrand: async ({ request, locals }) => {

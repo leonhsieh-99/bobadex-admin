@@ -28,6 +28,9 @@
 		region_codes: string[];
 		shop_count: number;
 		node_count: number;
+		location_count: number;
+		manual_location_count: number;
+		location_review_count: number;
 		profile_state: string;
 		profile_summary: string | null;
 		profile_confidence: number | null;
@@ -63,6 +66,40 @@
 			lat: number | null;
 			lon: number | null;
 			region_key: string | null;
+			matched_brand_slug: string | null;
+			process_status: string;
+			observation_status: 'attached' | 'match_review' | 'unattached' | 'identity_changed';
+			status_reason: string | null;
+			physical_location_id: string | null;
+		}>;
+		physical_locations: Array<{
+			id: string;
+			lat: number;
+			lon: number;
+			physical_status: 'active' | 'needs_review' | 'retired';
+			possible_match_location_id: string | null;
+			geocode_status: string;
+			geocode_error: string | null;
+			city: string | null;
+			county: string | null;
+			region: string | null;
+			first_seen_at: string;
+			last_seen_at: string;
+			evidence: Array<{
+				id: string;
+				source: string;
+				source_key: string;
+				osm_type: string | null;
+				osm_id: number | null;
+				lat: number;
+				lon: number;
+				address_input: string | null;
+				source_url: string | null;
+				source_note: string | null;
+				verification_status: string | null;
+				match_status: string;
+				match_distance_m: number | null;
+			}>;
 		}>;
 		profile: {
 			summary: string;
@@ -93,6 +130,9 @@
 			created_at: string;
 		}>;
 	};
+	type OsmLocation = Detail['osm_locations'][number];
+	type PhysicalLocation = Detail['physical_locations'][number];
+	type LocationEvidence = PhysicalLocation['evidence'][number];
 	type IdentityAlias = {
 		id: number;
 		normalized_name: string;
@@ -139,10 +179,39 @@
 		match_mode: string;
 	}> = [];
 	let originalIdentityAliases: string[] = [];
+	let identityRegions: string[] = [];
+	let originalIdentityRegions: string[] = [];
+	let identityRegionDraft = '';
 	let identityIsChanged = false;
+	let manualLocationBrand: Brand | null = null;
+	let manualLocationInputKind: 'coordinates' | 'address' = 'coordinates';
+	let manualLocationLat = '';
+	let manualLocationLon = '';
+	let manualLocationAddress = '';
+	let manualLocationSourceUrl = '';
+	let manualLocationNote = '';
+	let manualLocationVerification: 'verified' | 'needs_review' | 'unverified' = 'verified';
 	let statusBrand: Brand | null = null;
 	let mergeBrand: Brand | null = null;
 	let deletingBrand: Brand | null = null;
+	let nodeRepair: { brand: Brand; location: OsmLocation } | null = null;
+	let manualEvidenceRemoval: {
+		brand: Brand;
+		location: PhysicalLocation;
+		evidence: LocationEvidence;
+	} | null = null;
+	let manualEvidenceRemovalReason = '';
+	let nodeDisposition: 'remove' | 'create_brand' = 'remove';
+	let nodeNewDisplay = '';
+	let nodeIdentityBasis = '';
+	let nodeMarket = '';
+	let nodeMarketRole: 'include' | 'prefer' | 'exclude' = 'include';
+	let nodeLocationObservation = '';
+	let nodeLocationRole: 'include' | 'prefer' | 'exclude' = 'prefer';
+	let nodeResearchUrl = '';
+	let nodeUrlRole: 'include' | 'prefer' | 'exclude' = 'include';
+	let nodeIdentityVerified = false;
+	let nodeRepairReason = '';
 	let statusNote = '';
 	let deleteConfirmation = '';
 	let deleteNote = '';
@@ -158,6 +227,8 @@
 		identityWikidata,
 		identityAliases,
 		originalIdentityAliases,
+		identityRegions,
+		originalIdentityRegions,
 		identityMatchPolicy,
 		originalIdentityMatchPolicy,
 		identityEnrichmentMode,
@@ -180,8 +251,10 @@
 		if (values.status) params.set('status', String(values.status));
 		if (values.region) params.set('region', String(values.region));
 		if (values.attention) params.set('attention', '1');
-		if (values.sort && values.sort !== 'node_count') params.set('sort', String(values.sort));
-		if (values.dir && values.dir !== 'desc') params.set('dir', String(values.dir));
+		if (values.sort && values.sort !== 'display') params.set('sort', String(values.sort));
+		if (values.dir && !(values.sort === 'display' && values.dir === 'asc')) {
+			params.set('dir', String(values.dir));
+		}
 		if (Number(values.page) > 1) params.set('page', String(values.page));
 		return `/admin/brands/catalog${params.size ? `?${params}` : ''}`;
 	}
@@ -202,6 +275,68 @@
 		}
 		expandedSlug = slug;
 		if (details[slug]) return;
+		await loadBrandDetails(slug);
+	}
+
+	async function resolvePhysicalLocation(
+		brandSlug: string,
+		locationId: string,
+		resolution: 'attach_to_suggested' | 'keep_separate'
+	) {
+		pendingAction = `resolveLocation:${locationId}`;
+		try {
+			const response = await fetch(`/admin/brands/catalog/${encodeURIComponent(brandSlug)}`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ location_id: locationId, resolution })
+			});
+			const payload = await response.json().catch(() => null);
+			if (!response.ok) throw new Error(payload?.message ?? 'Could not resolve the storefront match.');
+			toasts.success(
+				resolution === 'attach_to_suggested'
+					? 'Evidence attached to the existing storefront.'
+					: 'Kept as a separate storefront.'
+			);
+			await loadBrandDetails(brandSlug);
+			await invalidateAll();
+		} catch (error) {
+			toasts.error(error instanceof Error ? error.message : 'Could not resolve the storefront match.');
+		} finally {
+			pendingAction = '';
+		}
+	}
+
+	async function removeManualEvidence() {
+		if (!manualEvidenceRemoval || !manualEvidenceRemovalReason.trim()) return;
+		const { brand, evidence } = manualEvidenceRemoval;
+		pendingAction = `removeManualEvidence:${evidence.id}`;
+		modalError = '';
+		try {
+			const response = await fetch(`/admin/brands/catalog/${encodeURIComponent(brand.slug)}`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					action: 'remove_manual_evidence',
+					evidence_id: evidence.id,
+					reason: manualEvidenceRemovalReason.trim()
+				})
+			});
+			const payload = await response.json().catch(() => null);
+			if (!response.ok) throw new Error(payload?.message ?? 'Could not remove manual evidence.');
+			toasts.success('Manual location evidence removed.');
+			manualEvidenceRemoval = null;
+			manualEvidenceRemovalReason = '';
+			await loadBrandDetails(brand.slug);
+			await invalidateAll();
+		} catch (error) {
+			modalError = error instanceof Error ? error.message : 'Could not remove manual evidence.';
+			toasts.error(modalError);
+		} finally {
+			pendingAction = '';
+		}
+	}
+
+	async function loadBrandDetails(slug: string) {
 		detailLoading = slug;
 		detailErrors = { ...detailErrors, [slug]: '' };
 		try {
@@ -250,6 +385,7 @@
 					toasts.success(message);
 					closeModal();
 					details = {};
+					expandedSlug = '';
 					await invalidateAll();
 					return;
 				}
@@ -258,6 +394,62 @@
 				await applyAction(result);
 			};
 		};
+	}
+
+	function manualLocationEnhance(): SubmitFunction {
+		return ({ cancel }) => {
+			if (pendingAction) {
+				cancel();
+				return;
+			}
+			pendingAction = 'createManualLocation';
+			modalError = '';
+			return async ({ result }) => {
+				pendingAction = '';
+				const resultData =
+					result.type === 'success' || result.type === 'failure' ? result.data : null;
+				const message =
+					resultData && typeof resultData.message === 'string'
+						? resultData.message
+						: result.type === 'error'
+							? result.error.message
+							: 'The location could not be created.';
+
+				if (result.type === 'success') {
+					const brandSlug = manualLocationBrand?.slug;
+					toasts.success(message);
+					closeManualLocation();
+					if (brandSlug) await loadBrandDetails(brandSlug);
+					return;
+				}
+				modalError = message;
+				toasts.error(message);
+				await applyAction(result);
+			};
+		};
+	}
+
+	function openManualLocation(brand: Brand | null) {
+		if (!brand) return;
+		manualLocationBrand = brand;
+		manualLocationInputKind = 'coordinates';
+		manualLocationLat = '';
+		manualLocationLon = '';
+		manualLocationAddress = '';
+		manualLocationSourceUrl = '';
+		manualLocationNote = '';
+		manualLocationVerification = 'verified';
+		modalError = '';
+	}
+
+	function closeManualLocation() {
+		manualLocationBrand = null;
+		manualLocationLat = '';
+		manualLocationLon = '';
+		manualLocationAddress = '';
+		manualLocationSourceUrl = '';
+		manualLocationNote = '';
+		modalError = '';
 	}
 
 	function closeModal() {
@@ -273,12 +465,68 @@
 		identityHasAliasDraft = false;
 		identityAliases = [];
 		originalIdentityAliases = [];
+		identityRegions = [];
+		originalIdentityRegions = [];
+		identityRegionDraft = '';
+		manualLocationBrand = null;
 		statusBrand = null;
 		mergeBrand = null;
 		deletingBrand = null;
+		nodeRepair = null;
+		manualEvidenceRemoval = null;
+		manualEvidenceRemovalReason = '';
+		nodeDisposition = 'remove';
+		nodeNewDisplay = '';
+		nodeIdentityBasis = '';
+		nodeMarket = '';
+		nodeMarketRole = 'include';
+		nodeLocationObservation = '';
+		nodeLocationRole = 'prefer';
+		nodeResearchUrl = '';
+		nodeUrlRole = 'include';
+		nodeIdentityVerified = false;
+		nodeRepairReason = '';
 		statusNote = '';
 		deleteConfirmation = '';
 		deleteNote = '';
+		modalError = '';
+	}
+
+	function openNodeRepair(brand: Brand, location: OsmLocation) {
+		nodeRepair = { brand, location };
+		nodeDisposition = 'remove';
+		nodeNewDisplay = location.name?.trim() || brand.display;
+		nodeIdentityBasis = '';
+		nodeMarket = '';
+		nodeMarketRole = 'include';
+		nodeLocationObservation = '';
+		nodeLocationRole = 'prefer';
+		nodeResearchUrl = '';
+		nodeUrlRole = 'include';
+		nodeIdentityVerified = false;
+		nodeRepairReason = '';
+		modalError = '';
+	}
+
+	function openNodeRepairForEvidence(brand: Brand, detail: Detail, evidence: LocationEvidence) {
+		const candidate = detail.osm_locations.find(
+			(location) =>
+				location.source === evidence.source && location.source_key === evidence.source_key
+		);
+		if (!candidate) {
+			toasts.error('The OSM candidate for this evidence could not be found.');
+			return;
+		}
+		openNodeRepair(brand, candidate);
+	}
+
+	function openManualEvidenceRemoval(
+		brand: Brand,
+		location: PhysicalLocation,
+		evidence: LocationEvidence
+	) {
+		manualEvidenceRemoval = { brand, location, evidence };
+		manualEvidenceRemovalReason = '';
 		modalError = '';
 	}
 
@@ -295,6 +543,9 @@
 			match_mode: alias.match_mode
 		}));
 		originalIdentityAliases = identityAliases.map((alias) => alias.display);
+		identityRegions = detail.regions.map((region) => region.region_code).sort();
+		originalIdentityRegions = [...identityRegions];
+		identityRegionDraft = '';
 		identityMatchPolicy = detail.match_policy;
 		originalIdentityMatchPolicy = detail.match_policy;
 		identityEnrichmentMode = detail.enrichment_mode;
@@ -309,6 +560,8 @@
 		wikidata: string,
 		aliases: Array<{ display: string }>,
 		originalAliases: string[],
+		manualRegions: string[],
+		originalManualRegions: string[],
 		matchPolicy: BrandMatchPolicy,
 		originalMatchPolicy: BrandMatchPolicy,
 		enrichmentMode: BrandEnrichmentMode,
@@ -319,10 +572,37 @@
 			display.trim() !== brand.display ||
 			website.trim() !== (brand.website ?? '') ||
 			wikidata.trim() !== (brand.wikidata ?? '') ||
+			JSON.stringify([...manualRegions].sort()) !==
+				JSON.stringify([...originalManualRegions].sort()) ||
 			matchPolicy !== originalMatchPolicy ||
 			enrichmentMode !== originalEnrichmentMode ||
 			JSON.stringify(aliases.map((alias) => alias.display)) !== JSON.stringify(originalAliases)
 		);
+	}
+
+	function addIdentityRegion() {
+		const code = identityRegionDraft.trim();
+		if (!code || identityRegions.includes(code)) return;
+		identityRegions = [...identityRegions, code].sort();
+		identityRegionDraft = '';
+	}
+
+	function removeIdentityRegion(code: string) {
+		identityRegions = identityRegions.filter((region) => region !== code);
+	}
+
+	function regionLabel(code: string) {
+		const region = data.regions.find((candidate) => candidate.code === code);
+		return region ? `${region.region_name} (${region.code})` : code;
+	}
+
+	function regionSourceLabel(code: string) {
+		const source = details[editBrand?.slug ?? '']?.regions.find(
+			(region) => region.region_code === code
+		)?.source;
+		if (!source || source === 'admin.identity') return 'Admin';
+		if (source.startsWith('osm')) return 'OSM';
+		return 'Derived';
 	}
 
 	function relativeDate(value: string | null) {
@@ -471,7 +751,7 @@
 				class="h-10 rounded border-zinc-300 text-sm focus:border-zinc-500 focus:ring-zinc-500"
 				aria-label="Sort by"
 			>
-				<option value="node_count">Node count</option>
+				<option value="node_count">OSM node count</option>
 				<option value="attention">Needs attention</option>
 				<option value="display">Name</option>
 				<option value="created_at">Created</option>
@@ -624,10 +904,16 @@
 										>{/if}
 								</div></td
 							>
-							<td class="px-3 py-3"
-								><strong class="font-medium text-zinc-900">{brand.shop_count}</strong
-								>{#if brand.shop_count === 0}<span class="ml-1 text-xs text-amber-700">empty</span
-									>{/if}</td
+			<td class="px-3 py-3"
+								><strong class="font-medium text-zinc-900">{brand.location_count}</strong
+								>{#if brand.location_count === 0}<span class="ml-1 text-xs text-amber-700">none</span
+									>{/if}
+								<p class="mt-1 text-[11px] text-zinc-500">
+									{brand.manual_location_count} manual · {brand.shop_count} user shops
+								</p>
+								{#if brand.location_review_count > 0}<p class="mt-0.5 text-[11px] font-medium text-amber-700"
+									>{brand.location_review_count} match review</p
+								>{/if}</td
 							>
 							<td class="px-3 py-3"
 								><strong class="font-medium text-zinc-900">{brand.node_count}</strong
@@ -746,52 +1032,68 @@
 														</p>{/if}
 												</section>
 												<section>
-													<h3 class="text-xs font-semibold text-zinc-500 uppercase">Sources</h3>
+													<h3 class="text-xs font-semibold text-zinc-500 uppercase">Other sources</h3>
 													<div class="mt-2 space-y-1">
-														{#each detail.sources.slice(0, 8) as source}<p
+														{#each detail.sources.filter((source) => source.source !== 'osm').slice(0, 8) as source}<p
 																class="truncate text-xs text-zinc-600"
 															>
 																<span class="font-medium">{source.source}</span>: {source.source_key}
-															</p>{/each}{#if detail.sources.length === 0}<p
+															</p>{/each}{#if detail.sources.filter((source) => source.source !== 'osm').length === 0}<p
 																class="text-sm text-zinc-500"
 															>
-																No canonical sources.
+																No other canonical sources.
 															</p>{/if}
 													</div>
 												</section>
-												<section>
-													<div class="flex items-center justify-between gap-3">
-														<h3 class="text-xs font-semibold text-zinc-500 uppercase">
-															OSM locations
-														</h3>
-														<span class="text-xs text-zinc-500">{detail.osm_locations.length}</span>
-													</div>
-													<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
-														{#each detail.osm_locations as location}
-															<div class="py-2">
-																<p class="truncate text-xs font-medium text-zinc-700">
-																	{location.name ??
-																		`${location.source ?? 'OSM'}:${location.source_key ?? location.id}`}
-																</p>
-																{#if googleMapsCoordinatesUrl(location.lat, location.lon)}
-																	<a
-																		href={googleMapsCoordinatesUrl(location.lat, location.lon) ??
-																			'#'}
-																		target="_blank"
-																		rel="noreferrer"
-																		class="mt-0.5 inline-block font-mono text-xs text-blue-700 hover:underline"
-																		>{coordinatesLabel(location.lat, location.lon)}</a
-																	>
-																{:else}
-																	<p class="mt-0.5 text-xs text-zinc-500">
-																		Coordinates unavailable
-																	</p>
-																{/if}
+											<section>
+												<div class="flex items-center justify-between gap-3">
+													<h3 class="text-xs font-semibold text-zinc-500 uppercase">
+														Locations · {detail.physical_locations.length}
+													</h3>
+													<button
+														type="button"
+														onclick={() => openManualLocation(brand)}
+														disabled={brand.status === 'merged' || brand.is_demo}
+														class="rounded border border-zinc-300 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+													>Add location</button>
+												</div>
+												<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
+													{#each detail.physical_locations as location (location.id)}
+														<div class="py-3">
+															<div class="flex items-start justify-between gap-3">
+															<div class="min-w-0">
+																<p class="mb-0.5 font-mono text-[10px] text-zinc-400">Location {location.id.slice(0, 8)}</p>
+																	<a href={googleMapsCoordinatesUrl(location.lat, location.lon)} target="_blank" rel="noreferrer" class="text-xs font-medium text-zinc-800 hover:underline">
+																		{[location.city, location.county, location.region].filter(Boolean).join(', ') || coordinatesLabel(location.lat, location.lon)}
+																	</a>
+																	<p class="mt-0.5 font-mono text-[11px] text-zinc-500">{coordinatesLabel(location.lat, location.lon)}</p>
+																</div>
+																<span class={`rounded px-2 py-1 text-[11px] font-medium ${location.physical_status === 'needs_review' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{location.physical_status === 'needs_review' ? 'Match review' : 'Active'}</span>
 															</div>
-														{/each}
-														{#if detail.osm_locations.length === 0}
-															<p class="py-2 text-sm text-zinc-500">No matched OSM locations.</p>
-														{/if}
+															<div class="mt-2 space-y-1">
+																{#each location.evidence as evidence (evidence.id)}
+																	<div class="flex items-center gap-2 rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5">
+																		<a href={evidence.source_url || googleMapsCoordinatesUrl(evidence.lat, evidence.lon)} target="_blank" rel="noreferrer" class="min-w-0 flex-1 truncate text-xs text-zinc-700 hover:underline" title={evidence.address_input ?? evidence.source_key}>
+																			{evidence.osm_id ? `OSM ${evidence.osm_type ?? 'node'} ${evidence.osm_id}` : `Manual · ${evidence.verification_status ?? 'unverified'}`}
+																		</a>
+																		<button type="button" onclick={() => evidence.osm_id ? openNodeRepairForEvidence(brand, detail, evidence) : openManualEvidenceRemoval(brand, location, evidence)} disabled={brand.status === 'merged' || brand.is_demo} class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-100 hover:text-red-700 disabled:opacity-35" title={evidence.osm_id ? 'Remove or split OSM evidence' : 'Remove manual evidence'} aria-label={evidence.osm_id ? `Manage OSM evidence for ${brand.display}` : `Remove manual location from ${brand.display}`}>
+																			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+																		</button>
+																	</div>
+																{/each}
+															</div>
+															{#if location.physical_status === 'needs_review'}
+																<p class="mt-2 text-xs text-amber-800">An observation is 50–150 m from an existing storefront.</p>
+																<div class="mt-2 flex gap-2">
+																	<button type="button" onclick={() => resolvePhysicalLocation(brand.slug, location.id, 'attach_to_suggested')} disabled={pendingAction === `resolveLocation:${location.id}`} class="rounded bg-zinc-900 px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50">Same storefront</button>
+																	<button type="button" onclick={() => resolvePhysicalLocation(brand.slug, location.id, 'keep_separate')} disabled={pendingAction === `resolveLocation:${location.id}`} class="rounded border border-zinc-300 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 disabled:opacity-50">Keep separate</button>
+																</div>
+															{/if}
+														</div>
+													{/each}
+													{#if detail.physical_locations.length === 0}
+														<p class="py-2 text-sm text-zinc-500">No physical locations.</p>
+													{/if}
 													</div>
 												</section>
 											</div>
@@ -932,6 +1234,312 @@
 	{/if}
 </main>
 
+{#if manualEvidenceRemoval}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-5"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && (manualEvidenceRemoval = null)}
+	>
+		<div class="w-full max-w-lg rounded-lg bg-white shadow-xl" role="dialog" aria-modal="true" aria-labelledby="manual-location-removal-title">
+			<div class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+				<div>
+					<h2 id="manual-location-removal-title" class="text-lg font-semibold text-zinc-950">Remove manual location evidence?</h2>
+					<p class="mt-1 text-sm text-zinc-600">{manualEvidenceRemoval.brand.display}</p>
+				</div>
+				<button type="button" onclick={() => (manualEvidenceRemoval = null)} aria-label="Close manual location removal" class="text-xl leading-none text-zinc-400 hover:text-zinc-800">×</button>
+			</div>
+			<div class="space-y-4 px-5 py-5">
+				<div class="border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+					{#if manualEvidenceRemoval.location.evidence.length > 1}
+						The storefront will remain because other accepted evidence is attached.
+					{:else}
+						This is the storefront's only accepted evidence, so the storefront will be retired from location counts.
+					{/if}
+				</div>
+				<div class="text-sm text-zinc-700">
+					<p class="font-medium">{manualEvidenceRemoval.evidence.address_input || coordinatesLabel(manualEvidenceRemoval.evidence.lat, manualEvidenceRemoval.evidence.lon)}</p>
+					{#if manualEvidenceRemoval.evidence.source_url}<a href={manualEvidenceRemoval.evidence.source_url} target="_blank" rel="noreferrer" class="mt-1 block truncate text-xs text-blue-700 hover:underline">{manualEvidenceRemoval.evidence.source_url}</a>{/if}
+				</div>
+				<label class="block">
+					<span class="text-sm font-medium text-zinc-800">Reason</span>
+					<textarea bind:value={manualEvidenceRemovalReason} rows="3" maxlength="1000" required placeholder="Duplicate entry, incorrect storefront, closed before verification…" class="mt-1 block w-full rounded border-zinc-300 text-sm"></textarea>
+				</label>
+				{#if modalError}<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{modalError}</div>{/if}
+			</div>
+			<div class="flex justify-end gap-2 border-t border-zinc-200 bg-zinc-50 px-5 py-4">
+				<button type="button" onclick={() => (manualEvidenceRemoval = null)} class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50">Cancel</button>
+				<button type="button" onclick={removeManualEvidence} disabled={!manualEvidenceRemovalReason.trim() || Boolean(pendingAction)} class="rounded bg-red-700 px-3 py-2 text-sm font-medium text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-40">{pendingAction.startsWith('removeManualEvidence:') ? 'Removing…' : 'Confirm removal'}</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if nodeRepair}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-5"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closeModal()}
+	>
+		<div
+			class="flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="node-repair-title"
+		>
+			<div class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+				<div>
+					<h2 id="node-repair-title" class="text-lg font-semibold text-zinc-950">
+						Remove OSM node from brand
+					</h2>
+					<p class="mt-1 text-sm text-zinc-600">
+						{nodeRepair.location.name ?? 'Unnamed OSM location'} · {nodeRepair.brand.display}
+					</p>
+				</div>
+				<button
+					type="button"
+					onclick={closeModal}
+					aria-label="Close OSM node dialog"
+					class="text-xl leading-none text-zinc-400 hover:text-zinc-800">×</button
+				>
+			</div>
+
+			<form
+				method="post"
+				action="?/repairOsmNode"
+				use:enhance={actionEnhance('repairOsmNode')}
+				class="flex min-h-0 flex-1 flex-col"
+			>
+				<input type="hidden" name="candidate_id" value={nodeRepair.location.id} />
+				<input type="hidden" name="source_brand_slug" value={nodeRepair.brand.slug} />
+				<input type="hidden" name="disposition" value={nodeDisposition} />
+
+				<div class="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
+					<div class="border-l-2 border-amber-500 bg-amber-50 px-3 py-2">
+						<p class="text-sm font-medium text-amber-950">
+							This changes canonical identity resolution for one observed location.
+						</p>
+						<p class="mt-1 text-xs leading-5 text-amber-800">
+							The raw candidate and prior research remain available as audit history.
+						</p>
+					</div>
+
+					<div class="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Node action">
+						<label
+							class="cursor-pointer rounded border p-3 {nodeDisposition === 'remove'
+								? 'border-red-400 bg-red-50'
+								: 'border-zinc-200 bg-white'}"
+						>
+							<span class="flex items-start gap-2">
+								<input
+									type="radio"
+									bind:group={nodeDisposition}
+									value="remove"
+									class="mt-0.5 border-zinc-300 text-red-700 focus:ring-red-600"
+								/>
+								<span>
+									<span class="block text-sm font-semibold text-zinc-950">Remove only</span>
+									<span class="mt-1 block text-xs leading-5 text-zinc-600">
+										Detach and reject this observation without creating a brand.
+									</span>
+								</span>
+							</span>
+						</label>
+						<label
+							class="cursor-pointer rounded border p-3 {nodeDisposition === 'create_brand'
+								? 'border-blue-500 bg-blue-50'
+								: 'border-zinc-200 bg-white'}"
+						>
+							<span class="flex items-start gap-2">
+								<input
+									type="radio"
+									bind:group={nodeDisposition}
+									value="create_brand"
+									class="mt-0.5 border-zinc-300 text-blue-700 focus:ring-blue-600"
+								/>
+								<span>
+									<span class="block text-sm font-semibold text-zinc-950"
+										>Create separate brand</span
+									>
+									<span class="mt-1 block text-xs leading-5 text-zinc-600">
+										Move the node to a new brand and queue a manual enrichment audit.
+									</span>
+								</span>
+							</span>
+						</label>
+					</div>
+
+					{#if nodeDisposition === 'create_brand'}
+						<section class="space-y-4 border-t border-zinc-200 pt-5">
+							<label class="block">
+								<span class="text-sm font-medium text-zinc-800">New canonical display name</span>
+								<input
+									name="new_display"
+									bind:value={nodeNewDisplay}
+									maxlength="200"
+									required
+									class="mt-1 block w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<div class="border-t border-zinc-200 pt-4">
+								<div class="flex flex-wrap items-start justify-between gap-3">
+									<div>
+										<p class="text-sm font-semibold text-zinc-950">Initial research scope</p>
+										<p class="mt-1 text-xs leading-5 text-zinc-500">
+											Private identity constraints saved before enrichment is queued.
+										</p>
+									</div>
+									<label class="flex items-center gap-2 text-xs text-zinc-600">
+										<input
+											type="checkbox"
+											name="scope_identity_verified"
+											value="true"
+											bind:checked={nodeIdentityVerified}
+											class="rounded border-zinc-300"
+										/>
+										Identity verified
+									</label>
+								</div>
+								<div
+									class="mt-4 border-l-2 border-teal-400 bg-teal-50 px-3 py-2 text-xs leading-5 text-teal-900"
+								>
+									<p class="font-medium">Automatic geographic context</p>
+									<p class="mt-0.5">
+										{coordinatesLabel(nodeRepair.location.lat, nodeRepair.location.lon)}{nodeRepair
+											.location.region_key
+											? ` · ${nodeRepair.location.region_key}`
+											: ''}
+									</p>
+									<p class="text-teal-800">
+										The new brand location will be reverse-geocoded before research. The fields
+										below are optional corrections.
+									</p>
+								</div>
+								<label class="mt-4 block">
+									<span class="text-xs font-medium text-zinc-700">Identity basis</span>
+									<select
+										name="scope_identity_basis"
+										bind:value={nodeIdentityBasis}
+										class="mt-1 block w-full rounded border-zinc-300 text-sm"
+									>
+										<option value="">Not specified</option>
+										<option value="official">Official identity</option>
+										<option value="multi_location_cluster">Multi-location cluster</option>
+										<option value="local">Local business</option>
+										<option value="ambiguous">Ambiguous identity</option>
+									</select>
+								</label>
+								<div class="mt-4 space-y-3">
+									<div class="grid gap-2 sm:grid-cols-[110px_minmax(0,1fr)]">
+										<select
+											name="scope_market_role"
+											bind:value={nodeMarketRole}
+											aria-label="Market role"
+											class="rounded border-zinc-300 text-sm"
+										>
+											<option value="include">Include</option><option value="prefer">Prefer</option
+											><option value="exclude">Exclude</option>
+										</select>
+										<input
+											name="scope_market"
+											bind:value={nodeMarket}
+											maxlength="2048"
+											placeholder="Optional market override"
+											class="min-w-0 rounded border-zinc-300 text-sm"
+										/>
+									</div>
+									<div class="grid gap-2 sm:grid-cols-[110px_minmax(0,1fr)]">
+										<select
+											name="scope_location_role"
+											bind:value={nodeLocationRole}
+											aria-label="Location observation role"
+											class="rounded border-zinc-300 text-sm"
+										>
+											<option value="prefer">Prefer</option><option value="include">Include</option
+											><option value="exclude">Exclude</option>
+										</select>
+										<input
+											name="scope_location_observation"
+											bind:value={nodeLocationObservation}
+											maxlength="2048"
+											placeholder="Optional location override"
+											class="min-w-0 rounded border-zinc-300 text-sm"
+										/>
+									</div>
+									<div class="grid gap-2 sm:grid-cols-[110px_minmax(0,1fr)]">
+										<select
+											name="scope_url_role"
+											bind:value={nodeUrlRole}
+											aria-label="Research URL role"
+											class="rounded border-zinc-300 text-sm"
+										>
+											<option value="include">Include</option><option value="prefer">Prefer</option
+											><option value="exclude">Exclude</option>
+										</select>
+										<input
+											type="url"
+											name="scope_url"
+											bind:value={nodeResearchUrl}
+											maxlength="2048"
+											placeholder="Optional website or source override"
+											class="min-w-0 rounded border-zinc-300 text-sm"
+										/>
+									</div>
+								</div>
+							</div>
+							<p class="text-xs leading-5 text-zinc-500">
+								The new brand starts with conservative matching and manual-only enrichment.
+							</p>
+						</section>
+					{/if}
+
+					<label class="block border-t border-zinc-200 pt-5">
+						<span class="text-sm font-medium text-zinc-800">Reason</span>
+						<textarea
+							name="reason"
+							bind:value={nodeRepairReason}
+							rows="3"
+							maxlength="1000"
+							required
+							placeholder="Verified separate business through…"
+							class="mt-1 block w-full rounded border-zinc-300 text-sm"
+						></textarea>
+					</label>
+
+					{#if modalError}
+						<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+							{modalError}
+						</div>
+					{/if}
+				</div>
+
+				<div class="flex justify-end gap-2 border-t border-zinc-200 bg-zinc-50 px-5 py-4">
+					<button
+						type="button"
+						onclick={closeModal}
+						class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+						>Cancel</button
+					>
+					<button
+						class="rounded px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 {nodeDisposition ===
+						'remove'
+							? 'bg-red-700 hover:bg-red-800'
+							: 'bg-blue-700 hover:bg-blue-800'}"
+						disabled={!nodeRepairReason.trim() ||
+							(nodeDisposition === 'create_brand' && !nodeNewDisplay.trim()) ||
+							Boolean(pendingAction)}
+					>
+						{pendingAction === 'repairOsmNode'
+							? 'Working…'
+							: nodeDisposition === 'remove'
+								? 'Confirm removal'
+								: 'Create brand and enrich'}
+					</button>
+				</div>
+			</form>
+		</div>
+	</div>
+{/if}
+
 {#if editBrand}
 	<div
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-5"
@@ -969,6 +1577,11 @@
 				class="flex min-h-0 flex-1 flex-col"
 			>
 				<input type="hidden" name="brand_slug" value={editBrand.slug} />
+				<input
+					type="hidden"
+					name="identity_regions"
+					value={JSON.stringify(identityRegions)}
+				/>
 				<div class="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 py-5">
 					<BrandIdentityFields
 						slug={editBrand.slug}
@@ -979,6 +1592,70 @@
 						bind:aliases={identityAliases}
 						bind:hasAliasDraft={identityHasAliasDraft}
 					/>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<div>
+							<h4 class="text-sm font-semibold text-zinc-950">Operating regions</h4>
+							<p class="mt-1 text-xs text-zinc-500">
+								Add state-level brand presence here. City and county presence stays derived from
+								observed locations.
+							</p>
+						</div>
+
+						<div class="mt-4">
+							<div class="flex items-center justify-between gap-3">
+								<p class="text-xs font-semibold text-zinc-500 uppercase">Current regions</p>
+								<span class="text-xs text-zinc-500">Removals apply when you confirm.</span>
+							</div>
+							<div class="mt-2 flex min-h-8 flex-wrap gap-2">
+								{#each identityRegions as code (code)}
+									<span
+										class="inline-flex min-h-8 items-center gap-1 rounded border border-zinc-200 bg-white py-1 pr-1 pl-2 text-xs text-zinc-700"
+									>
+										{regionLabel(code)}
+										<span class="px-1 text-[10px] font-semibold text-zinc-400 uppercase">
+											{regionSourceLabel(code)}
+										</span>
+										<button
+											type="button"
+											onclick={() => removeIdentityRegion(code)}
+											class="inline-flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-red-50 hover:text-red-700"
+											title={`Remove ${regionLabel(code)}`}
+											aria-label={`Remove ${regionLabel(code)}`}
+										>×</button>
+									</span>
+								{/each}
+								{#if identityRegions.length === 0}
+									<p class="self-center text-sm text-zinc-500">No regions associated.</p>
+								{/if}
+							</div>
+
+							<div class="mt-3 flex gap-2">
+								<label class="min-w-0 flex-1">
+									<span class="sr-only">Add operating region</span>
+									<select
+										bind:value={identityRegionDraft}
+										class="block h-10 w-full rounded border-zinc-300 text-sm"
+									>
+										<option value="">Choose a state or region</option>
+										{#each data.regions.filter(
+											(region) =>
+												!identityRegions.includes(region.code)
+										) as region (region.code)}
+											<option value={region.code}>{region.region_name} ({region.code})</option>
+										{/each}
+									</select>
+								</label>
+								<button
+									type="button"
+									onclick={addIdentityRegion}
+									disabled={!identityRegionDraft}
+									class="h-10 shrink-0 rounded border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+								>Add</button>
+							</div>
+
+						</div>
+					</section>
 
 					<section class="border-t border-zinc-200 pt-6">
 						<BrandMatchPolicyField
@@ -1053,6 +1730,177 @@
 								Boolean(pendingAction)}
 							>{pendingAction === 'updateIdentity' ? 'Saving…' : 'Confirm changes'}</button
 						>
+					</div>
+				</div>
+			</form>
+		</div>
+	</div>
+{/if}
+
+{#if manualLocationBrand}
+	<div
+		class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closeManualLocation()}
+	>
+		<div
+			class="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="manual-location-title"
+		>
+			<div class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+				<div>
+					<h2 id="manual-location-title" class="text-lg font-semibold text-zinc-950">
+						Add real location
+					</h2>
+					<p class="mt-1 text-sm text-zinc-600">{manualLocationBrand.display}</p>
+				</div>
+				<button
+					type="button"
+					onclick={closeManualLocation}
+					aria-label="Close location dialog"
+					class="text-xl leading-none text-zinc-400 hover:text-zinc-800"
+				>×</button>
+			</div>
+
+			<form
+				method="post"
+				action="?/createManualLocation"
+				use:enhance={manualLocationEnhance()}
+				class="flex min-h-0 flex-1 flex-col"
+			>
+				<input type="hidden" name="brand_slug" value={manualLocationBrand.slug} />
+				<input type="hidden" name="location_input_kind" value={manualLocationInputKind} />
+				<div class="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
+					<label class="block">
+						<span class="text-xs font-medium text-zinc-600">Brand</span>
+						<input
+							value={`${manualLocationBrand.display} · ${manualLocationBrand.slug}`}
+							disabled
+							class="mt-1 block h-10 w-full rounded border-zinc-200 bg-zinc-50 text-sm text-zinc-600"
+						/>
+					</label>
+
+					<div>
+						<span class="text-xs font-medium text-zinc-600">Location input</span>
+						<div class="mt-1 inline-flex rounded border border-zinc-300 bg-zinc-50 p-0.5">
+							<button
+								type="button"
+								onclick={() => (manualLocationInputKind = 'coordinates')}
+								class={`rounded px-3 py-1.5 text-sm font-medium ${manualLocationInputKind === 'coordinates' ? 'bg-white text-zinc-950 shadow-sm' : 'text-zinc-500'}`}
+							>Coordinates</button>
+							<button
+								type="button"
+								onclick={() => (manualLocationInputKind = 'address')}
+								class={`rounded px-3 py-1.5 text-sm font-medium ${manualLocationInputKind === 'address' ? 'bg-white text-zinc-950 shadow-sm' : 'text-zinc-500'}`}
+							>Address</button>
+						</div>
+					</div>
+
+					{#if manualLocationInputKind === 'coordinates'}
+						<div class="grid gap-4 sm:grid-cols-2">
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Latitude</span>
+								<input
+									name="location_lat"
+									type="number"
+									step="any"
+									min="-90"
+									max="90"
+									required
+									bind:value={manualLocationLat}
+									placeholder="37.7749"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+							<label>
+								<span class="text-xs font-medium text-zinc-600">Longitude</span>
+								<input
+									name="location_lon"
+									type="number"
+									step="any"
+									min="-180"
+									max="180"
+									required
+									bind:value={manualLocationLon}
+									placeholder="-122.4194"
+									class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+								/>
+							</label>
+						</div>
+					{:else}
+						<label class="block">
+							<span class="text-xs font-medium text-zinc-600">Address</span>
+							<input
+								name="location_address"
+								required
+								bind:value={manualLocationAddress}
+								placeholder="123 Main St, San Jose, CA"
+								class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+							/>
+						</label>
+					{/if}
+
+					<label class="block">
+						<span class="text-xs font-medium text-zinc-600">Source URL</span>
+						<input
+							name="location_source_url"
+							type="url"
+							required
+							bind:value={manualLocationSourceUrl}
+							placeholder="https://…"
+							class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+						/>
+					</label>
+
+					<label class="block">
+						<span class="text-xs font-medium text-zinc-600">Verification status</span>
+						<select
+							name="location_verification_status"
+							bind:value={manualLocationVerification}
+							class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm"
+						>
+							<option value="verified">Verified</option>
+							<option value="needs_review">Needs review</option>
+							<option value="unverified">Unverified</option>
+						</select>
+					</label>
+
+					<label class="block">
+						<span class="text-xs font-medium text-zinc-600">Note (optional)</span>
+						<textarea
+							name="location_note"
+							bind:value={manualLocationNote}
+							rows="3"
+							maxlength="2000"
+							class="mt-1 block w-full rounded border-zinc-300 text-sm"
+						></textarea>
+					</label>
+
+					{#if modalError}
+						<div class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+							{modalError}
+						</div>
+					{/if}
+				</div>
+
+				<div class="flex items-center justify-between gap-4 border-t border-zinc-200 bg-zinc-50 px-5 py-4">
+					<p class="text-xs text-zinc-500">City, county, and state will resolve asynchronously.</p>
+					<div class="flex shrink-0 gap-2">
+						<button
+							type="button"
+							onclick={closeManualLocation}
+							class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+						>Cancel</button>
+						<button
+							class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+							disabled={!manualLocationSourceUrl.trim() ||
+								(manualLocationInputKind === 'coordinates'
+									? !manualLocationLat || !manualLocationLon
+									: !manualLocationAddress.trim()) ||
+								Boolean(pendingAction)}
+						>{pendingAction === 'createManualLocation' ? 'Creating…' : 'Confirm location'}</button>
 					</div>
 				</div>
 			</form>

@@ -114,6 +114,31 @@
 			return_message: string | null;
 		}>;
 		cronError: string | null;
+		countyCoverage: {
+			region_code: string | null;
+			freshness_months: number;
+			minimum_brand_locations: number;
+			freshness_cutoff: string;
+			county_count: number;
+			scanned_count: number;
+			latest_full_scan_at: string | null;
+			fresh_observed_locations: number;
+			collection_locations: number;
+			qualifying_brands: number;
+			location_geocode: { total: number; resolved: number; missing: number };
+			counties: Array<{
+				place_id: string;
+				code: string;
+				name: string;
+				state_code: string;
+				last_full_scan_at: string | null;
+				last_import_job_id: string | null;
+				fresh_observed_locations: number;
+				collection_locations: number;
+				qualifying_brands: number;
+			}>;
+		} | null;
+		countyCoverageError: string | null;
 		regionRunHistory: Array<{
 			id: string;
 			regionKey: string | null;
@@ -153,7 +178,10 @@
 	};
 
 	let selectedRegionCode =
-		data.regionCodes.find((r) => r.code === 'US-CA')?.code ?? data.regionCodes[0]?.code ?? 'US-CA';
+		data.regionCodes.find((region) => region.code === data.latestRegionJob?.region_key)?.code ??
+		data.regionCodes.find((region) => region.code === 'US-CA')?.code ??
+		data.regionCodes[0]?.code ??
+		'US-CA';
 	let jobsContainer: HTMLDivElement | null = null;
 	let visibleJobsCount = 25;
 	let importDetailsOpen = false;
@@ -173,6 +201,13 @@
 		(data.latestTileStatusCounts.queued ?? 0) +
 		(data.latestTileStatusCounts.running ?? 0) +
 		(data.latestTileStatusCounts.retry_waiting ?? 0);
+	$: countyGeocodePercent = data.countyCoverage?.location_geocode.total
+		? Math.round(
+				(data.countyCoverage.location_geocode.resolved /
+					data.countyCoverage.location_geocode.total) *
+					100
+			)
+		: 0;
 	$: bucketCandidates = selectedBucket
 		? data.currentRunCandidates.filter((candidate) =>
 				selectedBucket?.kind === 'process'
@@ -519,6 +554,114 @@
 					<p class="mt-3 text-sm text-gray-500">No region import has been started yet.</p>
 				{/if}
 			</div>
+		</section>
+
+		<section class="border-y border-gray-200 bg-white px-5 py-5">
+			<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+				<div>
+					<h2 class="text-lg font-semibold text-gray-950">County coverage</h2>
+					<p class="mt-1 text-sm text-gray-500">
+						{data.countyCoverage?.region_code ?? data.latestRegionJob?.region_key ?? 'Current region'}
+						· {data.countyCoverage?.freshness_months ?? 24}-month observation window
+					</p>
+				</div>
+				{#if data.countyCoverage?.latest_full_scan_at}
+					<div class="text-left text-xs text-gray-500 sm:text-right">
+						<div>Last complete scan</div>
+						<div class="mt-1 font-semibold text-gray-900">
+							{formatDate(data.countyCoverage.latest_full_scan_at)}
+						</div>
+					</div>
+				{/if}
+			</div>
+
+			{#if data.countyCoverageError}
+				<p class="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+					County coverage is unavailable: {data.countyCoverageError}
+				</p>
+			{:else if data.countyCoverage}
+				<div class="mt-5 grid grid-cols-2 gap-x-5 gap-y-4 md:grid-cols-5">
+					<div>
+						<div class="text-xs text-gray-500">Counties scanned</div>
+						<div class="mt-1 text-xl font-semibold text-gray-950">
+							{formatNumber(data.countyCoverage.scanned_count)} / {formatNumber(
+								data.countyCoverage.county_count
+							)}
+						</div>
+					</div>
+					<div>
+						<div class="text-xs text-gray-500">County geocoded</div>
+						<div class="mt-1 text-xl font-semibold text-gray-950">{countyGeocodePercent}%</div>
+						<div class="mt-1 text-xs text-gray-500">
+							{formatNumber(data.countyCoverage.location_geocode.missing)} remaining
+						</div>
+					</div>
+					<div>
+						<div class="text-xs text-gray-500">Fresh observations</div>
+						<div class="mt-1 text-xl font-semibold text-gray-950">
+							{formatNumber(data.countyCoverage.fresh_observed_locations)}
+						</div>
+					</div>
+					<div>
+						<div class="text-xs text-gray-500">Collection locations</div>
+						<div class="mt-1 text-xl font-semibold text-gray-950">
+							{formatNumber(data.countyCoverage.collection_locations)}
+						</div>
+					</div>
+					<div>
+						<div class="text-xs text-gray-500">Qualifying brands</div>
+						<div class="mt-1 text-xl font-semibold text-gray-950">
+							{formatNumber(data.countyCoverage.qualifying_brands)}
+						</div>
+						<div class="mt-1 text-xs text-gray-500">
+							{data.countyCoverage.minimum_brand_locations}+ observed locations
+						</div>
+					</div>
+				</div>
+
+				<div class="mt-4 h-2 overflow-hidden rounded-full bg-gray-100">
+					<div class="h-full bg-blue-600" style={`width: ${countyGeocodePercent}%`}></div>
+				</div>
+
+				<details class="mt-5 border-t border-gray-200 pt-4">
+					<summary class="cursor-pointer text-sm font-semibold text-gray-800">
+						County breakdown
+					</summary>
+					<div class="mt-3 max-h-80 overflow-auto border border-gray-200">
+						<table class="min-w-full divide-y divide-gray-200 text-left text-xs">
+							<thead class="sticky top-0 bg-gray-50 text-gray-500">
+								<tr>
+									<th class="px-3 py-2 font-medium">County</th>
+									<th class="px-3 py-2 font-medium">Last full scan</th>
+									<th class="px-3 py-2 text-right font-medium">Observed</th>
+									<th class="px-3 py-2 text-right font-medium">Collection</th>
+									<th class="px-3 py-2 text-right font-medium">Brands</th>
+								</tr>
+							</thead>
+							<tbody class="divide-y divide-gray-100 bg-white">
+								{#each data.countyCoverage.counties as county}
+									<tr>
+										<td class="px-3 py-2">
+											<div class="font-medium text-gray-900">{county.name}</div>
+											<div class="text-gray-400">{county.code}</div>
+										</td>
+										<td class="px-3 py-2 text-gray-600">{formatDate(county.last_full_scan_at)}</td>
+										<td class="px-3 py-2 text-right text-gray-700">
+											{formatNumber(county.fresh_observed_locations)}
+										</td>
+										<td class="px-3 py-2 text-right text-gray-700">
+											{formatNumber(county.collection_locations)}
+										</td>
+										<td class="px-3 py-2 text-right text-gray-700">
+											{formatNumber(county.qualifying_brands)}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</details>
+			{/if}
 		</section>
 
 		<section id="automation" class="grid grid-cols-1 gap-6 lg:grid-cols-2">

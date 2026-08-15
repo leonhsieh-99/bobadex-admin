@@ -1,4 +1,5 @@
 import { error, redirect } from '@sveltejs/kit';
+import { initialResearchScopeFromForm } from '$lib/server/enrichment-research-scope.server';
 import { supabaseAdmin } from '$lib/supabase.server';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -96,7 +97,6 @@ type BrandRow = {
 	display: string;
 	website: string | null;
 	wikidata: string | null;
-	enrichment_location_anchor: string | null;
 };
 
 type RegionCodeRow = {
@@ -296,10 +296,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 				.from('brand_aliases')
 				.select('brand_slug,normalized_name,alias_display,match_mode')
 				.limit(5000),
-			locals.supabase
-				.from('brands')
-				.select('slug,display,website,wikidata,enrichment_location_anchor')
-				.limit(5000),
+			locals.supabase.from('brands').select('slug,display,website,wikidata').limit(5000),
 			locals.supabase
 				.from('region_codes')
 				.select('code,country_code,region_name')
@@ -379,9 +376,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const brandsBySlug = new Map(
 		((brandResult.data ?? []) as BrandRow[]).map((brand) => [brand.slug, brand])
 	);
-	const brandAnchorsBySlug = Object.fromEntries(
-		[...brandsBySlug.values()].map((brand) => [brand.slug, brand.enrichment_location_anchor])
-	);
 	const aliasRows = (aliasResult.data ?? []) as AliasRow[];
 	const similarAliasesByCandidate: Record<string, AliasSuggestion[]> = {};
 	for (const candidate of candidates) {
@@ -417,7 +411,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		latestReviewByCandidate,
 		similarAliasesByCandidate,
 		suggestedLocationAnchors,
-		brandAnchorsBySlug,
 		regionCodes: (regionCodeResult.data ?? []) as RegionCodeRow[],
 		reviewTab,
 		q
@@ -461,8 +454,18 @@ export const actions: Actions = {
 		const candidateId = form.get('candidate_id') as string | null;
 		const forceDisplay = (form.get('force_display') as string | null) || null;
 		const note = (form.get('note') as string | null) || null;
-		const enrichmentLocationAnchor =
-			String(form.get('enrichment_location_anchor') ?? '').trim() || null;
+		let researchScope;
+		try {
+			researchScope = initialResearchScopeFromForm(form);
+		} catch (scopeError) {
+			throw redirect(
+				303,
+				reviewsRedirect(form, {
+					toast: 'approve_failed',
+					msg: scopeError instanceof Error ? scopeError.message : 'invalid_research_scope'
+				})
+			);
+		}
 
 		if (!candidateId) {
 			throw redirect(
@@ -473,11 +476,11 @@ export const actions: Actions = {
 		await requireActionableCandidate(locals, candidateId, form, 'approve_failed');
 
 		const { data, error: rpcError } = await locals.supabase
-			.rpc('admin_approve_osm_candidate_with_anchor', {
+			.rpc('admin_approve_osm_candidate_with_scope', {
 				p_candidate_id: candidateId,
 				p_force_display: forceDisplay,
 				p_note: note,
-				p_enrichment_location_anchor: enrichmentLocationAnchor
+				p_research_scope: researchScope
 			})
 			.returns<ApproveResult>();
 
@@ -506,26 +509,16 @@ export const actions: Actions = {
 		const candidateId = String(form.get('candidate_id') ?? '');
 		const brandSlug = String(form.get('brand_slug') ?? '');
 		const note = (form.get('note') as string | null) ?? null;
-		const enrichmentLocationAnchor =
-			String(form.get('enrichment_location_anchor') ?? '').trim() || null;
-		const updateEnrichmentLocationAnchor =
-			String(form.get('update_enrichment_location_anchor') ?? '') === 'true';
-
 		if (!candidateId || !brandSlug) {
 			throw redirect(303, reviewsRedirect(form, { toast: 'merge_failed', msg: 'missing_params' }));
 		}
 		await requireActionableCandidate(locals, candidateId, form, 'merge_failed');
 
-		const { error: rpcError } = await locals.supabase.rpc(
-			'admin_merge_candidate_to_brand_with_anchor',
-			{
-				p_candidate_id: candidateId,
-				p_brand_slug: brandSlug,
-				p_note: note,
-				p_enrichment_location_anchor: enrichmentLocationAnchor,
-				p_update_enrichment_location_anchor: updateEnrichmentLocationAnchor
-			}
-		);
+		const { error: rpcError } = await locals.supabase.rpc('admin_merge_candidate_to_brand', {
+			p_candidate_id: candidateId,
+			p_brand_slug: brandSlug,
+			p_note: note
+		});
 
 		if (rpcError) {
 			throw redirect(303, reviewsRedirect(form, { toast: 'merge_failed', msg: rpcError.message }));

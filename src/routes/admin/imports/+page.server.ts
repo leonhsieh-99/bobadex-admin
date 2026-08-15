@@ -130,12 +130,40 @@ type RegionRunSummary = {
 	pipelineStateCounts: Record<string, number>;
 };
 
+type CountyCoverageRow = {
+	place_id: string;
+	code: string;
+	name: string;
+	state_code: string;
+	last_full_scan_at: string | null;
+	last_import_job_id: string | null;
+	fresh_observed_locations: number;
+	collection_locations: number;
+	qualifying_brands: number;
+};
+
+type CountyCoverageSummary = {
+	region_code: string | null;
+	freshness_months: number;
+	minimum_brand_locations: number;
+	freshness_cutoff: string;
+	county_count: number;
+	scanned_count: number;
+	latest_full_scan_at: string | null;
+	fresh_observed_locations: number;
+	collection_locations: number;
+	qualifying_brands: number;
+	location_geocode: { total: number; resolved: number; missing: number };
+	counties: CountyCoverageRow[];
+};
+
 const expectedImportCronWorkers = [
 	{ nameFragment: 'drain-osm-import', label: 'Tile queue drain' },
 	{ nameFragment: 'process-osm-candidates', label: 'Deterministic processing' },
 	{ nameFragment: 'score-osm-candidates', label: 'LLM review' },
 	{ nameFragment: 'apply-safe-osm-reviews', label: 'Safe LLM auto-apply' },
-	{ nameFragment: 'reset-stuck-osm-llm', label: 'Stuck LLM recovery' }
+	{ nameFragment: 'reset-stuck-osm-llm', label: 'Stuck LLM recovery' },
+	{ nameFragment: 'drain-brand-location-geocode', label: 'Location geography' }
 ] as const;
 
 function increment<T extends string>(record: Record<T, number>, key: T, amount = 1) {
@@ -193,6 +221,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		(left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
 	);
 	const latestRegionJob = regionJobs[0] ?? null;
+	const coverageRegionCode = latestRegionJob?.region_key ?? 'US-CA';
 	const latestTileJobs = latestRegionJob
 		? tileJobs.filter((job) => job.parent_job_id === latestRegionJob.id)
 		: [];
@@ -225,7 +254,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		{ data: regionCodes },
 		{ data: regionBounds },
 		{ data: llmReviews, error: llmReviewsErr },
-		{ data: cronStatus, error: cronStatusErr }
+		{ data: cronStatus, error: cronStatusErr },
+		{ data: countyCoverageData, error: countyCoverageErr }
 	] = await Promise.all([
 		locals.supabase.from('region_codes').select('code,country_code,region_name').order('code', {
 			ascending: true
@@ -243,7 +273,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			.not('llm_review_id', 'is', null)
 			.order('llm_review_created_at', { ascending: false })
 			.limit(250),
-		locals.supabase.rpc('admin_pipeline_cron_status')
+		locals.supabase.rpc('admin_pipeline_cron_status'),
+		locals.supabase.rpc('admin_county_location_coverage', {
+			p_region_code: coverageRegionCode,
+			p_freshness_months: 24,
+			p_min_brand_locations: 3
+		})
 	]);
 
 	if (llmReviewsErr) {
@@ -303,6 +338,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const cronJobs = cronPayload?.jobs ?? [];
 	const cronRuns = cronPayload?.runs ?? [];
 	const cronError = cronStatusErr?.message ?? null;
+	if (countyCoverageErr) console.error('[imports] County coverage', countyCoverageErr);
+	const countyCoverage = countyCoverageErr
+		? null
+		: (countyCoverageData as CountyCoverageSummary | null);
 	const latestCronRunByJob = new Map<number, CronRunRow>();
 	for (const run of cronRuns) {
 		if (!latestCronRunByJob.has(run.jobid)) latestCronRunByJob.set(run.jobid, run);
@@ -418,6 +457,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		cronJobs,
 		cronRuns,
 		cronError,
+		countyCoverage,
+		countyCoverageError: countyCoverageErr?.message ?? null,
 		regionRunHistory,
 		importCronWorkers,
 		importCronSummary: {

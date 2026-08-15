@@ -6,8 +6,21 @@ import type { Actions, PageServerLoad } from './$types';
 
 type JsonRecord = Record<string, unknown>;
 
-type EligibleBrandRow = {
-	slug: string;
+type ResearchAnchor = {
+	id?: string;
+	type: 'url' | 'market' | 'social' | 'location_observation';
+	role: 'include' | 'exclude' | 'prefer';
+	value: string;
+	reference_id?: string | null;
+	curator_verified: boolean;
+	notes?: string | null;
+};
+
+type ResearchScope = {
+	identity_basis: 'official' | 'multi_location_cluster' | 'local' | 'ambiguous' | null;
+	identity_scope_verified: boolean;
+	research_directive: string | null;
+	anchors: ResearchAnchor[];
 };
 
 type DossierRow = {
@@ -120,15 +133,30 @@ type BrandAliasRow = {
 	match_mode: string;
 };
 
-type OsmLocationRow = {
+type PhysicalLocationRow = {
 	id: string;
-	name: string | null;
-	source: string | null;
-	source_key: string | null;
-	lat: number | null;
-	lon: number | null;
-	region_key: string | null;
-	matched_brand_slug: string | null;
+	lat: number;
+	lon: number;
+	physical_status: string;
+	city: string | null;
+	county: string | null;
+	region: string | null;
+	evidence: Array<{
+		source: string;
+		source_key: string;
+		osm_type: string | null;
+		osm_id: number | null;
+		verification_status: string | null;
+	}>;
+};
+
+type EnrichmentFootprintRow = {
+	brand_slug: string;
+	place_id: string;
+	location_count: number;
+	level: string;
+	code: string;
+	name: string;
 };
 
 type EnrichmentJobRow = {
@@ -145,13 +173,6 @@ type EnrichmentJobRow = {
 	trigger_context: JsonRecord;
 	created_at: string;
 	completed_at: string | null;
-};
-
-type ReviewActionRow = {
-	brand_slug: string;
-	action: string;
-	brand_snapshot: JsonRecord | null;
-	created_at: string;
 };
 
 type CronJobRow = {
@@ -202,16 +223,89 @@ function stringArray(value: unknown) {
 		: [];
 }
 
+function parseResearchScope(value: string): ResearchScope {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		throw new Error('Research scope could not be read.');
+	}
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		throw new Error('Research scope must be an object.');
+	}
+	const scope = parsed as JsonRecord;
+	const identityBasis = scope.identity_basis;
+	if (
+		identityBasis !== null &&
+		identityBasis !== '' &&
+		!['official', 'multi_location_cluster', 'local', 'ambiguous'].includes(String(identityBasis))
+	) {
+		throw new Error('Choose a valid identity basis.');
+	}
+	const directive =
+		typeof scope.research_directive === 'string' ? scope.research_directive.trim() : '';
+	if (directive.length > 2000)
+		throw new Error('Research directive must be 2,000 characters or fewer.');
+	if (!Array.isArray(scope.anchors) || scope.anchors.length > 40) {
+		throw new Error('Research scope can contain at most 40 anchors.');
+	}
+	const anchors = scope.anchors.map((raw, index): ResearchAnchor => {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+			throw new Error(`Anchor ${index + 1} is invalid.`);
+		}
+		const anchor = raw as JsonRecord;
+		const type = String(anchor.type ?? '');
+		const role = String(anchor.role ?? '');
+		const anchorValue = String(anchor.value ?? '').trim();
+		const referenceId = String(anchor.reference_id ?? '').trim();
+		const notes = String(anchor.notes ?? '').trim();
+		if (!['url', 'market', 'social', 'location_observation'].includes(type)) {
+			throw new Error(`Anchor ${index + 1} has an invalid type.`);
+		}
+		if (!['include', 'exclude', 'prefer'].includes(role)) {
+			throw new Error(`Anchor ${index + 1} has an invalid role.`);
+		}
+		if (!anchorValue || anchorValue.length > 2048) {
+			throw new Error(`Anchor ${index + 1} needs a value of 2,048 characters or fewer.`);
+		}
+		if (['url', 'social'].includes(type)) {
+			try {
+				const url = new URL(anchorValue);
+				if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
+			} catch {
+				throw new Error(`Anchor ${index + 1} requires a valid HTTP or HTTPS URL.`);
+			}
+		}
+		if (referenceId.length > 200 || notes.length > 500) {
+			throw new Error(`Anchor ${index + 1} reference or notes are too long.`);
+		}
+		return {
+			type: type as ResearchAnchor['type'],
+			role: role as ResearchAnchor['role'],
+			value: anchorValue,
+			reference_id: referenceId || null,
+			curator_verified: anchor.curator_verified === true,
+			notes: notes || null
+		};
+	});
+	return {
+		identity_basis: identityBasis
+			? (String(identityBasis) as ResearchScope['identity_basis'])
+			: null,
+		identity_scope_verified: scope.identity_scope_verified === true,
+		research_directive: directive || null,
+		anchors
+	};
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
-	const admin = supabaseAdmin();
 	const [
 		jobsResult,
 		dossiersResult,
 		profilesResult,
 		flagsResult,
 		cronStatusResult,
-		recentRunsResult,
-		eligibleBrandsResult
+		recentRunsResult
 	] = await Promise.all([
 		locals.supabase
 			.schema('ingest')
@@ -244,13 +338,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
 			)
 			.order('created_at', { ascending: false })
-			.limit(125),
-		admin
-			.from('brands')
-			.select('slug')
-			.eq('status', 'active')
-			.eq('is_demo', false)
-			.neq('enrichment_mode', 'disabled')
+			.limit(125)
 	]);
 
 	const sourceResults = [
@@ -258,8 +346,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		['Dossiers', dossiersResult],
 		['Profiles', profilesResult],
 		['Integrity flags', flagsResult],
-		['Research runs', recentRunsResult],
-		['Eligible brands', eligibleBrandsResult]
+		['Research runs', recentRunsResult]
 	] as const;
 	const sourceErrors: string[] = sourceResults
 		.filter(([, result]) => result.error)
@@ -273,7 +360,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const profiles = (profilesResult.data ?? []) as ProfileRow[];
 	const flags = (flagsResult.data ?? []) as IntegrityFlagRow[];
 	const recentRuns = (recentRunsResult.data ?? []) as ResearchRunRow[];
-	const eligibleBrands = (eligibleBrandsResult.data ?? []) as EligibleBrandRow[];
 	const cronPayload =
 		cronStatusResult.data &&
 		typeof cronStatusResult.data === 'object' &&
@@ -283,45 +369,43 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const enrichmentCronJobs = cronPayload?.jobs ?? [];
 	const enrichmentCronRuns = cronPayload?.runs ?? [];
 	const reviewDossiers = dossiers.filter((row) => row.approval_status === 'needs_review');
-	const runIds = reviewDossiers.flatMap((row) =>
-		row.research_run_id ? [row.research_run_id] : []
-	);
-	const reviewBrandSlugs = reviewDossiers.map((row) => row.brand_slug);
-	const editorBrandSlugs = [
-		...new Set([...reviewBrandSlugs, ...profiles.map((profile) => profile.brand_slug)])
+	const reviewRunIds = [
+		...new Set(reviewDossiers.flatMap((row) => (row.research_run_id ? [row.research_run_id] : [])))
 	];
+	const reviewBrandSlugs = reviewDossiers.map((row) => row.brand_slug);
 
-	let runs: ResearchRunRow[] = recentRuns;
+	let reviewRuns: ResearchRunRow[] = [];
 	let claims: ClaimRow[] = [];
 	let claimSources: ClaimSourceRow[] = [];
 	let sources: SourceRow[] = [];
 	let brandIdentities: BrandIdentityRow[] = [];
 	let brandAliases: BrandAliasRow[] = [];
-	let osmLocations: OsmLocationRow[] = [];
-	let reviewActions: ReviewActionRow[] = [];
+	let physicalLocationsByBrand: Record<string, PhysicalLocationRow[]> = {};
+	let enrichmentFootprints: EnrichmentFootprintRow[] = [];
 
-	if (editorBrandSlugs.length) {
-		const [identitiesResult, aliasesResult, reviewActionsResult] = await Promise.all([
-			locals.supabase
-				.from('brands')
-				.select(
-					'slug,display,website,wikidata,status,is_demo,match_policy,enrichment_mode,enrichment_location_anchor'
-				)
-				.in('slug', editorBrandSlugs),
-			locals.supabase
-				.from('brand_aliases')
-				.select('id,brand_slug,normalized_name,alias_display,match_mode')
-				.in('brand_slug', editorBrandSlugs)
-				.order('normalized_name'),
-			admin
-				.schema('mod')
-				.from('brand_review_actions')
-				.select('brand_slug,action,brand_snapshot,created_at')
-				.in('brand_slug', editorBrandSlugs)
-				.in('action', ['reset_enrichment', 'edit_and_republish', 'approve_brand_review'])
-				.order('created_at', { ascending: false })
-				.limit(500)
-		]);
+	if (reviewBrandSlugs.length) {
+		const [identitiesResult, aliasesResult, physicalLocationsResult, footprintResult] =
+			await Promise.all([
+				locals.supabase
+					.from('brands')
+					.select(
+						'slug,display,website,wikidata,status,is_demo,match_policy,enrichment_mode,enrichment_location_anchor'
+					)
+					.in('slug', reviewBrandSlugs),
+				locals.supabase
+					.from('brand_aliases')
+					.select('id,brand_slug,normalized_name,alias_display,match_mode')
+					.in('brand_slug', reviewBrandSlugs)
+					.order('normalized_name'),
+				locals.supabase.rpc('admin_get_brand_physical_locations_batch', {
+					p_brand_slugs: reviewBrandSlugs
+				}),
+				locals.supabase
+					.from('brand_footprint')
+					.select('brand_slug,place_id,location_count,geo_places(level,code,name)')
+					.eq('source', 'enrichment_markets')
+					.in('brand_slug', reviewBrandSlugs)
+			]);
 		if (identitiesResult.error) {
 			console.error('[enrichment] Brand identities', identitiesResult.error);
 			sourceErrors.push('Brand identities');
@@ -330,32 +414,49 @@ export const load: PageServerLoad = async ({ locals }) => {
 			console.error('[enrichment] Brand aliases', aliasesResult.error);
 			sourceErrors.push('Brand aliases');
 		}
-		if (reviewActionsResult.error) {
-			console.error('[enrichment] Review history', reviewActionsResult.error);
-			sourceErrors.push('Review history');
+		if (physicalLocationsResult.error) {
+			console.error('[enrichment] Physical locations', physicalLocationsResult.error);
+			sourceErrors.push('Physical locations');
+		}
+		if (footprintResult.error) {
+			console.error('[enrichment] Enrichment footprints', footprintResult.error);
+			sourceErrors.push('Enrichment footprints');
 		}
 		brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
 		brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
-		reviewActions = (reviewActionsResult.data ?? []) as ReviewActionRow[];
+		physicalLocationsByBrand = (physicalLocationsResult.data ?? {}) as Record<
+			string,
+			PhysicalLocationRow[]
+		>;
+		enrichmentFootprints = (
+			(footprintResult.data ?? []) as Array<{
+				brand_slug: string;
+				place_id: string;
+				location_count: number;
+				geo_places:
+					| { level: string; code: string; name: string }
+					| { level: string; code: string; name: string }[]
+					| null;
+			}>
+		)
+			.map((row) => {
+				const place = Array.isArray(row.geo_places) ? row.geo_places[0] : row.geo_places;
+				if (!place) return null;
+				return {
+					brand_slug: row.brand_slug,
+					place_id: row.place_id,
+					location_count: row.location_count,
+					level: String(place.level),
+					code: place.code,
+					name: place.name
+				} satisfies EnrichmentFootprintRow;
+			})
+			.filter((row): row is EnrichmentFootprintRow => Boolean(row));
 	}
 
-	if (reviewBrandSlugs.length) {
-		const osmLocationsResult = await locals.supabase
-			.schema('ingest')
-			.from('osm_candidate_pipeline_states')
-			.select('id,name,source,source_key,lat,lon,region_key,matched_brand_slug')
-			.in('matched_brand_slug', reviewBrandSlugs)
-			.order('created_at', { ascending: false })
-			.limit(5000);
-		if (osmLocationsResult.error) {
-			console.error('[enrichment] OSM locations', osmLocationsResult.error);
-			sourceErrors.push('OSM locations');
-		}
-		osmLocations = (osmLocationsResult.data ?? []) as OsmLocationRow[];
-	}
-
-	const detailRunIds = [...new Set([...runIds, ...recentRuns.map((run) => run.id)])];
-	if (detailRunIds.length) {
+	// Scope claims/sources to review runs only. Including recentRuns here previously
+	// hit PostgREST's ~1000-row cap and silently dropped claims for many dossiers.
+	if (reviewRunIds.length) {
 		const [runsResult, claimsResult, claimSourcesResult, sourcesResult] = await Promise.all([
 			locals.supabase
 				.schema('ingest')
@@ -363,24 +464,24 @@ export const load: PageServerLoad = async ({ locals }) => {
 				.select(
 					'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
 				)
-				.in('id', detailRunIds),
+				.in('id', reviewRunIds),
 			locals.supabase
 				.schema('ingest')
 				.from('brand_research_claims')
 				.select(
 					'id,run_id,brand_slug,claim_key,claim_value,confidence,evidence_assessment,review_status,materiality,rationale'
 				)
-				.in('run_id', detailRunIds),
+				.in('run_id', reviewRunIds),
 			locals.supabase
 				.schema('ingest')
 				.from('brand_research_claim_sources')
 				.select('run_id,claim_id,source_id,citation_role,evidence_excerpt')
-				.in('run_id', detailRunIds),
+				.in('run_id', reviewRunIds),
 			locals.supabase
 				.schema('ingest')
 				.from('brand_research_sources')
 				.select('id,run_id,source_type,url,title,publisher,published_at,excerpt,credibility')
-				.in('run_id', detailRunIds)
+				.in('run_id', reviewRunIds)
 		]);
 
 		const detailResults = [
@@ -395,17 +496,20 @@ export const load: PageServerLoad = async ({ locals }) => {
 				sourceErrors.push(label);
 			}
 		}
-		runs = (runsResult.data ?? []) as ResearchRunRow[];
+		reviewRuns = (runsResult.data ?? []) as ResearchRunRow[];
 		claims = (claimsResult.data ?? []) as ClaimRow[];
 		claimSources = (claimSourcesResult.data ?? []) as ClaimSourceRow[];
 		sources = (sourcesResult.data ?? []) as SourceRow[];
 	}
 
-	const runById = new Map(runs.map((row) => [row.id, row]));
+	const runById = new Map<string, ResearchRunRow>();
+	for (const run of recentRuns) runById.set(run.id, run);
+	for (const run of reviewRuns) runById.set(run.id, run);
+	const runs = [...runById.values()];
+
 	const sourceById = new Map(sources.map((row) => [row.id, row]));
 	const profileByBrand = new Map(profiles.map((row) => [row.brand_slug, row]));
 	const dossierByBrand = new Map(dossiers.map((row) => [row.brand_slug, row]));
-	const needsEnrichment = eligibleBrands.filter((brand) => !dossierByBrand.has(brand.slug)).length;
 	const dossierByRunId = new Map(
 		dossiers.flatMap((row) => (row.research_run_id ? [[row.research_run_id, row] as const] : []))
 	);
@@ -415,12 +519,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const runByJobId = new Map<string, ResearchRunRow>();
 	for (const run of runs) {
 		if (run.job_id && !runByJobId.has(run.job_id)) runByJobId.set(run.job_id, run);
-	}
-	const legacySnapshotByBrand = new Map<string, ReviewActionRow>();
-	for (const action of reviewActions) {
-		if (!legacySnapshotByBrand.has(action.brand_slug)) {
-			legacySnapshotByBrand.set(action.brand_slug, action);
-		}
 	}
 	const monitoredJobs = jobs.map((job) => {
 		const run = runByJobId.get(job.id) ?? null;
@@ -492,8 +590,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 			latestActiveJobByBrand.set(job.brand_slug, job);
 		}
 	}
-	const now = Date.now();
-
 	const activeReviewDossiers = reviewDossiers.filter((dossier) => {
 		const identity = identityByBrand.get(dossier.brand_slug);
 		return identity && identity.status !== 'merged';
@@ -524,10 +620,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 				claims: dossierClaims,
 				integrityFlags: openFlags.filter((flag) => flag.brand_slug === dossier.brand_slug),
 				profile: profileByBrand.get(dossier.brand_slug) ?? null,
-				archivedLegacySnapshot: legacySnapshotByBrand.get(dossier.brand_slug) ?? null,
 				activeJob: latestActiveJobByBrand.get(dossier.brand_slug) ?? null,
-				osmLocations: osmLocations.filter(
-					(location) => location.matched_brand_slug === dossier.brand_slug
+				physicalLocations: physicalLocationsByBrand[dossier.brand_slug] ?? [],
+				enrichmentFootprint: enrichmentFootprints.filter(
+					(place) => place.brand_slug === dossier.brand_slug
 				),
 				metrics: {
 					overallConfidence:
@@ -550,53 +646,16 @@ export const load: PageServerLoad = async ({ locals }) => {
 			}
 			return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
 		});
-	const v8Dossiers = enrichedDossiers.filter(
-		(dossier) => dossier.run?.researcher_version === 'brand-v8-deterministic-search'
-	);
-	const legacyDossiers = enrichedDossiers.filter(
-		(dossier) => dossier.run?.researcher_version !== 'brand-v8-deterministic-search'
-	);
-	const publishedProfiles = profiles
-		.map((profile) => {
-			const dossier = dossierByBrand.get(profile.brand_slug);
-			const identity = identityByBrand.get(profile.brand_slug);
-			return {
-				...profile,
-				editor:
-					dossier && identity && identity.status !== 'merged'
-						? {
-								...dossier,
-								identity: {
-									...identity,
-									aliases: brandAliases.filter((alias) => alias.brand_slug === profile.brand_slug)
-								},
-								activeJob: latestActiveJobByBrand.get(profile.brand_slug) ?? null
-							}
-						: null
-			};
-		})
-		.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
 	return {
 		metrics: {
 			queued: jobStatusCounts.queued ?? 0,
 			running: jobStatusCounts.running ?? 0,
-			succeeded: jobStatusCounts.succeeded ?? 0,
 			failed: jobStatusCounts.failed ?? 0,
-			needsEnrichment,
-			publishedProfiles: profiles.length,
-			dossiersNeedingReview: activeReviewDossiers.length,
-			dueRefreshes: dossiers.filter(
-				(row) => row.refresh_after && new Date(row.refresh_after).getTime() <= now
-			).length,
-			openIntegrityFlags: openFlags.length
+			needsReview: activeReviewDossiers.length
 		},
-		dossiers: enrichedDossiers,
-		v8Dossiers,
-		legacyDossiers,
+		reviewDossiers: enrichedDossiers,
 		activeJobs,
-		publishedProfiles,
-		recentJobs: monitoredJobs.slice(0, 125),
 		sourceErrors: [...new Set(sourceErrors)],
 		cron: {
 			serverTime: cronPayload?.server_time ?? null,
@@ -618,13 +677,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}
 	};
 };
-
-function brandSlugs(form: FormData) {
-	return String(form.get('brand_slugs') ?? '')
-		.split(/[\n,]/)
-		.map((value) => value.trim())
-		.filter((value, index, values) => value && values.indexOf(value) === index);
-}
 
 function integerField(form: FormData, key: string, min: number, max: number) {
 	const raw = String(form.get(key) ?? '').trim();
@@ -656,6 +708,93 @@ const listProfileFactKeys = [
 	'markets',
 	'known_for'
 ] as const;
+
+const marketPresenceLevels = new Set(['country', 'admin1', 'metro', 'city']);
+
+function parseMarketPresence(form: FormData, original: JsonRecord) {
+	const raw = String(form.get('fact_market_presence') ?? '').trim();
+	if (!raw) {
+		if ('market_presence' in original) {
+			return { places: [] as Array<Record<string, unknown>> } as const;
+		}
+		return { places: null } as const;
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return { error: 'Market presence must be valid JSON.' } as const;
+	}
+	if (!Array.isArray(parsed)) {
+		return { error: 'Market presence must be a JSON array.' } as const;
+	}
+
+	const places: Array<Record<string, unknown>> = [];
+	for (const [index, item] of parsed.entries()) {
+		if (!item || typeof item !== 'object' || Array.isArray(item)) {
+			return { error: `Market presence row ${index + 1} is invalid.` } as const;
+		}
+		const row = item as Record<string, unknown>;
+		const placeId = typeof row.place_id === 'string' ? row.place_id.trim() : '';
+		const level = typeof row.level === 'string' ? row.level.trim() : '';
+		const name = typeof row.name === 'string' ? row.name.trim() : '';
+		const countryCode =
+			typeof row.country_code === 'string' && row.country_code.trim()
+				? row.country_code.trim().toUpperCase()
+				: null;
+		const admin1Code =
+			typeof row.admin1_code === 'string' && row.admin1_code.trim()
+				? row.admin1_code.trim().toUpperCase()
+				: null;
+		const metroCode =
+			typeof row.metro_code === 'string' && row.metro_code.trim() ? row.metro_code.trim() : null;
+		const confidence =
+			typeof row.confidence === 'number'
+				? row.confidence
+				: typeof row.confidence === 'string' && row.confidence.trim()
+					? Number(row.confidence)
+					: NaN;
+
+		if (!marketPresenceLevels.has(level)) {
+			return {
+				error: `Market presence row ${index + 1} needs level country, admin1, metro, or city.`
+			} as const;
+		}
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(placeId)
+		) {
+			return {
+				error: `Market presence row ${index + 1} must use a canonical place from search.`
+			} as const;
+		}
+		if (!name) {
+			return { error: `Market presence row ${index + 1} needs a name.` } as const;
+		}
+		if (countryCode && !/^[A-Z]{2}$/.test(countryCode)) {
+			return {
+				error: `Market presence row ${index + 1} country code must be ISO-2 (e.g. US).`
+			} as const;
+		}
+		if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+			return {
+				error: `Market presence row ${index + 1} confidence must be a number from 0 to 1.`
+			} as const;
+		}
+
+		places.push({
+			place_id: placeId,
+			level,
+			name,
+			country_code: countryCode,
+			admin1_code: admin1Code,
+			metro_code: metroCode,
+			confidence
+		});
+	}
+
+	return { places } as const;
+}
 
 function parseProfileFacts(form: FormData) {
 	let original: JsonRecord = {};
@@ -714,6 +853,16 @@ function parseProfileFacts(form: FormData) {
 		delete facts.official_socials;
 	}
 
+	const marketPresence = parseMarketPresence(form, original);
+	if ('error' in marketPresence) {
+		return { error: marketPresence.error } as const;
+	}
+	if (marketPresence.places) {
+		facts.market_presence = marketPresence.places;
+	} else {
+		delete facts.market_presence;
+	}
+
 	if (
 		typeof facts.founded_year === 'number' &&
 		(!Number.isInteger(facts.founded_year) ||
@@ -724,6 +873,29 @@ function parseProfileFacts(form: FormData) {
 	}
 
 	return { facts } as const;
+}
+
+async function validateCanonicalMarketPlaces(locals: App.Locals, facts: JsonRecord) {
+	const marketPresence = facts.market_presence;
+	if (!Array.isArray(marketPresence) || marketPresence.length === 0) return null;
+	const expected = new Map(
+		marketPresence.map((item) => {
+			const row = item as Record<string, unknown>;
+			return [String(row.place_id), String(row.level)];
+		})
+	);
+	const { data, error } = await locals.supabase
+		.from('geo_places')
+		.select('id,level')
+		.in('id', [...expected.keys()]);
+	if (error) return error.message;
+	const actual = new Map((data ?? []).map((place) => [place.id, place.level]));
+	for (const [placeId, level] of expected) {
+		if (actual.get(placeId) !== level) {
+			return `Canonical place ${placeId} is missing or does not match ${level}.`;
+		}
+	}
+	return null;
 }
 
 function parseIdentity(form: FormData) {
@@ -838,73 +1010,6 @@ async function setCronEnabled(
 }
 
 export const actions: Actions = {
-	campaign: async ({ request, locals }) => {
-		const form = await request.formData();
-		const count = integerField(form, 'count', 1, 500);
-		const limit = integerField(form, 'limit', 1, 5);
-		const requestedTrigger = String(form.get('trigger_kind') ?? '');
-		const triggerKind = ['backfill', 'audit', 'scheduled_refresh'].includes(requestedTrigger)
-			? requestedTrigger
-			: null;
-		if (!count || !limit || !triggerKind) {
-			return fail(400, {
-				ok: false,
-				action: 'campaign',
-				message: 'Choose a campaign type, a count from 1–500, and a batch limit from 1–5.'
-			});
-		}
-
-		const triggerLabel =
-			triggerKind === 'scheduled_refresh'
-				? 'scheduled refresh'
-				: triggerKind === 'audit'
-					? 'audit'
-					: 'backfill';
-		return invokeEnrichment(
-			locals,
-			{ count, trigger_kind: triggerKind, limit },
-			'campaign',
-			`Started a ${triggerLabel} campaign for up to ${count} brands; processing up to ${limit} now.`
-		);
-	},
-	backfill: async ({ request, locals }) => {
-		const slugs = brandSlugs(await request.formData());
-		if (!slugs.length) {
-			return fail(400, { ok: false, action: 'backfill', message: 'Select at least one brand.' });
-		}
-		if (slugs.length > 20) {
-			return fail(400, {
-				ok: false,
-				action: 'backfill',
-				message: 'Targeted campaigns support at most 20 brand slugs per request.'
-			});
-		}
-		return invokeEnrichment(
-			locals,
-			{ brand_slugs: slugs, trigger_kind: 'backfill', limit: 5 },
-			'backfill',
-			`Started backfill for ${slugs.length} brand${slugs.length === 1 ? '' : 's'}.`
-		);
-	},
-	audit: async ({ request, locals }) => {
-		const slugs = brandSlugs(await request.formData());
-		if (!slugs.length) {
-			return fail(400, { ok: false, action: 'audit', message: 'Select at least one brand.' });
-		}
-		if (slugs.length > 20) {
-			return fail(400, {
-				ok: false,
-				action: 'audit',
-				message: 'Targeted campaigns support at most 20 brand slugs per request.'
-			});
-		}
-		return invokeEnrichment(
-			locals,
-			{ brand_slugs: slugs, trigger_kind: 'audit', limit: 5 },
-			'audit',
-			`Started audit for ${slugs.length} brand${slugs.length === 1 ? '' : 's'}.`
-		);
-	},
 	drain: async ({ request, locals }) => {
 		const form = await request.formData();
 		const limit = integerField(form, 'limit', 1, 5);
@@ -931,6 +1036,53 @@ export const actions: Actions = {
 		),
 	disableCron: async ({ locals }) =>
 		setCronEnabled(locals, false, 'disableCron', 'Disabled the automatic enrichment queue worker.'),
+	saveResearchScope: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, {
+				ok: false,
+				action: 'saveResearchScope',
+				message: 'Admin access required.'
+			});
+		}
+		const form = await request.formData();
+		const slug = String(form.get('brand_slug') ?? '').trim();
+		if (!slug) {
+			return fail(400, {
+				ok: false,
+				action: 'saveResearchScope',
+				message: 'A brand slug is required.'
+			});
+		}
+		let scope: ResearchScope;
+		try {
+			scope = parseResearchScope(String(form.get('research_scope') ?? ''));
+		} catch (error) {
+			return fail(400, {
+				ok: false,
+				action: 'saveResearchScope',
+				message: error instanceof Error ? error.message : 'Research scope is invalid.'
+			});
+		}
+		const { data, error } = await locals.supabase.rpc('admin_set_brand_enrichment_research_scope', {
+			p_brand_slug: slug,
+			p_scope: scope,
+			p_note: null
+		});
+		if (error) {
+			console.error('[enrichment] saveResearchScope', error);
+			return fail(400, {
+				ok: false,
+				action: 'saveResearchScope',
+				message: error.message || 'The research scope could not be saved.'
+			});
+		}
+		return {
+			ok: true,
+			action: 'saveResearchScope',
+			scope: data,
+			message: `Saved reusable research scope for ${slug}.`
+		};
+	},
 	rerunEnrichment: async ({ request, locals }) => {
 		const form = await request.formData();
 		const slug = String(form.get('brand_slug') ?? '').trim();
@@ -1023,25 +1175,21 @@ export const actions: Actions = {
 	controlledCohort: async ({ request, locals }) => {
 		const form = await request.formData();
 		const count = integerField(form, 'count', 1, 100);
-		const anchorFilter = String(form.get('anchor_filter') ?? 'any');
-		const autoPublish = form.get('auto_publish') === 'on';
-		if (
-			!count ||
-			![1, 5, 10, 25, 100].includes(count) ||
-			!['any', 'present', 'missing'].includes(anchorFilter)
-		) {
+		const mode = String(form.get('mode') ?? 'backfill');
+		const autoPublish = mode === 'backfill';
+		if (!count || ![1, 5, 10, 25, 100].includes(count) || !['backfill', 'audit'].includes(mode)) {
 			return fail(400, {
 				ok: false,
 				action: 'controlledCohort',
-				message: 'Choose a cohort size of 1, 5, 10, 25, or 100 and a valid anchor filter.'
+				message: 'Choose a cohort size of 1, 5, 10, 25, or 100 and a mode of backfill or audit.'
 			});
 		}
 		const { data, error } = await locals.supabase.rpc('admin_queue_brand_enrichment_cohort', {
 			p_count: count,
-			p_local_only: form.get('local_only') === 'on',
-			p_missing_website: form.get('missing_website') === 'on',
-			p_anchor_filter: anchorFilter,
-			p_prior_failures: form.get('prior_failures') === 'on',
+			p_local_only: false,
+			p_missing_website: false,
+			p_anchor_filter: 'any',
+			p_prior_failures: false,
 			p_note: String(form.get('note') ?? '').trim() || null,
 			p_auto_publish: autoPublish
 		});
@@ -1050,7 +1198,7 @@ export const actions: Actions = {
 			return fail(400, {
 				ok: false,
 				action: 'controlledCohort',
-				message: error.message || 'The controlled cohort could not be queued.'
+				message: error.message || 'The cohort could not be queued.'
 			});
 		}
 		const payload = data && typeof data === 'object' ? (data as JsonRecord) : {};
@@ -1058,7 +1206,7 @@ export const actions: Actions = {
 		return {
 			ok: true,
 			action: 'controlledCohort',
-			message: `Queued ${queuedCount} enrichment job${queuedCount === 1 ? '' : 's'}${autoPublish ? ' with guarded auto-publish enabled' : ' for manual review'}.`
+			message: `Queued ${queuedCount} ${mode} job${queuedCount === 1 ? '' : 's'}.`
 		};
 	},
 	controlledJobState: async ({ request, locals }) => {
@@ -1110,6 +1258,14 @@ export const actions: Actions = {
 			});
 		}
 		parsed.facts.official_website = parsedIdentity.identity.website;
+		const marketPlaceError = await validateCanonicalMarketPlaces(locals, parsed.facts);
+		if (marketPlaceError) {
+			return fail(400, {
+				ok: false,
+				action: 'reviewAndPublish',
+				message: marketPlaceError
+			});
+		}
 		if (publishMode === 'republish') {
 			if (!locals.isAdmin || !locals.userId) {
 				return fail(403, {
