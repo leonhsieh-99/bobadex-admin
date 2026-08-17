@@ -28,6 +28,7 @@
 	let results: GeoPlaceResult[] = [];
 	let open = false;
 	let loading = false;
+	let searchError = '';
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let requestSequence = 0;
 	let activeIndex = -1;
@@ -73,6 +74,7 @@
 	async function search() {
 		const sequence = ++requestSequence;
 		loading = true;
+		searchError = '';
 		try {
 			const params = new URLSearchParams({ q: query.trim(), level });
 			const response = await fetch(`/admin/enrichment/place-search?${params}`);
@@ -85,6 +87,7 @@
 		} catch {
 			if (sequence === requestSequence) {
 				results = [];
+				searchError = 'Canonical place search is temporarily unavailable.';
 				open = true;
 			}
 		} finally {
@@ -95,10 +98,14 @@
 	async function resolveExact(exactName: string, autoResolveKey: string) {
 		const sequence = ++requestSequence;
 		loading = true;
+		searchError = '';
 		try {
 			const params = new URLSearchParams({ q: exactName, level });
 			const response = await fetch(`/admin/enrichment/place-search?${params}`);
-			if (!response.ok) return;
+			if (!response.ok) {
+				searchError = 'Canonical place search is temporarily unavailable.';
+				return;
+			}
 			const body = (await response.json()) as { places?: GeoPlaceResult[] };
 			if (sequence !== requestSequence || autoResolveKey !== lastAutoResolveKey) return;
 
@@ -187,7 +194,9 @@
 					<span class="block text-xs text-zinc-500">{place.code ?? place.level}</span>
 				</button>
 			{/each}
-			{#if results.length === 0 && !loading}
+			{#if searchError && !loading}
+				<p class="px-3 py-3 text-sm text-red-700">{searchError}</p>
+			{:else if results.length === 0 && !loading}
 				<p class="px-3 py-3 text-sm text-zinc-500">No canonical places found.</p>
 			{/if}
 		</div>

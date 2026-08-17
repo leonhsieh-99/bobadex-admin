@@ -28,6 +28,8 @@ type DossierRow = {
 	research_run_id: string | null;
 	approval_status: string;
 	customer_summary: string | null;
+	public_summary_draft: string | null;
+	research_topics: JsonRecord | null;
 	creative_brief: JsonRecord | string | null;
 	profile_facts: JsonRecord;
 	last_researched_at: string | null;
@@ -52,6 +54,8 @@ type ResearchRunRow = {
 	input_snapshot: JsonRecord | null;
 	raw_response: JsonRecord | null;
 	customer_summary_draft: string | null;
+	public_summary_draft: string | null;
+	research_topics: JsonRecord | null;
 	creative_brief_draft: JsonRecord | string | null;
 	overall_confidence: number | null;
 	started_at: string | null;
@@ -107,6 +111,10 @@ type IntegrityFlagRow = {
 type ProfileRow = {
 	brand_slug: string;
 	summary: string | null;
+	public_summary: string | null;
+	public_summary_source_run_id: string | null;
+	public_summary_model: string | null;
+	public_summary_generated_at: string | null;
 	summary_confidence: number | null;
 	publication_method: string | null;
 	published_at: string | null;
@@ -319,12 +327,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.schema('mod')
 			.from('brand_dossiers')
 			.select(
-				'brand_slug,research_run_id,approval_status,customer_summary,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method,recommended_match_policy,match_policy_route,match_policy_evidence'
+				'brand_slug,research_run_id,approval_status,customer_summary,public_summary_draft,research_topics,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method,recommended_match_policy,match_policy_route,match_policy_evidence'
 			)
 			.order('updated_at', { ascending: false }),
 		locals.supabase
 			.from('brand_profiles')
-			.select('brand_slug,summary,summary_confidence,publication_method,published_at,updated_at'),
+			.select(
+				'brand_slug,summary,public_summary,public_summary_source_run_id,public_summary_model,public_summary_generated_at,summary_confidence,publication_method,published_at,updated_at'
+			),
 		locals.supabase
 			.schema('mod')
 			.from('brand_integrity_flags')
@@ -335,7 +345,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.schema('ingest')
 			.from('brand_research_runs')
 			.select(
-				'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
+				'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,public_summary_draft,research_topics,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
 			)
 			.order('created_at', { ascending: false })
 			.limit(125)
@@ -462,7 +472,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				.schema('ingest')
 				.from('brand_research_runs')
 				.select(
-					'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
+					'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,public_summary_draft,research_topics,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
 				)
 				.in('id', reviewRunIds),
 			locals.supabase
@@ -705,7 +715,6 @@ const listProfileFactKeys = [
 	'former_names',
 	'product_categories',
 	'signature_products',
-	'markets',
 	'known_for'
 ] as const;
 
@@ -862,6 +871,8 @@ function parseProfileFacts(form: FormData) {
 	} else {
 		delete facts.market_presence;
 	}
+	// Short market labels are derived by the database from canonical market presence.
+	delete facts.markets;
 
 	if (
 		typeof facts.founded_year === 'number' &&
@@ -1243,6 +1254,12 @@ export const actions: Actions = {
 		const slug = String(form.get('brand_slug') ?? '').trim();
 		const publishMode = String(form.get('publish_mode') ?? 'review');
 		const summary = String(form.get('summary') ?? '').trim();
+		const publicSummary = String(form.get('public_summary') ?? '').trim();
+		const originalPublicSummary = String(form.get('original_public_summary') ?? '').trim();
+		const preservePublishedSummary =
+			form.get('public_summary_is_published_fallback') === 'true' &&
+			publicSummary === originalPublicSummary;
+		const publicSummaryForPublish = preservePublishedSummary ? '' : publicSummary;
 		const parsed = parseProfileFacts(form);
 		const parsedIdentity = parseIdentity(form);
 		if (!slug || !summary || 'error' in parsed || 'error' in parsedIdentity) {
@@ -1255,6 +1272,14 @@ export const actions: Actions = {
 						: 'error' in parsedIdentity
 							? parsedIdentity.error
 							: 'A brand slug and non-empty customer summary are required.'
+			});
+		}
+		const publicSummaryLength = Array.from(publicSummaryForPublish).length;
+		if (publicSummaryForPublish && (publicSummaryLength < 40 || publicSummaryLength > 300)) {
+			return fail(400, {
+				ok: false,
+				action: 'reviewAndPublish',
+				message: 'The user-facing summary must be between 40 and 300 characters.'
 			});
 		}
 		parsed.facts.official_website = parsedIdentity.identity.website;
@@ -1281,6 +1306,7 @@ export const actions: Actions = {
 					p_summary: summary,
 					p_profile_facts: parsed.facts,
 					p_identity: parsedIdentity.identity,
+					p_public_summary: publicSummaryForPublish || null,
 					p_note: String(form.get('note') ?? '').trim() || null,
 					p_reviewer_id: locals.userId
 				}
@@ -1300,19 +1326,36 @@ export const actions: Actions = {
 				message: `Updated and republished ${slug}.`
 			};
 		}
-		return invokeEnrichment(
-			locals,
-			{
-				action: 'review_and_publish_brand_enrichment',
-				brand_slug: slug,
-				summary,
-				profile_facts: parsed.facts,
-				identity: parsedIdentity.identity,
-				note: String(form.get('note') ?? '').trim()
-			},
-			'reviewAndPublish',
-			`Published ${slug}.`
-		);
+		if (!locals.isAdmin || !locals.userId) {
+			return fail(403, {
+				ok: false,
+				action: 'reviewAndPublish',
+				message: 'Admin access required.'
+			});
+		}
+		const { data, error } = await supabaseAdmin().rpc('admin_review_and_publish_brand_enrichment', {
+			p_brand_slug: slug,
+			p_summary: summary,
+			p_profile_facts: parsed.facts,
+			p_identity: parsedIdentity.identity,
+			p_public_summary: publicSummaryForPublish || null,
+			p_note: String(form.get('note') ?? '').trim() || null,
+			p_reviewer_id: locals.userId
+		});
+		if (error) {
+			console.error('[enrichment] reviewAndPublish', error);
+			return fail(400, {
+				ok: false,
+				action: 'reviewAndPublish',
+				message: error.message || 'The profile could not be published.'
+			});
+		}
+		return {
+			ok: true,
+			action: 'reviewAndPublish',
+			data,
+			message: `Published ${slug}.`
+		};
 	},
 	resetEnrichment: async ({ request, locals }) => {
 		const form = await request.formData();

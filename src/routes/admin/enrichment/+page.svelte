@@ -55,6 +55,22 @@
 	};
 
 	type GeoPlaceResult = Omit<MarketPresencePlace, 'confidence'>;
+	type ResearchRoute = 'local_identity' | 'established_brand' | 'identity_first';
+	type TopicCoverage = 'supported' | 'partial' | 'unavailable' | 'not_applicable';
+	type ResearchTopic = {
+		coverage?: TopicCoverage;
+		summary?: string;
+		claim_keys?: string[];
+		route?: ResearchRoute;
+		scale?: string;
+		basis?: string;
+	};
+	type ResearchTopics = Partial<
+		Record<
+			'identity' | 'classification_products' | 'origin_history' | 'footprint' | 'visual_identity',
+			ResearchTopic
+		>
+	>;
 
 	type ResearchAnchor = {
 		clientKey: string;
@@ -80,7 +96,20 @@
 		brand_slug: string;
 		approval_status: string;
 		customer_summary: string | null;
+		public_summary_draft: string | null;
+		research_topics: ResearchTopics | null;
+		quality_metrics?: Record<string, unknown> | null;
 		profile_facts: Record<string, unknown>;
+		profile?: {
+			summary: string | null;
+			public_summary: string | null;
+			public_summary_source_run_id: string | null;
+			public_summary_model: string | null;
+			public_summary_generated_at: string | null;
+			summary_confidence: number | null;
+			publication_method: string | null;
+			published_at: string | null;
+		} | null;
 		recommended_match_policy: BrandMatchPolicy;
 		identity: BrandIdentity;
 		activeJob: EnrichmentJob | null;
@@ -124,6 +153,9 @@
 			researcher_version: string | null;
 			input_snapshot: Record<string, unknown> | null;
 			customer_summary_draft: string | null;
+			public_summary_draft: string | null;
+			research_topics: ResearchTopics | null;
+			quality_metrics: Record<string, unknown> | null;
 			creative_brief_draft: Record<string, unknown> | string | null;
 			error_text: string | null;
 		} | null;
@@ -131,6 +163,7 @@
 
 	type Dossier = PublishableDossier & {
 		creative_brief: Record<string, unknown> | string | null;
+		quality_metrics: Record<string, unknown> | null;
 		match_policy_route: string | null;
 		match_policy_evidence: Record<string, unknown>;
 		last_researched_at: string | null;
@@ -171,6 +204,10 @@
 		}>;
 		profile: {
 			summary: string | null;
+			public_summary: string | null;
+			public_summary_source_run_id: string | null;
+			public_summary_model: string | null;
+			public_summary_generated_at: string | null;
 			summary_confidence: number | null;
 			publication_method: string | null;
 			published_at: string | null;
@@ -305,6 +342,7 @@
 	let publishIdentityDisplay = '';
 	let publishIdentityWebsite = '';
 	let publishIdentityWikidata = '';
+	let publishPublicSummary = '';
 	let publishMatchPolicy: BrandMatchPolicy = 'corroboration_required';
 	let publishHasAliasDraft = false;
 	let publishIdentityAliases: Array<{
@@ -521,6 +559,76 @@
 		});
 	}
 
+	const researchTopicRows = [
+		{ key: 'identity', label: 'Identity' },
+		{ key: 'classification_products', label: 'Classification & products' },
+		{ key: 'origin_history', label: 'Origin & history' },
+		{ key: 'footprint', label: 'Footprint' },
+		{ key: 'visual_identity', label: 'Visual identity' }
+	] as const;
+
+	function dossierResearchTopics(dossier: PublishableDossier) {
+		return dossier.research_topics ?? dossier.run?.research_topics ?? {};
+	}
+
+	function researchRoute(dossier: PublishableDossier): ResearchRoute | null {
+		const metricRoute = dossier.run?.quality_metrics?.research_route;
+		const dossierRoute = dossier.quality_metrics?.research_route;
+		const snapshotRoute = dossier.run?.input_snapshot?.research_route;
+		const topicRoute = dossierResearchTopics(dossier).identity?.route;
+		const route = metricRoute ?? dossierRoute ?? snapshotRoute ?? topicRoute;
+		return route === 'local_identity' || route === 'established_brand' || route === 'identity_first'
+			? route
+			: null;
+	}
+
+	function researchRouteLabel(route: ResearchRoute | null) {
+		if (route === 'local_identity') return 'Local identity';
+		if (route === 'established_brand') return 'Established brand';
+		if (route === 'identity_first') return 'Identity first';
+		return 'Route unavailable';
+	}
+
+	function canonicalResearchLocations(dossier: PublishableDossier) {
+		const raw = dossier.run?.input_snapshot?.canonical_location_context;
+		if (!Array.isArray(raw)) return [];
+		return raw.flatMap((value) => {
+			if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+			const location = value as Record<string, unknown>;
+			const label = typeof location.label === 'string' ? location.label.trim() : '';
+			const address = typeof location.address === 'string' ? location.address.trim() : '';
+			if (!label && !address) return [];
+			return [{ label: label || address, address: address || null }];
+		});
+	}
+
+	function topicCoverageClass(coverage: TopicCoverage | undefined) {
+		if (coverage === 'supported') return 'bg-emerald-50 text-emerald-700';
+		if (coverage === 'partial') return 'bg-amber-50 text-amber-700';
+		return 'bg-zinc-100 text-zinc-600';
+	}
+
+	function topicCoverageLabel(coverage: TopicCoverage | undefined) {
+		return coverage === 'supported' || coverage === 'partial' ? coverage : 'unavailable';
+	}
+
+	function characterCount(value: string) {
+		return Array.from(value).length;
+	}
+
+	function publicSummaryValue(dossier: PublishableDossier) {
+		return (
+			dossier.public_summary_draft ??
+			dossier.run?.public_summary_draft ??
+			dossier.profile?.public_summary ??
+			''
+		);
+	}
+
+	function hasDraftPublicSummary(dossier: PublishableDossier) {
+		return Boolean(dossier.public_summary_draft ?? dossier.run?.public_summary_draft);
+	}
+
 	function metricLabel(key: string) {
 		return key
 			.split('_')
@@ -692,6 +800,7 @@
 		publishIdentityDisplay = dossier.identity.display;
 		publishIdentityWebsite = publicationWebsite(dossier);
 		publishIdentityWikidata = dossier.identity.wikidata ?? '';
+		publishPublicSummary = publicSummaryValue(dossier);
 		publishMatchPolicy = isBrandMatchPolicy(dossier.recommended_match_policy)
 			? dossier.recommended_match_policy
 			: dossier.identity.match_policy;
@@ -711,6 +820,7 @@
 		publishIdentityDisplay = '';
 		publishIdentityWebsite = '';
 		publishIdentityWikidata = '';
+		publishPublicSummary = '';
 		publishMatchPolicy = 'corroboration_required';
 		publishIdentityAliases = [];
 		publishMarketPresence = [];
@@ -781,6 +891,12 @@
 				}
 			];
 		});
+	}
+
+	function derivedMarketLabels(places: MarketPresencePlace[]) {
+		return places
+			.map((place) => (place.name || place.display_name).trim())
+			.filter((name, index, names) => name && names.indexOf(name) === index);
 	}
 
 	function emptyMarketPresencePlace(): MarketPresencePlace {
@@ -1253,12 +1369,70 @@
 					<div class="grid gap-6 px-5 py-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(280px,0.55fr)]">
 						<div class="min-w-0 space-y-6">
 							<section>
-								<h5 class="text-xs font-semibold text-zinc-500 uppercase">Draft summary</h5>
+								<h5 class="text-xs font-semibold text-zinc-500 uppercase">
+									Admin diagnostic summary
+								</h5>
 								<p class="mt-2 text-sm leading-6 whitespace-pre-wrap text-zinc-700">
 									{dossier.run?.customer_summary_draft ??
 										dossier.customer_summary ??
 										'No draft summary was produced.'}
 								</p>
+							</section>
+
+							<section class="border-t border-zinc-200 pt-5">
+								<h5 class="text-xs font-semibold text-zinc-500 uppercase">User-facing summary</h5>
+								<p class="mt-2 text-sm leading-6 text-zinc-700">
+									{publicSummaryValue(dossier) || 'No consumer summary was produced.'}
+								</p>
+							</section>
+
+							<section class="border-t border-zinc-200 pt-5">
+								<div class="flex flex-wrap items-center justify-between gap-2">
+									<h5 class="text-xs font-semibold text-zinc-500 uppercase">Research coverage</h5>
+									<span class="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700">
+										{researchRouteLabel(researchRoute(dossier))}
+									</span>
+								</div>
+								{#if researchRoute(dossier) === 'local_identity'}
+									<div class="mt-3 border-l-2 border-blue-300 bg-blue-50 px-3 py-2">
+										<p class="text-xs font-semibold text-blue-900">Canonical research anchor</p>
+										{#each canonicalResearchLocations(dossier) as location}
+											<p class="mt-1 text-xs leading-5 text-blue-900">
+												{location.label}{location.address && location.address !== location.label
+													? ` · ${location.address}`
+													: ''}
+											</p>
+										{:else}
+											<p class="mt-1 text-xs text-blue-800">No canonical location was captured.</p>
+										{/each}
+									</div>
+								{/if}
+								<div class="mt-3 divide-y divide-zinc-200 border-y border-zinc-200">
+									{#each researchTopicRows as row}
+										{@const topic = dossierResearchTopics(dossier)[row.key]}
+										<div class="py-3">
+											<div class="flex items-center justify-between gap-3">
+												<p class="text-sm font-medium text-zinc-900">{row.label}</p>
+												<span
+													class="rounded px-2 py-0.5 text-xs font-medium {topicCoverageClass(
+														topic?.coverage
+													)}"
+												>
+													{topicCoverageLabel(topic?.coverage)}
+												</span>
+											</div>
+											<p class="mt-1 text-xs leading-5 text-zinc-600">
+												{topic?.summary || 'No supported finding was produced for this topic.'}
+											</p>
+											{#if topic?.claim_keys?.length}
+												<details class="mt-1 text-xs text-zinc-500">
+													<summary class="cursor-pointer">Claim keys</summary>
+													<p class="mt-1 font-mono">{topic.claim_keys.join(', ')}</p>
+												</details>
+											{/if}
+										</div>
+									{/each}
+								</div>
 							</section>
 
 							<section>
@@ -1350,8 +1524,14 @@
 								<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
 									{#each dossier.physicalLocations as location}
 										<div class="py-2.5">
-											<p class="font-mono text-[10px] text-zinc-400">Location {location.id.slice(0, 8)}</p>
-											<p class="mt-0.5 truncate text-xs font-medium text-zinc-800">{[location.city, location.county, location.region].filter(Boolean).join(', ') || 'Unresolved place'}</p>
+											<p class="font-mono text-[10px] text-zinc-400">
+												Location {location.id.slice(0, 8)}
+											</p>
+											<p class="mt-0.5 truncate text-xs font-medium text-zinc-800">
+												{[location.city, location.county, location.region]
+													.filter(Boolean)
+													.join(', ') || 'Unresolved place'}
+											</p>
 											{#if googleMapsCoordinatesUrl(location.lat, location.lon)}
 												<a
 													href={googleMapsCoordinatesUrl(location.lat, location.lon) ?? '#'}
@@ -1366,7 +1546,12 @@
 											{#if location.evidence.length}
 												<div class="mt-1.5 flex flex-wrap gap-1.5">
 													{#each location.evidence as evidence}
-														<span class="rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600">{evidence.osm_id ? `OSM ${evidence.osm_type ?? 'node'} ${evidence.osm_id}` : `Manual · ${evidence.verification_status ?? 'unverified'}`}</span>
+														<span
+															class="rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600"
+															>{evidence.osm_id
+																? `OSM ${evidence.osm_type ?? 'node'} ${evidence.osm_id}`
+																: `Manual · ${evidence.verification_status ?? 'unverified'}`}</span
+														>
 													{/each}
 												</div>
 											{/if}
@@ -1580,6 +1765,18 @@
 					name="original_profile_facts"
 					value={JSON.stringify(publishing.profile_facts ?? {})}
 				/>
+				<input
+					type="hidden"
+					name="original_public_summary"
+					value={publicSummaryValue(publishing)}
+				/>
+				<input
+					type="hidden"
+					name="public_summary_is_published_fallback"
+					value={String(
+						!hasDraftPublicSummary(publishing) && Boolean(publishing.profile?.public_summary)
+					)}
+				/>
 
 				<div class="min-h-0 flex-1 space-y-7 overflow-y-auto px-5 py-5">
 					<BrandIdentityFields
@@ -1602,7 +1799,10 @@
 
 					<section>
 						<div class="border-t border-zinc-200 pt-6">
-							<h4 class="text-sm font-semibold text-zinc-950">Customer summary</h4>
+							<h4 class="text-sm font-semibold text-zinc-950">Admin diagnostic summary</h4>
+							<p class="mt-1 text-xs text-zinc-500">
+								Internal research context. This is not shown on the consumer brand page.
+							</p>
 							<label class="mt-3 block">
 								<span class="sr-only">Customer summary</span>
 								<textarea
@@ -1615,6 +1815,56 @@
 									class="block w-full rounded border-zinc-300 text-sm leading-6 focus:border-zinc-500 focus:ring-zinc-500"
 								></textarea>
 							</label>
+						</div>
+					</section>
+
+					<section class="border-t border-zinc-200 pt-6">
+						<div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+							<div>
+								<div class="flex items-center justify-between gap-3">
+									<div>
+										<h4 class="text-sm font-semibold text-zinc-950">User-facing summary</h4>
+										<p class="mt-1 text-xs text-zinc-500">
+											Published on the mobile brand page. Leave empty to preserve an existing
+											summary.
+										</p>
+									</div>
+									<span
+										class="shrink-0 text-xs tabular-nums {characterCount(publishPublicSummary) >
+											300 ||
+										(characterCount(publishPublicSummary) > 0 &&
+											characterCount(publishPublicSummary) < 40)
+											? 'text-red-700'
+											: 'text-zinc-500'}"
+									>
+										{characterCount(publishPublicSummary)}/300
+									</span>
+								</div>
+								<label class="mt-3 block">
+									<span class="sr-only">User-facing summary</span>
+									<textarea
+										name="public_summary"
+										rows="5"
+										minlength="40"
+										maxlength="300"
+										bind:value={publishPublicSummary}
+										class="block w-full rounded border-zinc-300 text-sm leading-6 focus:border-zinc-500 focus:ring-zinc-500"
+									></textarea>
+								</label>
+							</div>
+							<div>
+								<p class="text-xs font-semibold text-zinc-500 uppercase">Mobile preview</p>
+								<div class="mt-3 overflow-hidden rounded border border-zinc-200 bg-white shadow-sm">
+									<div class="border-b border-zinc-100 px-4 py-3">
+										<p class="text-base font-semibold text-zinc-950">
+											{publishIdentityDisplay || publishing.identity.display}
+										</p>
+									</div>
+									<p class="px-4 py-4 text-sm leading-6 text-zinc-700">
+										{publishPublicSummary || 'No user-facing summary will be added.'}
+									</p>
+								</div>
+							</div>
 						</div>
 					</section>
 
@@ -1783,6 +2033,24 @@
 
 					<section class="border-t border-zinc-200 pt-6">
 						<h4 class="text-sm font-semibold text-zinc-950">Products and footprint</h4>
+						<dl class="mt-3 divide-y divide-zinc-200 border-y border-zinc-200 text-xs">
+							<div class="grid gap-1 py-2.5 sm:grid-cols-[130px_1fr]">
+								<dt class="font-semibold text-zinc-800">Market presence</dt>
+								<dd class="text-zinc-600">Researched brand coverage.</dd>
+							</div>
+							<div class="grid gap-1 py-2.5 sm:grid-cols-[130px_1fr]">
+								<dt class="font-semibold text-zinc-800">Brand locations</dt>
+								<dd class="text-zinc-600">
+									Actual geocoded storefronts; county collections are derived from these.
+								</dd>
+							</div>
+							<div class="grid gap-1 py-2.5 sm:grid-cols-[130px_1fr]">
+								<dt class="font-semibold text-zinc-800">Region codes</dt>
+								<dd class="text-zinc-600">
+									Ingestion scopes only; they are not evidence that a brand operates there.
+								</dd>
+							</div>
+						</dl>
 						<div class="mt-3 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 							<label>
 								<span class="text-xs font-medium text-zinc-600">Product categories</span>
@@ -1814,16 +2082,23 @@
 									class="mt-1 block w-full rounded border-zinc-300 text-sm"
 								></textarea>
 							</label>
-							<label>
-								<span class="text-xs font-medium text-zinc-600">Markets (short labels)</span>
-								<textarea
-									name="fact_markets"
-									rows="4"
-									value={factList(publishing, 'markets')}
-									placeholder="One short label per line (e.g. California)"
-									class="mt-1 block w-full rounded border-zinc-300 text-sm"
-								></textarea>
-							</label>
+							<div>
+								<span class="text-xs font-medium text-zinc-600">Markets (derived)</span>
+								<div
+									class="mt-1 min-h-24 rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700"
+								>
+									{#if derivedMarketLabels(publishMarketPresence).length}
+										{#each derivedMarketLabels(publishMarketPresence) as market}
+											<div>{market}</div>
+										{/each}
+									{:else}
+										<span class="text-zinc-400">No structured markets selected.</span>
+									{/if}
+								</div>
+								<p class="mt-1 text-[11px] text-zinc-500">
+									Generated automatically from Market Presence.
+								</p>
+							</div>
 							<label>
 								<span class="text-xs font-medium text-zinc-600">Store count statement</span>
 								<input
@@ -1848,7 +2123,8 @@
 								<div>
 									<h5 class="text-xs font-semibold text-zinc-500 uppercase">Market presence</h5>
 									<p class="mt-1 text-xs text-zinc-500">
-										Structured places published with the profile. Keep short labels above.
+										Where the brand is known to operate. Not individual storefronts or ingestion
+										scope.
 									</p>
 								</div>
 								<button
@@ -1887,19 +2163,22 @@
 										<label class="min-w-0">
 											<span class="text-[11px] font-medium text-zinc-600">Canonical place</span>
 											<div class="mt-1">
-											<GeoPlaceTypeahead
-												level={place.level}
-												value={place.display_name || place.name}
-												selectedId={place.place_id}
-												canonicalName={place.name}
-												countryCode={place.country_code}
-												admin1Code={place.admin1_code}
-												autoSelectExact={true}
-												contextKey={`${publishing.brand_slug}:${index}`}
-												onselect={(selected) => selectMarketPresencePlace(index, selected)}
+												<GeoPlaceTypeahead
+													level={place.level}
+													value={place.display_name || place.name}
+													selectedId={place.place_id}
+													canonicalName={place.name}
+													countryCode={place.country_code}
+													admin1Code={place.admin1_code}
+													autoSelectExact={true}
+													contextKey={`${publishing.brand_slug}:${index}`}
+													onselect={(selected) => selectMarketPresencePlace(index, selected)}
 													onclear={() => clearMarketPresenceSelection(index)}
 												/>
 											</div>
+											<span class="mt-1 block text-[11px] text-zinc-500">
+												Global search; state and province options appear when configured.
+											</span>
 											{#if !place.place_id && place.name}
 												<span class="mt-1 block text-[11px] text-amber-700"
 													>Select a canonical result before publishing.</span
@@ -1913,6 +2192,7 @@
 												class="mt-1 block h-9 w-full rounded border-zinc-300 text-sm"
 											>
 												<option value={1}>Verified</option>
+												<option value={0.8}>Supported</option>
 												<option value={0.85}>Strong</option>
 												<option value={0.6}>Tentative</option>
 											</select>
@@ -1984,7 +2264,8 @@
 										Resolved enrichment footprint
 									</p>
 									<p class="mt-1 text-xs text-amber-800">
-									Backup places from enrichment when this brand has no confirmed locations. Read-only.
+										Backup places from enrichment when this brand has no confirmed locations.
+										Read-only.
 									</p>
 									<ul class="mt-2 space-y-1">
 										{#each publishing.enrichmentFootprint ?? [] as place}
