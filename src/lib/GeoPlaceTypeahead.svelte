@@ -13,16 +13,18 @@
 		metro_name: string | null;
 	};
 
-	export let level: GeoPlaceResult['level'];
+	export let level: GeoPlaceResult['level'] | null = null;
 	export let value = '';
 	export let selectedId: string | null = null;
 	export let canonicalName = '';
 	export let countryCode: string | null = null;
 	export let admin1Code: string | null = null;
 	export let autoSelectExact = false;
+	export let autofocus = false;
 	export let contextKey = '';
 	export let onselect: (place: GeoPlaceResult) => void;
-	export let onclear: () => void;
+	export let onclear: (() => void) | null = null;
+	export let oncancel: (() => void) | null = null;
 
 	let query = value;
 	let results: GeoPlaceResult[] = [];
@@ -44,7 +46,7 @@
 		const exactName = canonicalName.trim() || value.trim();
 		const autoResolveKey = [
 			contextKey,
-			level,
+			level ?? 'any',
 			exactName.toLocaleLowerCase(),
 			countryCode ?? '',
 			admin1Code ?? ''
@@ -62,7 +64,7 @@
 
 	function scheduleSearch() {
 		if (timer) clearTimeout(timer);
-		if (selectedId && query !== value) onclear();
+		if (selectedId && query !== value) onclear?.();
 		if (query.trim().length < 2) {
 			results = [];
 			open = false;
@@ -71,12 +73,18 @@
 		timer = setTimeout(search, 180);
 	}
 
+	function searchParams(q: string) {
+		const params = new URLSearchParams({ q });
+		if (level) params.set('level', level);
+		return params;
+	}
+
 	async function search() {
 		const sequence = ++requestSequence;
 		loading = true;
 		searchError = '';
 		try {
-			const params = new URLSearchParams({ q: query.trim(), level });
+			const params = searchParams(query.trim());
 			const response = await fetch(`/admin/enrichment/place-search?${params}`);
 			if (!response.ok) throw new Error(await response.text());
 			const body = (await response.json()) as { places?: GeoPlaceResult[] };
@@ -100,7 +108,7 @@
 		loading = true;
 		searchError = '';
 		try {
-			const params = new URLSearchParams({ q: exactName, level });
+			const params = searchParams(exactName);
 			const response = await fetch(`/admin/enrichment/place-search?${params}`);
 			if (!response.ok) {
 				searchError = 'Canonical place search is temporarily unavailable.';
@@ -122,7 +130,7 @@
 				if (place.level === 'city' && admin1Code) {
 					return place.code?.startsWith(`${admin1Code}/city/`) ?? false;
 				}
-				return false;
+				return Boolean(level) && place.level === level;
 			});
 			if (canonicalMatches.length === 1) choose(canonicalMatches[0]);
 			else if (matches.length === 1) choose(matches[0]);
@@ -139,6 +147,11 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		if (event.key === 'Escape') {
+			open = false;
+			oncancel?.();
+			return;
+		}
 		if (!open || results.length === 0) return;
 		if (event.key === 'ArrowDown') {
 			event.preventDefault();
@@ -149,8 +162,6 @@
 		} else if (event.key === 'Enter' && activeIndex >= 0) {
 			event.preventDefault();
 			choose(results[activeIndex]);
-		} else if (event.key === 'Escape') {
-			open = false;
 		}
 	}
 </script>
@@ -165,10 +176,13 @@
 			? 'Search state or province'
 			: level === 'metro'
 				? 'Search metro area'
-				: `Search ${level}`}
+				: level
+					? `Search ${level}`
+					: 'Search country, state, metro, or city'}
 		aria-label="Canonical market place"
 		aria-autocomplete="list"
 		aria-expanded={open}
+		{autofocus}
 		class="block h-9 w-full rounded border-zinc-300 text-sm"
 	/>
 	{#if loading}

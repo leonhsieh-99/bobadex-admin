@@ -352,6 +352,9 @@
 		match_mode: string;
 	}> = [];
 	let publishMarketPresence: MarketPresencePlace[] = [];
+	let addingMarket = false;
+	let rebindingMarketIndex: number | null = null;
+	let resolvingMarkets = false;
 	let pendingAction = '';
 	let cohortCount = 1;
 	let cohortMode: 'backfill' | 'audit' = 'backfill';
@@ -812,6 +815,9 @@
 			match_mode: alias.match_mode
 		}));
 		publishMarketPresence = marketPresencePlaces(dossier);
+		addingMarket = false;
+		rebindingMarketIndex = null;
+		void resolveUnboundMarketPlaces();
 	}
 
 	function closePublish() {
@@ -824,6 +830,9 @@
 		publishMatchPolicy = 'corroboration_required';
 		publishIdentityAliases = [];
 		publishMarketPresence = [];
+		addingMarket = false;
+		rebindingMarketIndex = null;
+		resolvingMarkets = false;
 	}
 
 	function factText(dossier: PublishableDossier, key: string) {
@@ -893,54 +902,137 @@
 		});
 	}
 
-	function derivedMarketLabels(places: MarketPresencePlace[]) {
-		return places
-			.map((place) => (place.name || place.display_name).trim())
-			.filter((name, index, names) => name && names.indexOf(name) === index);
+	function marketChipQualifier(place: MarketPresencePlace) {
+		if (place.level === 'country') return 'country';
+		if (place.level === 'admin1') return place.country_code ?? 'state';
+		if (place.level === 'metro') {
+			return [place.admin1_code?.replace(/^US-/, ''), place.country_code]
+				.filter(Boolean)
+				.join(' · ') || 'metro';
+		}
+		return (
+			[place.admin1_code?.replace(/^US-/, ''), place.country_code].filter(Boolean).join(' · ') ||
+			'city'
+		);
 	}
 
-	function emptyMarketPresencePlace(): MarketPresencePlace {
-		return {
-			place_id: null,
-			level: 'admin1',
-			name: '',
-			code: null,
-			display_name: '',
-			country_code: 'US',
-			country_name: 'United States',
-			admin1_code: null,
-			admin1_name: null,
-			metro_code: null,
-			metro_name: null,
-			confidence: 0.8
-		};
+	function marketChipLabel(place: MarketPresencePlace) {
+		const name = (place.name || place.display_name).trim() || 'Unnamed place';
+		return `${name} · ${marketChipQualifier(place)}`;
 	}
 
-	function addMarketPresencePlace() {
-		publishMarketPresence = [...publishMarketPresence, emptyMarketPresencePlace()];
+	function placeFromSearchResult(
+		place: GeoPlaceResult,
+		confidence = 1
+	): MarketPresencePlace {
+		return { ...place, confidence };
+	}
+
+	function hasMarketPlace(place: GeoPlaceResult) {
+		return publishMarketPresence.some(
+			(existing) =>
+				(existing.place_id && existing.place_id === place.place_id) ||
+				(existing.level === place.level &&
+					existing.name.trim().toLocaleLowerCase() === place.name.trim().toLocaleLowerCase() &&
+					(existing.country_code ?? '') === (place.country_code ?? ''))
+		);
+	}
+
+	function startAddingMarket() {
+		addingMarket = true;
+		rebindingMarketIndex = null;
+	}
+
+	function cancelMarketEditor() {
+		addingMarket = false;
+		rebindingMarketIndex = null;
+	}
+
+	function addMarketPresencePlace(place: GeoPlaceResult) {
+		if (!hasMarketPlace(place)) {
+			publishMarketPresence = [...publishMarketPresence, placeFromSearchResult(place, 1)];
+		}
+		addingMarket = false;
+	}
+
+	function rebindMarketPresencePlace(index: number, place: GeoPlaceResult) {
+		const confidence = publishMarketPresence[index]?.confidence ?? 1;
+		publishMarketPresence[index] = placeFromSearchResult(place, confidence);
+		publishMarketPresence = [...publishMarketPresence];
+		rebindingMarketIndex = null;
 	}
 
 	function removeMarketPresencePlace(index: number) {
 		publishMarketPresence = publishMarketPresence.filter((_, i) => i !== index);
+		if (rebindingMarketIndex === index) rebindingMarketIndex = null;
+		else if (rebindingMarketIndex != null && rebindingMarketIndex > index) {
+			rebindingMarketIndex -= 1;
+		}
 	}
 
-	function setMarketPresenceLevel(index: number, level: MarketPresencePlace['level']) {
-		publishMarketPresence[index] = { ...emptyMarketPresencePlace(), level };
-		publishMarketPresence = [...publishMarketPresence];
+	function chooseExactPlace(
+		places: GeoPlaceResult[],
+		target: Pick<MarketPresencePlace, 'name' | 'level' | 'country_code' | 'admin1_code'>
+	) {
+		const normalizedName = target.name.trim().toLocaleLowerCase();
+		const matches = places.filter((place) => {
+			if (place.name.trim().toLocaleLowerCase() !== normalizedName) return false;
+			if (target.country_code && place.country_code !== target.country_code) return false;
+			if (target.admin1_code && place.admin1_code !== target.admin1_code) return false;
+			return true;
+		});
+		const canonicalMatches = matches.filter((place) => {
+			if (place.level !== target.level) return false;
+			if (place.level === 'country' && target.country_code) return place.code === target.country_code;
+			if (place.level === 'admin1' && target.admin1_code) return place.code === target.admin1_code;
+			if (place.level === 'city' && target.admin1_code) {
+				return place.code?.startsWith(`${target.admin1_code}/city/`) ?? false;
+			}
+			return true;
+		});
+		if (canonicalMatches.length === 1) return canonicalMatches[0];
+		const atLevel = matches.filter((place) => place.level === target.level);
+		if (atLevel.length === 1) return atLevel[0];
+		if (matches.length === 1) return matches[0];
+		return null;
 	}
 
-	function selectMarketPresencePlace(index: number, place: GeoPlaceResult) {
-		publishMarketPresence[index] = {
-			...place,
-			confidence: publishMarketPresence[index].confidence
-		};
-		publishMarketPresence = [...publishMarketPresence];
+	async function resolveCanonicalPlace(place: MarketPresencePlace) {
+		const exactName = (place.name || place.display_name).trim();
+		if (exactName.length < 2) return null;
+		const params = new URLSearchParams({ q: exactName, level: place.level });
+		const response = await fetch(`/admin/enrichment/place-search?${params}`);
+		if (!response.ok) return null;
+		const body = (await response.json()) as { places?: GeoPlaceResult[] };
+		return chooseExactPlace(body.places ?? [], place);
 	}
 
-	function clearMarketPresenceSelection(index: number) {
-		publishMarketPresence[index].place_id = null;
-		publishMarketPresence[index].code = null;
-		publishMarketPresence = [...publishMarketPresence];
+	async function resolveUnboundMarketPlaces() {
+		const unbound = publishMarketPresence
+			.map((place, index) => ({ place, index }))
+			.filter(({ place }) => !place.place_id && (place.name || place.display_name).trim().length >= 2);
+		if (!unbound.length) return;
+		resolvingMarkets = true;
+		try {
+			const resolved = await Promise.all(
+				unbound.map(async ({ place, index }) => ({
+					index,
+					match: await resolveCanonicalPlace(place)
+				}))
+			);
+			let next = publishMarketPresence;
+			for (const { index, match } of resolved) {
+				if (!match) continue;
+				next = next.map((place, placeIndex) =>
+					placeIndex === index
+						? placeFromSearchResult(match, place.confidence)
+						: place
+				);
+			}
+			publishMarketPresence = next;
+		} finally {
+			resolvingMarkets = false;
+		}
 	}
 
 	function claimEvidence(dossier: PublishableDossier, keys: string[]) {
@@ -1076,8 +1168,9 @@
 				<div>
 					<h3 class="text-lg font-semibold text-zinc-950">Start cohort</h3>
 					<p class="mt-1 text-sm text-zinc-500">
-						Queue brands for enrichment. Backfill can auto-publish when gates clear; audit always
-						stops for review.
+						Queue brands for enrichment. Backfill auto-publishes when quality gates clear. Audit
+						still stops for review. Single-brand reruns can auto-publish when those same gates
+						pass.
 					</p>
 				</div>
 				<span class="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700">Max 100</span>
@@ -2082,23 +2175,6 @@
 									class="mt-1 block w-full rounded border-zinc-300 text-sm"
 								></textarea>
 							</label>
-							<div>
-								<span class="text-xs font-medium text-zinc-600">Markets (derived)</span>
-								<div
-									class="mt-1 min-h-24 rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700"
-								>
-									{#if derivedMarketLabels(publishMarketPresence).length}
-										{#each derivedMarketLabels(publishMarketPresence) as market}
-											<div>{market}</div>
-										{/each}
-									{:else}
-										<span class="text-zinc-400">No structured markets selected.</span>
-									{/if}
-								</div>
-								<p class="mt-1 text-[11px] text-zinc-500">
-									Generated automatically from Market Presence.
-								</p>
-							</div>
 							<label>
 								<span class="text-xs font-medium text-zinc-600">Store count statement</span>
 								<input
@@ -2119,7 +2195,7 @@
 						</div>
 
 						<div class="mt-5 space-y-3">
-							<div class="flex items-center justify-between gap-3">
+							<div class="flex items-start justify-between gap-3">
 								<div>
 									<h5 class="text-xs font-semibold text-zinc-500 uppercase">Market presence</h5>
 									<p class="mt-1 text-xs text-zinc-500">
@@ -2129,10 +2205,11 @@
 								</div>
 								<button
 									type="button"
-									onclick={addMarketPresencePlace}
+									onclick={startAddingMarket}
 									class="rounded border border-zinc-300 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+									aria-label="Add market"
 								>
-									Add place
+									+
 								</button>
 							</div>
 							<input
@@ -2140,84 +2217,80 @@
 								name="fact_market_presence"
 								value={JSON.stringify(publishMarketPresence)}
 							/>
-							{#each publishMarketPresence as place, index}
-								<div class="border-l-2 border-zinc-300 bg-zinc-50 px-3 py-3">
-									<div class="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)_150px_auto]">
-										<label>
-											<span class="text-[11px] font-medium text-zinc-600">Place type</span>
-											<select
-												value={place.level}
-												onchange={(event) =>
-													setMarketPresenceLevel(
-														index,
-														event.currentTarget.value as MarketPresencePlace['level']
-													)}
-												class="mt-1 block h-9 w-full rounded border-zinc-300 text-sm"
-											>
-												<option value="country">Country</option>
-												<option value="admin1">State / province</option>
-												<option value="metro">Metro area</option>
-												<option value="city">City</option>
-											</select>
-										</label>
-										<label class="min-w-0">
-											<span class="text-[11px] font-medium text-zinc-600">Canonical place</span>
-											<div class="mt-1">
-												<GeoPlaceTypeahead
-													level={place.level}
-													value={place.display_name || place.name}
-													selectedId={place.place_id}
-													canonicalName={place.name}
-													countryCode={place.country_code}
-													admin1Code={place.admin1_code}
-													autoSelectExact={true}
-													contextKey={`${publishing.brand_slug}:${index}`}
-													onselect={(selected) => selectMarketPresencePlace(index, selected)}
-													onclear={() => clearMarketPresenceSelection(index)}
-												/>
-											</div>
-											<span class="mt-1 block text-[11px] text-zinc-500">
-												Global search; state and province options appear when configured.
-											</span>
-											{#if !place.place_id && place.name}
-												<span class="mt-1 block text-[11px] text-amber-700"
-													>Select a canonical result before publishing.</span
-												>
-											{/if}
-										</label>
-										<label>
-											<span class="text-[11px] font-medium text-zinc-600">Evidence strength</span>
-											<select
-												bind:value={place.confidence}
-												class="mt-1 block h-9 w-full rounded border-zinc-300 text-sm"
-											>
-												<option value={1}>Verified</option>
-												<option value={0.8}>Supported</option>
-												<option value={0.85}>Strong</option>
-												<option value={0.6}>Tentative</option>
-											</select>
-										</label>
-										<button
-											type="button"
-											onclick={() => removeMarketPresencePlace(index)}
-											class="mt-5 rounded border border-red-200 bg-white px-2.5 py-2 text-xs font-medium text-red-700 hover:bg-red-50"
+							<div class="flex flex-wrap gap-2">
+								{#each publishMarketPresence as place, index}
+									{#if rebindingMarketIndex === index}
+										<div class="w-full max-w-md">
+											<GeoPlaceTypeahead
+												value={place.display_name || place.name}
+												selectedId={place.place_id}
+												canonicalName={place.name}
+												countryCode={place.country_code}
+												admin1Code={place.admin1_code}
+												autoSelectExact={true}
+												autofocus={true}
+												contextKey={`${publishing.brand_slug}:rebind:${index}`}
+												onselect={(selected) => rebindMarketPresencePlace(index, selected)}
+												oncancel={cancelMarketEditor}
+											/>
+										</div>
+									{:else}
+										<span
+											class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs {place.place_id
+												? 'border-zinc-200 bg-zinc-50 text-zinc-800'
+												: 'border-amber-300 bg-amber-50 text-amber-900'}"
 										>
-											Remove
-										</button>
+											<button
+												type="button"
+												onclick={() => {
+													if (!place.place_id) {
+														addingMarket = false;
+														rebindingMarketIndex = index;
+													}
+												}}
+												class="font-medium"
+												title={place.place_id
+													? place.display_name || place.name
+													: 'Select a canonical match before publishing'}
+											>
+												{marketChipLabel(place)}
+											</button>
+											<button
+												type="button"
+												onclick={() => removeMarketPresencePlace(index)}
+												class="rounded-full px-1 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-800"
+												aria-label={`Remove ${place.name || 'market'}`}
+											>
+												×
+											</button>
+										</span>
+									{/if}
+								{/each}
+								{#if addingMarket}
+									<div class="w-full max-w-md">
+										<GeoPlaceTypeahead
+											autofocus={true}
+											contextKey={`${publishing.brand_slug}:add`}
+											onselect={addMarketPresencePlace}
+											oncancel={cancelMarketEditor}
+										/>
 									</div>
-									<div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
-										<span>Country: {place.country_name ?? place.country_code ?? '—'}</span>
-										<span>State / province: {place.admin1_name ?? place.admin1_code ?? '—'}</span>
-										<span>Metro: {place.metro_name ?? place.metro_code ?? '—'}</span>
-										{#if place.code}<span class="font-mono">{place.code}</span>{/if}
-									</div>
-								</div>
-							{/each}
-							{#if publishMarketPresence.length === 0}
+								{/if}
+							</div>
+							{#if publishMarketPresence.length === 0 && !addingMarket}
 								<p
 									class="rounded border border-dashed border-zinc-300 px-3 py-4 text-sm text-zinc-500"
 								>
-									No structured market presence yet. Add places or leave empty.
+									No structured market presence yet. Use + to add a place.
+								</p>
+							{/if}
+							{#if resolvingMarkets}
+								<p class="text-[11px] text-zinc-500">Matching canonical places…</p>
+							{/if}
+							{#if publishMarketPresence.some((place) => !place.place_id)}
+								<p class="text-[11px] text-amber-700">
+									Amber markets still need a canonical match. Click the name to search, or remove
+									them.
 								</p>
 							{/if}
 
@@ -2230,8 +2303,7 @@
 												<p class="text-sm font-medium text-zinc-900">
 													{claim.claim_key.replaceAll('_', ' ')}
 													<span class="ml-2 text-xs font-normal text-zinc-500"
-														>{percent(claim.confidence)} · {claim.evidence_assessment ??
-															'unassessed'}</span
+														>{claim.evidence_assessment ?? 'unassessed'}</span
 													>
 												</p>
 												{#if claim.rationale}<p class="mt-1 text-xs leading-5 text-zinc-600">

@@ -763,7 +763,12 @@ function parseMarketPresence(form: FormData, original: JsonRecord) {
 				? row.confidence
 				: typeof row.confidence === 'string' && row.confidence.trim()
 					? Number(row.confidence)
-					: NaN;
+					: 1;
+		if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+			return {
+				error: `Market presence row ${index + 1} confidence must be a number from 0 to 1.`
+			} as const;
+		}
 
 		if (!marketPresenceLevels.has(level)) {
 			return {
@@ -783,11 +788,6 @@ function parseMarketPresence(form: FormData, original: JsonRecord) {
 		if (countryCode && !/^[A-Z]{2}$/.test(countryCode)) {
 			return {
 				error: `Market presence row ${index + 1} country code must be ISO-2 (e.g. US).`
-			} as const;
-		}
-		if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-			return {
-				error: `Market presence row ${index + 1} confidence must be a number from 0 to 1.`
 			} as const;
 		}
 
