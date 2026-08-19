@@ -298,6 +298,24 @@
 		error: string | null;
 	};
 
+	type EnrichmentHistoryRow = {
+		id: string;
+		brand_slug: string;
+		display: string;
+		trigger_kind: string;
+		status: string;
+		result: string;
+		auto_publish_requested: boolean;
+		researcher_version: string | null;
+		overall_confidence: number | null;
+		approval_status: string | null;
+		approval_method: string | null;
+		last_error: string | null;
+		created_at: string;
+		completed_at: string | null;
+		activity_at: string;
+	};
+
 	export let data: {
 		metrics: {
 			queued: number;
@@ -307,6 +325,7 @@
 		};
 		reviewDossiers: Dossier[];
 		activeJobs: EnrichmentJob[];
+		history: EnrichmentHistoryRow[];
 		sourceErrors: string[];
 		cron: CronState;
 	};
@@ -357,12 +376,26 @@
 	let resolvingMarkets = false;
 	let pendingAction = '';
 	let cohortCount = 1;
-	let cohortMode: 'backfill' | 'audit' = 'backfill';
+	let cohortMode: 'backfill' | 'audit' | 'refresh' = 'refresh';
 	let refreshing = false;
 	let liveCron = data.cron;
 	let cronRefreshing = false;
+	let historySort: 'recent' | 'brand' | 'result' = 'recent';
+	let enrichmentTab: 'review' | 'history' = 'review';
 
 	const number = new Intl.NumberFormat('en-US');
+
+	$: sortedHistory = [...(data.history ?? [])].sort((a, b) => {
+		if (historySort === 'brand') {
+			return a.display.localeCompare(b.display, undefined, { sensitivity: 'base' });
+		}
+		if (historySort === 'result') {
+			return (
+				a.result.localeCompare(b.result) || Date.parse(b.activity_at) - Date.parse(a.activity_at)
+			);
+		}
+		return Date.parse(b.activity_at) - Date.parse(a.activity_at);
+	});
 
 	$: rerunScopeDirty =
 		!rerunScopeLoading &&
@@ -527,8 +560,10 @@
 	function relativeDate(value: string | null) {
 		if (!value) return 'Unknown';
 		const elapsed = Date.now() - new Date(value).getTime();
-		const hours = Math.max(0, Math.floor(elapsed / 3_600_000));
-		if (hours < 1) return 'Less than an hour ago';
+		if (elapsed < 60_000) return 'Just now';
+		const minutes = Math.max(1, Math.floor(elapsed / 60_000));
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
 		if (hours < 24) return `${hours}h ago`;
 		return `${Math.floor(hours / 24)}d ago`;
 	}
@@ -1055,10 +1090,24 @@
 	}
 
 	function statusClasses(status: string) {
-		if (status === 'succeeded' || status === 'published') return 'bg-emerald-50 text-emerald-700';
+		if (status === 'succeeded' || status === 'published' || status === 'auto_published')
+			return 'bg-emerald-50 text-emerald-700';
 		if (status === 'failed') return 'bg-red-50 text-red-700';
 		if (status === 'running') return 'bg-blue-50 text-blue-700';
+		if (status === 'needs_review' || status === 'paused') return 'bg-amber-50 text-amber-800';
 		return 'bg-zinc-100 text-zinc-700';
+	}
+
+	function historyResultLabel(result: string) {
+		if (result === 'auto_published') return 'Auto-published';
+		if (result === 'needs_review') return 'Needs review';
+		if (result === 'published') return 'Published';
+		if (result === 'succeeded') return 'Succeeded';
+		if (result === 'failed') return 'Failed';
+		if (result === 'running') return 'Running';
+		if (result === 'queued') return 'Queued';
+		if (result === 'paused') return 'Paused';
+		return result.replaceAll('_', ' ');
 	}
 
 	async function refreshCron() {
@@ -1168,9 +1217,9 @@
 				<div>
 					<h3 class="text-lg font-semibold text-zinc-950">Start cohort</h3>
 					<p class="mt-1 text-sm text-zinc-500">
-						Queue brands for enrichment. Backfill auto-publishes when quality gates clear. Audit
-						still stops for review. Single-brand reruns can auto-publish when those same gates
-						pass.
+						Queue brands for enrichment. Refresh re-runs existing dossiers on the current worker and
+						auto-publishes when quality gates clear. Backfill only fills brands with no dossier.
+						Audit still stops for review.
 					</p>
 				</div>
 				<span class="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700">Max 100</span>
@@ -1212,7 +1261,8 @@
 						bind:value={cohortMode}
 						class="mt-1 block h-10 w-full rounded border-zinc-300 text-sm focus:border-zinc-500 focus:ring-zinc-500"
 					>
-						<option value="backfill">Backfill</option>
+						<option value="refresh">Refresh existing</option>
+						<option value="backfill">Backfill missing</option>
 						<option value="audit">Audit</option>
 					</select>
 				</label>
@@ -1380,16 +1430,107 @@
 	</section>
 
 	<section>
-		<div class="mb-4 flex items-end justify-between gap-4 border-b border-zinc-200 pb-3">
-			<div>
-				<h3 class="text-lg font-semibold text-zinc-950">Reviews</h3>
-				<p class="mt-1 text-sm text-zinc-500">
-					Claims, citations, and integrity signals from dossiers needing review.
-				</p>
-			</div>
-			<span class="text-sm text-zinc-500 tabular-nums">{data.reviewDossiers.length} dossiers</span>
+		<div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+			<nav class="flex gap-1 overflow-x-auto border-b border-zinc-200" aria-label="Enrichment results">
+				<button
+					type="button"
+					class="shrink-0 border-b-2 px-3 py-2 text-sm {enrichmentTab === 'review'
+						? 'border-zinc-950 font-semibold text-zinc-950'
+						: 'border-transparent text-zinc-600 hover:text-zinc-950'}"
+					aria-current={enrichmentTab === 'review' ? 'page' : undefined}
+					onclick={() => (enrichmentTab = 'review')}
+				>
+					Manual review
+					<span class="ml-1 text-xs text-zinc-500 tabular-nums">{data.reviewDossiers.length}</span>
+				</button>
+				<button
+					type="button"
+					class="shrink-0 border-b-2 px-3 py-2 text-sm {enrichmentTab === 'history'
+						? 'border-zinc-950 font-semibold text-zinc-950'
+						: 'border-transparent text-zinc-600 hover:text-zinc-950'}"
+					aria-current={enrichmentTab === 'history' ? 'page' : undefined}
+					onclick={() => (enrichmentTab = 'history')}
+				>
+					History
+					<span class="ml-1 text-xs text-zinc-500 tabular-nums">{sortedHistory.length}</span>
+				</button>
+			</nav>
+			{#if enrichmentTab === 'history'}
+				<label class="text-sm text-zinc-600">
+					<span class="sr-only">Sort history</span>
+					<select
+						bind:value={historySort}
+						class="h-9 rounded border-zinc-300 text-sm focus:border-zinc-500 focus:ring-zinc-500"
+					>
+						<option value="recent">Most recent</option>
+						<option value="brand">Brand</option>
+						<option value="result">Result</option>
+					</select>
+				</label>
+			{/if}
 		</div>
 
+		{#if enrichmentTab === 'history'}
+			{#if sortedHistory.length}
+				<div class="overflow-x-auto rounded-lg border border-zinc-200 bg-white shadow-sm">
+					<table class="min-w-full text-left text-sm">
+						<thead
+							class="border-b border-zinc-200 bg-zinc-50 text-xs font-medium tracking-normal text-zinc-500 uppercase"
+						>
+							<tr>
+								<th class="px-4 py-2.5">When</th>
+								<th class="px-4 py-2.5">Brand</th>
+								<th class="px-4 py-2.5">Mode</th>
+								<th class="px-4 py-2.5">Result</th>
+								<th class="px-4 py-2.5 text-right">Confidence</th>
+								<th class="px-4 py-2.5">Worker</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each sortedHistory as job (job.id)}
+								<tr class="border-b border-zinc-100 last:border-0">
+									<td class="px-4 py-2.5 whitespace-nowrap text-zinc-600">
+										{relativeDate(job.activity_at)}
+									</td>
+									<td class="px-4 py-2.5">
+										<a
+											href="/admin/brands/catalog?q={encodeURIComponent(job.display)}"
+											class="font-medium text-zinc-950 hover:underline"
+										>
+											{job.display}
+										</a>
+										<p class="mt-0.5 truncate text-xs text-zinc-500">{job.brand_slug}</p>
+									</td>
+									<td class="px-4 py-2.5 text-zinc-600">{job.trigger_kind}</td>
+									<td class="px-4 py-2.5">
+										<span
+											class="rounded px-2 py-0.5 text-xs font-medium {statusClasses(job.result)}"
+										>
+											{historyResultLabel(job.result)}
+										</span>
+										{#if job.last_error}
+											<p class="mt-1 max-w-xs truncate text-xs text-red-700" title={job.last_error}>
+												{job.last_error}
+											</p>
+										{/if}
+									</td>
+									<td class="px-4 py-2.5 text-right tabular-nums text-zinc-700">
+										{job.overall_confidence == null ? '—' : percent(job.overall_confidence)}
+									</td>
+									<td class="px-4 py-2.5 text-xs text-zinc-500">
+										{job.researcher_version ?? '—'}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{:else}
+				<div class="border-y border-zinc-200 py-14 text-center text-sm text-zinc-500">
+					No enrichment jobs yet.
+				</div>
+			{/if}
+		{:else}
 		<div class="space-y-5">
 			{#each data.reviewDossiers as dossier}
 				<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
@@ -1803,6 +1944,7 @@
 					No dossiers currently need review.
 				</div>{/if}
 		</div>
+		{/if}
 	</section>
 </main>
 
@@ -2785,7 +2927,7 @@
 					<p class="text-sm font-medium text-zinc-900">{rerunning.brand_slug}</p>
 					<p class="mt-1 text-xs text-zinc-500">
 						The current dossier remains available until the new research run completes. The job ID
-						will be shown in the success toast and Runs tab.
+						will be shown in the success toast and History.
 					</p>
 					{#if rerunScopeDirty}
 						<p class="mt-2 text-xs font-medium text-amber-700">

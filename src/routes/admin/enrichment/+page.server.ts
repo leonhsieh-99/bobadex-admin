@@ -211,9 +211,46 @@ function countByStatus(rows: EnrichmentJobRow[]) {
 	return counts;
 }
 
+function jobActivityAt(job: Pick<EnrichmentJobRow, 'completed_at' | 'claimed_at' | 'created_at'>) {
+	return job.completed_at ?? job.claimed_at ?? job.created_at;
+}
+
+function triggerLabel(job: { trigger_kind: string; trigger_context: JsonRecord }) {
+	const sourceEvent =
+		typeof job.trigger_context?.source_event === 'string' ? job.trigger_context.source_event : '';
+	if (sourceEvent.includes('refresh')) return 'Refresh';
+	if (job.trigger_kind === 'audit') return 'Audit';
+	if (job.trigger_kind === 'backfill') return 'Backfill';
+	return job.trigger_kind.replaceAll('_', ' ');
+}
+
+function historyResult(input: {
+	status: string;
+	paused: boolean;
+	runStatus: string | null;
+	approvalStatus: string | null;
+	approvalMethod: string | null;
+}) {
+	if (input.status === 'queued') return input.paused ? 'paused' : 'queued';
+	if (input.status === 'running') return 'running';
+	if (input.status === 'failed' || input.runStatus === 'failed') return 'failed';
+	if (input.approvalStatus === 'needs_review') return 'needs_review';
+	if (input.approvalStatus === 'approved' && input.approvalMethod === 'automatic') {
+		return 'auto_published';
+	}
+	if (input.approvalStatus === 'approved') return 'published';
+	if (input.status === 'succeeded') return 'succeeded';
+	return input.status;
+}
+
 function readMetric(metrics: JsonRecord | null, key: string) {
 	const value = metrics?.[key];
-	return typeof value === 'number' ? value : null;
+	if (typeof value === 'number' && Number.isFinite(value)) return value;
+	if (typeof value === 'string' && value.trim() !== '') {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : null;
+	}
+	return null;
 }
 
 function recordArray(value: unknown) {
@@ -594,6 +631,58 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const activeJobs = monitoredJobs.filter(
 		(row) => row.status === 'queued' || row.status === 'running'
 	);
+	const historyJobs = [...monitoredJobs]
+		.sort((a, b) => Date.parse(jobActivityAt(b)) - Date.parse(jobActivityAt(a)))
+		.slice(0, 80);
+	const historySlugs = [...new Set(historyJobs.map((job) => job.brand_slug))];
+	let historyDisplays = new Map<string, string>();
+	if (historySlugs.length) {
+		const historyBrandsResult = await locals.supabase
+			.from('brands')
+			.select('slug,display')
+			.in('slug', historySlugs);
+		if (historyBrandsResult.error) {
+			console.error('[enrichment] History brands', historyBrandsResult.error);
+			sourceErrors.push('History brands');
+		} else {
+			historyDisplays = new Map(
+				((historyBrandsResult.data ?? []) as Array<{ slug: string; display: string }>).map(
+					(brand) => [brand.slug, brand.display]
+				)
+			);
+		}
+	}
+	const history = historyJobs.map((job) => {
+		const approvalMethod =
+			job.run?.id != null ? (dossierByRunId.get(job.run.id)?.approval_method ?? null) : null;
+		return {
+			id: job.id,
+			brand_slug: job.brand_slug,
+			display: historyDisplays.get(job.brand_slug) ?? job.brand_slug,
+			trigger_kind: triggerLabel(job),
+			status: job.status,
+			result: historyResult({
+				status: job.status,
+				paused: job.paused,
+				runStatus: job.run?.status ?? null,
+				approvalStatus: job.run?.approvalStatus ?? null,
+				approvalMethod
+			}),
+			auto_publish_requested: job.autoPublishRequested,
+			researcher_version: job.run?.researcherVersion ?? null,
+			overall_confidence: readMetric(job.run?.qualityMetrics ?? null, 'overall_confidence'),
+			approval_status: job.run?.approvalStatus ?? null,
+			approval_method: approvalMethod,
+			last_error: job.last_error ?? job.run?.error ?? null,
+			created_at: job.created_at,
+			completed_at: job.completed_at ?? job.run?.completedAt ?? null,
+			activity_at: jobActivityAt({
+				completed_at: job.completed_at ?? job.run?.completedAt ?? null,
+				claimed_at: job.claimed_at,
+				created_at: job.created_at
+			})
+		};
+	});
 	const latestActiveJobByBrand = new Map<string, (typeof monitoredJobs)[number]>();
 	for (const job of activeJobs) {
 		if (!latestActiveJobByBrand.has(job.brand_slug)) {
@@ -666,6 +755,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		},
 		reviewDossiers: enrichedDossiers,
 		activeJobs,
+		history,
 		sourceErrors: [...new Set(sourceErrors)],
 		cron: {
 			serverTime: cronPayload?.server_time ?? null,
@@ -693,6 +783,20 @@ function integerField(form: FormData, key: string, min: number, max: number) {
 	const value = Number(raw);
 	return Number.isInteger(value) && value >= min && value <= max ? value : null;
 }
+
+const recentlyPublishedRefreshSkipSlugs = [
+	'desouro',
+	'bobaguys-243cad',
+	'anime-boba-cafe-85cc43',
+	'gongcha-17742a',
+	'li-cha-tea',
+	'mai-coffee-tea-house',
+	'kungfutea-e1ef51',
+	'heytea-ca51f0',
+	'oolong-tea-project',
+	'7-leaves-cafe-f05d81',
+	'Fat Straw Cafe-5db11b'
+];
 
 const scalarProfileFactKeys = [
 	'official_ordering_url',
@@ -1187,14 +1291,44 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const count = integerField(form, 'count', 1, 100);
 		const mode = String(form.get('mode') ?? 'backfill');
-		const autoPublish = mode === 'backfill';
-		if (!count || ![1, 5, 10, 25, 100].includes(count) || !['backfill', 'audit'].includes(mode)) {
+		if (
+			!count ||
+			![1, 5, 10, 25, 100].includes(count) ||
+			!['backfill', 'audit', 'refresh'].includes(mode)
+		) {
 			return fail(400, {
 				ok: false,
 				action: 'controlledCohort',
-				message: 'Choose a cohort size of 1, 5, 10, 25, or 100 and a mode of backfill or audit.'
+				message:
+					'Choose a cohort size of 1, 5, 10, 25, or 100 and a mode of backfill, audit, or refresh.'
 			});
 		}
+		if (mode === 'refresh') {
+			const { data, error } = await locals.supabase.rpc(
+				'admin_queue_brand_enrichment_refresh',
+				{
+					p_count: count,
+					p_exclude_brand_slugs: recentlyPublishedRefreshSkipSlugs,
+					p_note: String(form.get('note') ?? '').trim() || null
+				}
+			);
+			if (error) {
+				console.error('[enrichment] controlledCohort refresh', error);
+				return fail(400, {
+					ok: false,
+					action: 'controlledCohort',
+					message: error.message || 'The refresh cohort could not be queued.'
+				});
+			}
+			const payload = data && typeof data === 'object' ? (data as JsonRecord) : {};
+			const queuedCount = typeof payload.queued_count === 'number' ? payload.queued_count : 0;
+			return {
+				ok: true,
+				action: 'controlledCohort',
+				message: `Queued ${queuedCount} refresh job${queuedCount === 1 ? '' : 's'}.`
+			};
+		}
+		const autoPublish = mode === 'backfill';
 		const { data, error } = await locals.supabase.rpc('admin_queue_brand_enrichment_cohort', {
 			p_count: count,
 			p_local_only: false,
