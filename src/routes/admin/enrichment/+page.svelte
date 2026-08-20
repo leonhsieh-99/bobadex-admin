@@ -1188,7 +1188,7 @@
 			</p>
 			<h2 class="mt-1 text-2xl font-semibold text-zinc-950 sm:text-3xl">Enrichment</h2>
 			<p class="mt-2 max-w-2xl text-sm text-zinc-600">
-				Start a cohort, then review claims and publish verified brand profiles.
+				Start a cohort, then review dossiers and publish verified brand profiles.
 			</p>
 		</div>
 	</header>
@@ -1658,69 +1658,8 @@
 											<p class="mt-1 text-xs leading-5 text-zinc-600">
 												{topic?.summary || 'No supported finding was produced for this topic.'}
 											</p>
-											{#if topic?.claim_keys?.length}
-												<details class="mt-1 text-xs text-zinc-500">
-													<summary class="cursor-pointer">Claim keys</summary>
-													<p class="mt-1 font-mono">{topic.claim_keys.join(', ')}</p>
-												</details>
-											{/if}
 										</div>
 									{/each}
-								</div>
-							</section>
-
-							<section>
-								<div class="flex items-center justify-between">
-									<h5 class="text-xs font-semibold text-zinc-500 uppercase">Claims and evidence</h5>
-									<span class="text-xs text-zinc-500">{dossier.claims.length} claims</span>
-								</div>
-								<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
-									{#each dossier.claims as claim}
-										<div class="py-4">
-											<div class="flex flex-wrap items-start justify-between gap-2">
-												<div>
-													<p class="text-sm font-semibold text-zinc-900">
-														{claim.claim_key.replaceAll('_', ' ')}
-													</p>
-													<p class="mt-1 text-sm whitespace-pre-wrap text-zinc-700">
-														{displayValue(claim.claim_value)}
-													</p>
-												</div>
-												<div class="flex gap-2">
-													<span
-														class="rounded px-2 py-1 text-xs font-medium {claim.evidence_assessment ===
-														'contradicted'
-															? 'bg-red-50 text-red-700'
-															: 'bg-zinc-100 text-zinc-700'}"
-														>{claim.evidence_assessment ?? 'unassessed'}</span
-													><span class="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-700"
-														>{percent(claim.confidence)}</span
-													>
-												</div>
-											</div>
-											{#if claim.rationale}<p class="mt-2 text-sm leading-6 text-zinc-600">
-													{claim.rationale}
-												</p>{/if}
-											{#if claim.citations.length}
-												<div class="mt-3 flex flex-wrap gap-2">
-													{#each claim.citations as citation}
-														{#if citation.source}<a
-																href={citation.source.url}
-																target="_blank"
-																rel="noreferrer"
-																class="max-w-full truncate rounded border border-zinc-200 px-2 py-1 text-xs text-blue-700 hover:bg-zinc-50"
-																>{citation.source.title ??
-																	citation.source.publisher ??
-																	citation.source.url}</a
-															>{/if}
-													{/each}
-												</div>
-											{/if}
-										</div>
-									{/each}
-									{#if dossier.claims.length === 0}<p class="py-5 text-sm text-zinc-500">
-											No claims are attached to the current run.
-										</p>{/if}
 								</div>
 							</section>
 						</div>
