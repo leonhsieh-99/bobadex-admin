@@ -314,6 +314,23 @@
 		created_at: string;
 		completed_at: string | null;
 		activity_at: string;
+		details: {
+			has_run: boolean;
+			current_dossier: boolean;
+			customer_summary: string | null;
+			public_summary: string | null;
+			official_website: string | null;
+			website: string | null;
+			boba_relevance: string | null;
+			brand_status: string | null;
+			markets: Array<{ name: string; level: string | null; confidence: number | null }>;
+			research_topics: ResearchTopics | null;
+			research_route: string | null;
+			review_reasons: string[];
+			identity_confidence: number | null;
+			citation_coverage: number | null;
+			gate_version: string | null;
+		};
 	};
 
 	export let data: {
@@ -382,6 +399,7 @@
 	let cronRefreshing = false;
 	let historySort: 'recent' | 'brand' | 'result' = 'recent';
 	let enrichmentTab: 'review' | 'history' = 'review';
+	let expandedHistoryId: string | null = null;
 
 	const number = new Intl.NumberFormat('en-US');
 
@@ -396,6 +414,10 @@
 		}
 		return Date.parse(b.activity_at) - Date.parse(a.activity_at);
 	});
+
+	function toggleHistoryDetails(id: string) {
+		expandedHistoryId = expandedHistoryId === id ? null : id;
+	}
 
 	$: rerunScopeDirty =
 		!rerunScopeLoading &&
@@ -1478,6 +1500,7 @@
 							class="border-b border-zinc-200 bg-zinc-50 text-xs font-medium tracking-normal text-zinc-500 uppercase"
 						>
 							<tr>
+								<th class="w-10 px-3 py-2.5"><span class="sr-only">Details</span></th>
 								<th class="px-4 py-2.5">When</th>
 								<th class="px-4 py-2.5">Brand</th>
 								<th class="px-4 py-2.5">Mode</th>
@@ -1488,9 +1511,41 @@
 						</thead>
 						<tbody>
 							{#each sortedHistory as job (job.id)}
-								<tr class="border-b border-zinc-100 last:border-0">
+								<tr class="border-b border-zinc-100 {expandedHistoryId === job.id ? 'bg-zinc-50' : ''}">
+									<td class="px-3 py-2.5">
+										<button
+											type="button"
+											class="rounded p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
+											aria-expanded={expandedHistoryId === job.id}
+											aria-label={expandedHistoryId === job.id
+												? `Hide enrichment details for ${job.display}`
+												: `Show enrichment details for ${job.display}`}
+											onclick={() => toggleHistoryDetails(job.id)}
+										>
+											<svg
+												class="h-4 w-4 transition-transform {expandedHistoryId === job.id
+													? 'rotate-90'
+													: ''}"
+												viewBox="0 0 20 20"
+												fill="currentColor"
+												aria-hidden="true"
+											>
+												<path
+													fill-rule="evenodd"
+													d="M7.21 14.77a.75.75 0 0 1 .02-1.06L10.94 10 7.23 6.29a.75.75 0 1 1 1.06-1.06l4.24 4.24a.75.75 0 0 1 0 1.06l-4.24 4.24a.75.75 0 0 1-1.08 0Z"
+													clip-rule="evenodd"
+												/>
+											</svg>
+										</button>
+									</td>
 									<td class="px-4 py-2.5 whitespace-nowrap text-zinc-600">
-										{relativeDate(job.activity_at)}
+										<button
+											type="button"
+											class="text-left hover:text-zinc-950"
+											onclick={() => toggleHistoryDetails(job.id)}
+										>
+											{relativeDate(job.activity_at)}
+										</button>
 									</td>
 									<td class="px-4 py-2.5">
 										<a
@@ -1521,6 +1576,179 @@
 										{job.researcher_version ?? '—'}
 									</td>
 								</tr>
+								{#if expandedHistoryId === job.id}
+									<tr class="border-b border-zinc-200 bg-zinc-50">
+										<td colspan="7" class="px-5 py-4">
+											{#if !job.details.has_run}
+												<p class="text-sm text-zinc-500">
+													This job has not produced a research run yet.
+												</p>
+											{:else}
+												{#if !job.details.current_dossier}
+													<p class="mb-3 text-xs font-medium text-amber-800">
+														A later run replaced this dossier. Summaries below are from this job's
+														run, not the current published profile.
+													</p>
+												{/if}
+												<div class="grid gap-5 lg:grid-cols-2">
+													<div class="space-y-4">
+														<div>
+															<p class="text-xs font-semibold tracking-normal text-zinc-500 uppercase">
+																Admin diagnostic
+															</p>
+															<p class="mt-1 text-sm leading-6 whitespace-pre-wrap text-zinc-700">
+																{job.details.customer_summary || 'No diagnostic summary was produced.'}
+															</p>
+														</div>
+														<div>
+															<p class="text-xs font-semibold tracking-normal text-zinc-500 uppercase">
+																User-facing summary
+															</p>
+															<p class="mt-1 text-sm leading-6 text-zinc-700">
+																{job.details.public_summary || 'No consumer summary was produced.'}
+															</p>
+														</div>
+														<div>
+															<div class="flex items-center justify-between gap-2">
+																<p
+																	class="text-xs font-semibold tracking-normal text-zinc-500 uppercase"
+																>
+																	Research coverage
+																</p>
+																<span
+																	class="rounded bg-white px-2 py-0.5 text-xs font-medium text-zinc-700"
+																>
+																	{researchRouteLabel(
+																		job.details.research_route === 'local_identity' ||
+																			job.details.research_route === 'established_brand' ||
+																			job.details.research_route === 'identity_first'
+																			? job.details.research_route
+																			: null
+																	)}
+																</span>
+															</div>
+															<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
+																{#each researchTopicRows as row}
+																	{@const topic = job.details.research_topics?.[row.key]}
+																	<div class="py-2.5">
+																		<div class="flex items-center justify-between gap-3">
+																			<p class="text-sm font-medium text-zinc-900">{row.label}</p>
+																			<span
+																				class="rounded px-2 py-0.5 text-xs font-medium {topicCoverageClass(
+																					topic?.coverage
+																				)}"
+																			>
+																				{topicCoverageLabel(topic?.coverage)}
+																			</span>
+																		</div>
+																		<p class="mt-1 text-xs leading-5 text-zinc-600">
+																			{topic?.summary ||
+																				'No supported finding was produced for this topic.'}
+																		</p>
+																	</div>
+																{/each}
+															</div>
+														</div>
+													</div>
+													<div class="space-y-4">
+														<div class="grid grid-cols-2 gap-3 text-sm">
+															<div>
+																<p class="text-xs text-zinc-500">Identity</p>
+																<p class="font-medium text-zinc-900">
+																	{percent(job.details.identity_confidence)}
+																</p>
+															</div>
+															<div>
+																<p class="text-xs text-zinc-500">Citation coverage</p>
+																<p class="font-medium text-zinc-900">
+																	{percent(job.details.citation_coverage)}
+																</p>
+															</div>
+															<div>
+																<p class="text-xs text-zinc-500">Boba relevance</p>
+																<p class="font-medium text-zinc-900">
+																	{job.details.boba_relevance?.replaceAll('_', ' ') || '—'}
+																</p>
+															</div>
+															<div>
+																<p class="text-xs text-zinc-500">Brand status</p>
+																<p class="font-medium text-zinc-900">
+																	{job.details.brand_status || '—'}
+																</p>
+															</div>
+														</div>
+														<div>
+															<p class="text-xs font-semibold tracking-normal text-zinc-500 uppercase">
+																Website
+															</p>
+															{#if job.details.official_website || job.details.website}
+																<a
+																	href={job.details.official_website || job.details.website}
+																	target="_blank"
+																	rel="noreferrer"
+																	class="mt-1 block truncate text-sm text-blue-700 hover:underline"
+																>
+																	{job.details.official_website || job.details.website}
+																</a>
+															{:else}
+																<p class="mt-1 text-sm text-zinc-500">No website stored.</p>
+															{/if}
+														</div>
+														<div>
+															<p class="text-xs font-semibold tracking-normal text-zinc-500 uppercase">
+																Markets
+															</p>
+															{#if job.details.markets.length}
+																<div class="mt-2 flex flex-wrap gap-1.5">
+																	{#each job.details.markets as market}
+																		<span
+																			class="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs text-zinc-800"
+																		>
+																			{market.name}{market.level ? ` · ${market.level}` : ''}
+																		</span>
+																	{/each}
+																</div>
+															{:else}
+																<p class="mt-1 text-sm text-zinc-500">
+																	{job.details.current_dossier
+																		? 'No structured market presence.'
+																		: 'Markets are only stored on the current dossier.'}
+																</p>
+															{/if}
+														</div>
+														{#if job.details.review_reasons.length}
+															<div>
+																<p
+																	class="text-xs font-semibold tracking-normal text-zinc-500 uppercase"
+																>
+																	Review reasons
+																</p>
+																<ul class="mt-1 list-disc space-y-0.5 pl-4 text-xs text-zinc-700">
+																	{#each job.details.review_reasons as reason}
+																		<li>{reason.replaceAll('_', ' ')}</li>
+																	{/each}
+																</ul>
+															</div>
+														{/if}
+														{#if job.last_error}
+															<div>
+																<p
+																	class="text-xs font-semibold tracking-normal text-zinc-500 uppercase"
+																>
+																	Error
+																</p>
+																<p class="mt-1 text-xs leading-5 text-red-700">{job.last_error}</p>
+															</div>
+														{/if}
+														{#if job.details.gate_version}
+															<p class="text-xs text-zinc-400">{job.details.gate_version}</p>
+														{/if}
+													</div>
+												</div>
+											{/if}
+										</td>
+									</tr>
+								{/if}
 							{/each}
 						</tbody>
 					</table>

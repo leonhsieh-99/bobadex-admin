@@ -243,6 +243,61 @@ function historyResult(input: {
 	return input.status;
 }
 
+function slimResearchTopics(topics: JsonRecord | null) {
+	if (!topics) return null;
+	const keys = [
+		'identity',
+		'classification_products',
+		'origin_history',
+		'footprint',
+		'visual_identity'
+	] as const;
+	const slim: Record<
+		string,
+		{ coverage?: string; summary?: string; route?: string }
+	> = {};
+	for (const key of keys) {
+		const raw = topics[key];
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+		const topic = raw as JsonRecord;
+		slim[key] = {
+			coverage: typeof topic.coverage === 'string' ? topic.coverage : undefined,
+			summary: typeof topic.summary === 'string' ? topic.summary : undefined,
+			route: typeof topic.route === 'string' ? topic.route : undefined
+		};
+	}
+	return Object.keys(slim).length ? slim : null;
+}
+
+function slimMarketPresence(facts: JsonRecord | null) {
+	const raw = facts?.market_presence;
+	if (!Array.isArray(raw)) return [];
+	return raw.flatMap((item) => {
+		if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+		const place = item as JsonRecord;
+		const name = typeof place.name === 'string' ? place.name.trim() : '';
+		if (!name) return [];
+		const confidence =
+			typeof place.confidence === 'number'
+				? place.confidence
+				: typeof place.confidence === 'string'
+					? Number(place.confidence)
+					: null;
+		return [
+			{
+				name,
+				level: typeof place.level === 'string' ? place.level : null,
+				confidence: confidence != null && Number.isFinite(confidence) ? confidence : null
+			}
+		];
+	});
+}
+
+function readStringMetric(metrics: JsonRecord | null, key: string) {
+	const value = metrics?.[key];
+	return typeof value === 'string' && value.trim() ? value : null;
+}
+
 function readMetric(metrics: JsonRecord | null, key: string) {
 	const value = metrics?.[key];
 	if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -635,52 +690,95 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.sort((a, b) => Date.parse(jobActivityAt(b)) - Date.parse(jobActivityAt(a)))
 		.slice(0, 80);
 	const historySlugs = [...new Set(historyJobs.map((job) => job.brand_slug))];
-	let historyDisplays = new Map<string, string>();
+	let historyBrands = new Map<string, { display: string; website: string | null }>();
 	if (historySlugs.length) {
 		const historyBrandsResult = await locals.supabase
 			.from('brands')
-			.select('slug,display')
+			.select('slug,display,website')
 			.in('slug', historySlugs);
 		if (historyBrandsResult.error) {
 			console.error('[enrichment] History brands', historyBrandsResult.error);
 			sourceErrors.push('History brands');
 		} else {
-			historyDisplays = new Map(
-				((historyBrandsResult.data ?? []) as Array<{ slug: string; display: string }>).map(
-					(brand) => [brand.slug, brand.display]
-				)
+			historyBrands = new Map(
+				(
+					(historyBrandsResult.data ?? []) as Array<{
+						slug: string;
+						display: string;
+						website: string | null;
+					}>
+				).map((brand) => [brand.slug, { display: brand.display, website: brand.website }])
 			);
 		}
 	}
 	const history = historyJobs.map((job) => {
-		const approvalMethod =
-			job.run?.id != null ? (dossierByRunId.get(job.run.id)?.approval_method ?? null) : null;
+		const run = runByJobId.get(job.id) ?? null;
+		const dossier = dossierByBrand.get(job.brand_slug) ?? null;
+		const profile = profileByBrand.get(job.brand_slug) ?? null;
+		const currentDossier = Boolean(run?.id && dossier?.research_run_id === run.id);
+		const metrics = currentDossier
+			? (dossier?.quality_metrics ?? run?.quality_metrics ?? null)
+			: (run?.quality_metrics ?? null);
+		const facts = currentDossier ? (dossier?.profile_facts ?? null) : null;
+		const brand = historyBrands.get(job.brand_slug);
+		const approvalMethod = currentDossier ? (dossier?.approval_method ?? null) : null;
+		const officialWebsite =
+			facts && typeof facts.official_website === 'string' ? facts.official_website : null;
 		return {
 			id: job.id,
 			brand_slug: job.brand_slug,
-			display: historyDisplays.get(job.brand_slug) ?? job.brand_slug,
+			display: brand?.display ?? job.brand_slug,
 			trigger_kind: triggerLabel(job),
 			status: job.status,
 			result: historyResult({
 				status: job.status,
 				paused: job.paused,
-				runStatus: job.run?.status ?? null,
-				approvalStatus: job.run?.approvalStatus ?? null,
+				runStatus: run?.status ?? job.run?.status ?? null,
+				approvalStatus: currentDossier ? (dossier?.approval_status ?? null) : null,
 				approvalMethod
 			}),
 			auto_publish_requested: job.autoPublishRequested,
-			researcher_version: job.run?.researcherVersion ?? null,
-			overall_confidence: readMetric(job.run?.qualityMetrics ?? null, 'overall_confidence'),
-			approval_status: job.run?.approvalStatus ?? null,
+			researcher_version: run?.researcher_version ?? job.run?.researcherVersion ?? null,
+			overall_confidence:
+				readMetric(metrics, 'overall_confidence') ?? run?.overall_confidence ?? null,
+			approval_status: currentDossier ? (dossier?.approval_status ?? null) : null,
 			approval_method: approvalMethod,
-			last_error: job.last_error ?? job.run?.error ?? null,
+			last_error: job.last_error ?? run?.error_text ?? null,
 			created_at: job.created_at,
-			completed_at: job.completed_at ?? job.run?.completedAt ?? null,
+			completed_at: job.completed_at ?? run?.completed_at ?? null,
 			activity_at: jobActivityAt({
-				completed_at: job.completed_at ?? job.run?.completedAt ?? null,
+				completed_at: job.completed_at ?? run?.completed_at ?? null,
 				claimed_at: job.claimed_at,
 				created_at: job.created_at
-			})
+			}),
+			details: {
+				has_run: Boolean(run),
+				current_dossier: currentDossier,
+				customer_summary: currentDossier
+					? (dossier?.customer_summary ?? run?.customer_summary_draft ?? null)
+					: (run?.customer_summary_draft ?? null),
+				public_summary: currentDossier
+					? (profile?.public_summary ?? dossier?.public_summary_draft ?? run?.public_summary_draft ?? null)
+					: (run?.public_summary_draft ?? null),
+				official_website: officialWebsite,
+				website: brand?.website ?? null,
+				boba_relevance:
+					facts && typeof facts.boba_relevance === 'string' ? facts.boba_relevance : null,
+				brand_status: facts && typeof facts.brand_status === 'string' ? facts.brand_status : null,
+				markets: slimMarketPresence(facts),
+				research_topics: slimResearchTopics(
+					currentDossier
+						? (dossier?.research_topics ?? run?.research_topics ?? null)
+						: (run?.research_topics ?? null)
+				),
+				research_route:
+					readStringMetric(metrics, 'research_route') ??
+					readStringMetric(run?.input_snapshot ?? null, 'research_route'),
+				review_reasons: currentDossier ? (dossier?.review_reasons ?? []) : [],
+				identity_confidence: readMetric(metrics, 'identity_confidence'),
+				citation_coverage: readMetric(metrics, 'citation_coverage'),
+				gate_version: readStringMetric(metrics, 'gate_version')
+			}
 		};
 	});
 	const latestActiveJobByBrand = new Map<string, (typeof monitoredJobs)[number]>();
