@@ -258,6 +258,16 @@
 						<div class="mt-3 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
 							<div>
 								<strong class="block text-lg text-zinc-950"
+									>{count(preview.counts.physical_locations)}</strong
+								><span class="text-xs text-zinc-500">physical locations</span>
+							</div>
+							<div>
+								<strong class="block text-lg text-zinc-950"
+									>{count(preview.counts.manual_locations)}</strong
+								><span class="text-xs text-zinc-500">manual locations</span>
+							</div>
+							<div>
+								<strong class="block text-lg text-zinc-950"
 									>{count(preview.counts.reference_locations)}</strong
 								><span class="text-xs text-zinc-500">OSM locations</span>
 							</div>

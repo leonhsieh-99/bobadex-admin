@@ -22,6 +22,8 @@ export type BrandMergePreview = {
 		feed_events: number;
 		osm_candidates: number;
 		reference_locations: number;
+		physical_locations: number;
+		manual_locations: number;
 		aliases: number;
 		sources: number;
 		regions: number;

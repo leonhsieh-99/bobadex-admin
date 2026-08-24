@@ -4,6 +4,8 @@
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
 	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
+	import EnrichmentDossierCard from '$lib/EnrichmentDossierCard.svelte';
+	import type { EnrichmentDossierView } from '$lib/enrichment-dossier';
 	import type { BrandMatchPolicy } from '$lib/brand-match-policy';
 	import { coordinatesLabel, googleMapsCoordinatesUrl } from '$lib/maps';
 	import { toasts } from '$lib/toast';
@@ -217,6 +219,10 @@
 	let deleteNote = '';
 	let modalError = '';
 	let pendingAction = '';
+	let enrichmentDossierBrand: Brand | null = null;
+	let enrichmentDossier: EnrichmentDossierView | null = null;
+	let enrichmentDossierLoading = false;
+	let enrichmentDossierError = '';
 
 	const number = new Intl.NumberFormat('en-US');
 
@@ -353,6 +359,31 @@
 		}
 	}
 
+	async function openEnrichmentDossier(brand: Brand) {
+		enrichmentDossierBrand = brand;
+		enrichmentDossier = null;
+		enrichmentDossierError = '';
+		enrichmentDossierLoading = true;
+		try {
+			const response = await fetch(
+				`/admin/enrichment/dossier/${encodeURIComponent(brand.slug)}`
+			);
+			const payload = await response.json().catch(() => null);
+			if (!response.ok) {
+				throw new Error(
+					typeof payload?.message === 'string' ? payload.message : 'Could not load the enrichment dossier.'
+				);
+			}
+			enrichmentDossier = payload?.dossier ?? null;
+			if (!payload?.brand) throw new Error('Brand not found.');
+		} catch (error) {
+			enrichmentDossierError =
+				error instanceof Error ? error.message : 'Could not load the enrichment dossier.';
+		} finally {
+			enrichmentDossierLoading = false;
+		}
+	}
+
 	async function copySlug(slug: string) {
 		try {
 			await navigator.clipboard.writeText(slug);
@@ -475,6 +506,9 @@
 		nodeRepair = null;
 		manualEvidenceRemoval = null;
 		manualEvidenceRemovalReason = '';
+		enrichmentDossierBrand = null;
+		enrichmentDossier = null;
+		enrichmentDossierError = '';
 		nodeDisposition = 'remove';
 		nodeNewDisplay = '';
 		nodeIdentityBasis = '';
@@ -651,6 +685,24 @@
 
 	function wikidataUrl(value: string) {
 		return /^Q\d+$/i.test(value) ? `https://www.wikidata.org/wiki/${value}` : value;
+	}
+
+	function locationPlaceLabel(location: PhysicalLocation) {
+		const place = [location.city, location.county, location.region].filter(Boolean).join(', ');
+		if (place) return place;
+		const address = location.evidence.find((evidence) => evidence.address_input)?.address_input;
+		if (address) return address;
+		return coordinatesLabel(location.lat, location.lon);
+	}
+
+	function geocodeStatusLabel(status: string) {
+		if (status === 'pending') return 'Pending geocoding';
+		if (status === 'failed') return 'Geocode failed';
+		return '';
+	}
+
+	function pendingGeocodeCount(locations: PhysicalLocation[]) {
+		return locations.filter((location) => location.geocode_status === 'pending').length;
 	}
 </script>
 
@@ -965,6 +1017,7 @@
 										</p>
 									{:else if details[brand.slug]}
 										{@const detail = details[brand.slug]}
+										{@const pendingCount = pendingGeocodeCount(detail.physical_locations)}
 										{#if detail.redirect}
 											<div class="mb-5 border-l-2 border-blue-500 bg-blue-50 px-4 py-3">
 												<p class="text-sm font-semibold text-blue-950">
@@ -1057,6 +1110,13 @@
 														class="rounded border border-zinc-300 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
 													>Add location</button>
 												</div>
+												{#if pendingCount > 0}
+													<p class="mt-2 text-xs text-amber-800">
+														{pendingCount}
+														location{pendingCount === 1 ? '' : 's'}
+														pending geocoding. City and county labels appear after reverse geocoding finishes.
+													</p>
+												{/if}
 												<div class="mt-2 divide-y divide-zinc-200 border-y border-zinc-200">
 													{#each detail.physical_locations as location (location.id)}
 														<div class="py-3">
@@ -1064,17 +1124,25 @@
 															<div class="min-w-0">
 																<p class="mb-0.5 font-mono text-[10px] text-zinc-400">Location {location.id.slice(0, 8)}</p>
 																	<a href={googleMapsCoordinatesUrl(location.lat, location.lon)} target="_blank" rel="noreferrer" class="text-xs font-medium text-zinc-800 hover:underline">
-																		{[location.city, location.county, location.region].filter(Boolean).join(', ') || coordinatesLabel(location.lat, location.lon)}
+																		{locationPlaceLabel(location)}
 																	</a>
 																	<p class="mt-0.5 font-mono text-[11px] text-zinc-500">{coordinatesLabel(location.lat, location.lon)}</p>
+																	{#if location.geocode_status === 'failed' && location.geocode_error}
+																		<p class="mt-0.5 text-[11px] text-red-700">{location.geocode_error}</p>
+																	{/if}
 																</div>
-																<span class={`rounded px-2 py-1 text-[11px] font-medium ${location.physical_status === 'needs_review' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{location.physical_status === 'needs_review' ? 'Match review' : 'Active'}</span>
+																<div class="flex shrink-0 flex-col items-end gap-1">
+																	<span class={`rounded px-2 py-1 text-[11px] font-medium ${location.physical_status === 'needs_review' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{location.physical_status === 'needs_review' ? 'Match review' : 'Active'}</span>
+																	{#if location.geocode_status === 'pending' || location.geocode_status === 'failed'}
+																		<span class={`rounded px-2 py-1 text-[11px] font-medium ${location.geocode_status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>{geocodeStatusLabel(location.geocode_status)}</span>
+																	{/if}
+																</div>
 															</div>
 															<div class="mt-2 space-y-1">
 																{#each location.evidence as evidence (evidence.id)}
 																	<div class="flex items-center gap-2 rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5">
 																		<a href={evidence.source_url || googleMapsCoordinatesUrl(evidence.lat, evidence.lon)} target="_blank" rel="noreferrer" class="min-w-0 flex-1 truncate text-xs text-zinc-700 hover:underline" title={evidence.address_input ?? evidence.source_key}>
-																			{evidence.osm_id ? `OSM ${evidence.osm_type ?? 'node'} ${evidence.osm_id}` : `Manual · ${evidence.verification_status ?? 'unverified'}`}
+																			{evidence.osm_id ? `OSM ${evidence.osm_type ?? 'node'} ${evidence.osm_id}` : `Manual · ${evidence.verification_status ?? 'unverified'}${evidence.address_input ? ` · ${evidence.address_input}` : ''}`}
 																		</a>
 																		<button type="button" onclick={() => evidence.osm_id ? openNodeRepairForEvidence(brand, detail, evidence) : openManualEvidenceRemoval(brand, location, evidence)} disabled={brand.status === 'merged' || brand.is_demo} class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-100 hover:text-red-700 disabled:opacity-35" title={evidence.osm_id ? 'Remove or split OSM evidence' : 'Remove manual evidence'} aria-label={evidence.osm_id ? `Manage OSM evidence for ${brand.display}` : `Remove manual location from ${brand.display}`}>
 																			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
@@ -1147,10 +1215,11 @@
 										<div
 											class="mt-5 flex flex-wrap justify-end gap-2 border-t border-zinc-200 pt-4"
 										>
-											<a
-												href={`/admin/enrichment?brand=${encodeURIComponent(brand.slug)}`}
+											<button
+												type="button"
+												onclick={() => openEnrichmentDossier(brand)}
 												class="rounded border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-												>Open enrichment</a
+												>Open enrichment</button
 											>
 											<button
 												type="button"
@@ -1796,6 +1865,9 @@
 								class={`rounded px-3 py-1.5 text-sm font-medium ${manualLocationInputKind === 'address' ? 'bg-white text-zinc-950 shadow-sm' : 'text-zinc-500'}`}
 							>Address</button>
 						</div>
+						<p class="mt-2 text-xs leading-5 text-zinc-500">
+							The storefront is saved immediately. City and county labels stay marked pending until reverse geocoding finishes.
+						</p>
 					</div>
 
 					{#if manualLocationInputKind === 'coordinates'}
@@ -1982,6 +2054,55 @@
 					>
 				</div>
 			</form>
+		</div>
+	</div>
+{/if}
+
+{#if enrichmentDossierBrand}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-5"
+		role="presentation"
+		onclick={(event) => event.currentTarget === event.target && closeModal()}
+	>
+		<div
+			class="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="catalog-enrichment-title"
+		>
+			<div class="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+				<div>
+					<h2 id="catalog-enrichment-title" class="text-lg font-semibold text-zinc-950">
+						Enrichment dossier
+					</h2>
+					<p class="mt-1 text-sm text-zinc-600">
+						{enrichmentDossierBrand.display}
+						·
+						<code>{enrichmentDossierBrand.slug}</code>
+					</p>
+				</div>
+				<button
+					type="button"
+					onclick={closeModal}
+					aria-label="Close enrichment dossier"
+					class="text-xl leading-none text-zinc-400 hover:text-zinc-800"
+				>
+					×
+				</button>
+			</div>
+			<div class="min-h-0 flex-1 overflow-y-auto p-5">
+				{#if enrichmentDossierLoading}
+					<p class="py-10 text-center text-sm text-zinc-500">Loading enrichment dossier…</p>
+				{:else if enrichmentDossierError}
+					<p class="py-10 text-center text-sm text-red-700">{enrichmentDossierError}</p>
+				{:else if enrichmentDossier}
+					<EnrichmentDossierCard dossier={enrichmentDossier} />
+				{:else}
+					<p class="py-10 text-center text-sm text-zinc-500">
+						This brand does not have an enrichment dossier yet.
+					</p>
+				{/if}
+			</div>
 		</div>
 	</div>
 {/if}

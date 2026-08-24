@@ -88,6 +88,62 @@ async function functionErrorMessage(error: unknown) {
 		: 'The brand deletion request was rejected.';
 }
 
+function createManualLocationError(message: string) {
+	if (message.includes('brand_location_already_exists')) {
+		return 'A location already exists at those coordinates.';
+	}
+	if (message.includes('brand_not_active')) {
+		return 'Only active brands can receive manual locations.';
+	}
+	if (message.includes('demo_brand_not_allowed')) {
+		return 'Demo brands cannot receive manual locations.';
+	}
+	if (message.includes('valid_source_url_required')) {
+		return 'A valid source URL is required.';
+	}
+	if (message.includes('invalid_latitude') || message.includes('invalid_longitude')) {
+		return 'Enter valid latitude and longitude values.';
+	}
+	return message || 'The location could not be created.';
+}
+
+type NominatimSearchHit = { lat?: string; lon?: string };
+
+async function resolveManualLocationPoint(input: {
+	kind: string;
+	latitude: number;
+	longitude: number;
+	address: string;
+}) {
+	if (input.kind === 'coordinates') {
+		return { lat: input.latitude, lon: input.longitude, address: input.address || null };
+	}
+
+	const url = new URL('https://nominatim.openstreetmap.org/search');
+	url.searchParams.set('format', 'jsonv2');
+	url.searchParams.set('q', input.address);
+	url.searchParams.set('limit', '1');
+
+	const response = await fetch(url, {
+		headers: {
+			Accept: 'application/json',
+			'User-Agent': 'BobadexAdmin/1.0 (manual-brand-location)'
+		}
+	});
+	if (!response.ok) {
+		throw new Error('Address lookup failed. Try coordinates instead.');
+	}
+
+	const hits = (await response.json()) as NominatimSearchHit[];
+	const lat = Number(hits[0]?.lat);
+	const lon = Number(hits[0]?.lon);
+	if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+		throw new Error('That address could not be geocoded. Try coordinates instead.');
+	}
+
+	return { lat, lon, address: input.address };
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const q = cleanSearch(url.searchParams.get('q'));
 	const requestedStatus = url.searchParams.get('status');
@@ -357,38 +413,53 @@ export const actions: Actions = {
 			});
 		}
 
-		const { data, error } = await locals.supabase.functions.invoke(
-			'drain-brand-location-geocode',
-			{
-				body: {
-					action: 'create_manual_location',
-					brand_slug: slug,
-					input_kind: inputKind,
-					lat: inputKind === 'coordinates' ? latitude : null,
-					lon: inputKind === 'coordinates' ? longitude : null,
-					address: inputKind === 'address' ? address : null,
-					source_url: sourceUrl,
-					note: formValue(form, 'location_note') || null,
-					verification_status: verificationStatus
-				}
-			}
-		);
-		const responseError = actionError(data, '');
-		if (error || responseError) {
+		let point: { lat: number; lon: number; address: string | null };
+		try {
+			point = await resolveManualLocationPoint({
+				kind: inputKind,
+				latitude,
+				longitude,
+				address
+			});
+		} catch (error) {
 			return fail(400, {
 				ok: false,
 				action: 'createManualLocation',
 				brandSlug: slug,
-				message: responseError || (await functionErrorMessage(error))
+				message: error instanceof Error ? error.message : 'That address could not be geocoded.'
 			});
 		}
+
+		const { data, error } = await locals.supabase.rpc('admin_create_manual_brand_location', {
+			p_brand_slug: slug,
+			p_lat: point.lat,
+			p_lon: point.lon,
+			p_source_url: sourceUrl,
+			p_verification_status: verificationStatus,
+			p_address_input: point.address,
+			p_note: formValue(form, 'location_note') || null
+		});
+		if (error) {
+			return fail(400, {
+				ok: false,
+				action: 'createManualLocation',
+				brandSlug: slug,
+				message: createManualLocationError(error.message)
+			});
+		}
+
+		void locals.supabase.functions
+			.invoke('drain-brand-location-geocode', { body: { limit: 5 } })
+			.catch((drainError) => {
+				console.error('[createManualLocation drain]', drainError);
+			});
 
 		return {
 			ok: true,
 			action: 'createManualLocation',
 			brandSlug: slug,
 			data,
-			message: 'Manual location created and queued for geographic resolution.'
+			message: 'Manual location saved. City and county labels are pending geocoding.'
 		};
 	},
 
