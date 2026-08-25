@@ -306,37 +306,27 @@ export const actions: Actions = {
 			});
 		}
 
-		const { data, error: invokeError } = await locals.supabase.functions.invoke(
-			'generate-brand-icon',
+		const { data, error: queueError } = await locals.supabase.rpc(
+			'admin_queue_brand_icon_generation',
 			{
-				body: {
-					brand_slug: slug,
-					quality,
-					publish_mode: publishMode,
-					direction: direction || undefined,
-					confirm_replace_existing: confirmReplace
-				}
+				p_brand_slug: slug,
+				p_quality: quality,
+				p_publish_mode: publishMode,
+				p_direction: direction || null,
+				p_confirm_replace_existing: confirmReplace
 			}
 		);
-		const responseError =
-			data && typeof data === 'object' && 'error' in data && data.error ? String(data.error) : null;
-		if (invokeError || responseError) {
-			const message = responseError ?? (await functionErrorMessage(invokeError));
-			console.error('[image gen] generateIcon', invokeError ?? data);
+		if (queueError) {
+			console.error('[image gen] generateIcon queue', queueError);
+			const message = queueError.message || 'The mascot generation request could not be queued.';
 			return fail(400, { ok: false, action: 'generateIcon', message });
 		}
 
-		const published =
-			data && typeof data === 'object' && 'publishes_live_icon' in data
-				? data.publishes_live_icon === true
-				: false;
 		return {
 			ok: true,
 			action: 'generateIcon',
 			data,
-			message: published
-				? `Generated and published an icon for ${slug}.`
-				: `Generated a review candidate for ${slug}.`
+			message: `Queued mascot generation for ${slug}. You can leave this page while it runs.`
 		};
 	},
 

@@ -213,6 +213,22 @@
 		return '';
 	}
 
+	function conceptIdentity(candidate: Candidate) {
+		return [conceptText(candidate, 'ancestry_family'), conceptText(candidate, 'body_plan')]
+			.filter(Boolean)
+			.join(' · ');
+	}
+
+	function conceptDirection(candidate: Candidate) {
+		return [
+			conceptText(candidate, 'dominant_feature'),
+			conceptText(candidate, 'secondary_marking'),
+			conceptText(candidate, 'temperament_pose')
+		]
+			.filter(Boolean)
+			.join(' · ');
+	}
+
 	function statusClass(status: string) {
 		if (status === 'published') return 'bg-emerald-100 text-emerald-800';
 		if (status === 'generated') return 'bg-amber-100 text-amber-800';
@@ -248,7 +264,7 @@
 			disabled={!data.storage.ready || !data.storage.isPublic}
 			class="rounded bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
 		>
-			Generate icon
+			Generate brand mascot
 		</button>
 	</header>
 
@@ -523,10 +539,11 @@
 						</div>
 						<code class="block truncate text-xs text-zinc-500">{candidate.brand_slug}</code>
 						<p class="mt-2 text-sm text-zinc-700">
-							{conceptText(candidate, 'subject') || 'Concept unavailable'}
-							{#if conceptText(candidate, 'primary_motif')}
-								· {conceptText(candidate, 'primary_motif')}{/if}
+							{conceptIdentity(candidate) || 'Concept unavailable'}
 						</p>
+						{#if conceptDirection(candidate)}
+							<p class="mt-1 text-xs text-zinc-500">{conceptDirection(candidate)}</p>
+						{/if}
 						<p class="mt-1 text-xs text-zinc-500">
 							{candidate.model} · {candidate.quality} · {candidate.creative_mode.replaceAll(
 								'_',
@@ -691,7 +708,7 @@
 							bind:value={regenerationQuality}
 							class="mt-1 block w-full rounded border-zinc-300 text-sm"
 						>
-							<option value="auto">Automatic</option>
+							<option value="auto">Automatic (GPT Image 2 · Low)</option>
 							<option value="low">Low</option>
 							<option value="medium">Medium</option>
 							<option value="high">High</option>
@@ -707,6 +724,10 @@
 							placeholder="Applied to every selected brand"
 							class="mt-1 block w-full rounded border-zinc-300 text-sm"
 						></textarea>
+						<span class="mt-1 block text-xs leading-5 text-zinc-500">
+							Optional override for anatomy, palette, temperament, or pose. Leave blank to use
+							enrichment and collection-diversity rules.
+						</span>
 					</label>
 					<div class="border-l-4 border-amber-500 bg-amber-50 px-3 py-2 text-sm text-amber-950">
 						This starts {selectedRegenerationSlugs.size} paid image generation request{selectedRegenerationSlugs.size ===
@@ -860,7 +881,7 @@
 			aria-labelledby="generate-title"
 		>
 			<header class="border-b border-zinc-200 px-5 py-4">
-				<h2 id="generate-title" class="text-lg font-semibold text-zinc-950">Generate brand icon</h2>
+				<h2 id="generate-title" class="text-lg font-semibold text-zinc-950">Generate brand mascot</h2>
 				<p class="mt-1 text-sm text-zinc-600">
 					The function loads canonical identity and enrichment evidence directly.
 				</p>
@@ -908,7 +929,7 @@
 								name="quality"
 								bind:value={quality}
 								class="mt-1 block w-full rounded border-zinc-300 text-sm"
-								><option value="auto">Automatic</option><option value="low">Low</option><option
+								><option value="auto">Automatic (GPT Image 2 · Low)</option><option value="low">Low</option><option
 									value="medium">Medium</option
 								><option value="high">High</option></select
 							></label
@@ -938,9 +959,12 @@
 							bind:value={direction}
 							rows="3"
 							maxlength="1000"
-							placeholder="Use a sleepy red panda holding a jasmine flower"
+							placeholder="Use a sleepy, mossy amphibian with broad leaf-like fins and a reserved pose"
 							class="mt-1 block w-full rounded border-zinc-300 text-sm"
-						></textarea></label
+						></textarea><span class="mt-1 block text-xs leading-5 text-zinc-500">
+							Optional override for anatomy, palette, temperament, or pose. Leave blank to use
+							enrichment and collection-diversity rules.
+						</span></label
 					>
 					{#if publishMode === 'force'}<label
 							class="flex items-start gap-2 border border-red-200 bg-red-50 p-3 text-sm text-red-900"
@@ -963,7 +987,9 @@
 				<footer
 					class="flex items-center justify-between gap-4 border-t border-zinc-200 bg-zinc-50 px-5 py-4"
 				>
-					<p class="text-xs text-zinc-500">Generation can take several minutes.</p>
+					<p class="text-xs text-zinc-500">
+						Generation runs in the background and can take several minutes.
+					</p>
 					<div class="flex gap-2">
 						<button
 							type="button"
@@ -977,10 +1003,10 @@
 								Boolean(pendingAction)}
 							class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
 							>{pendingAction === 'generateIcon'
-								? 'Generating…'
+								? 'Queueing…'
 								: publishMode === 'force'
-									? 'Generate and replace'
-									: 'Generate'}</button
+									? 'Queue and replace'
+									: 'Queue generation'}</button
 						>
 					</div>
 				</footer>
