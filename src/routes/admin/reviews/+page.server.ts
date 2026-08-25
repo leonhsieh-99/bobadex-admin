@@ -20,9 +20,10 @@ type PipelineState =
 	| 'llm_processing'
 	| 'llm_failed'
 	| 'not_reviewed_yet'
+	| 'auto_decision_pending_apply'
 	| 'waiting_manual_review'
 	| 'waiting_region_reconciliation';
-type ReviewTab = 'manual' | 'region' | 'awaiting' | 'not_reviewed' | 'history';
+type ReviewTab = 'manual' | 'auto_apply' | 'region' | 'awaiting' | 'not_reviewed' | 'history';
 
 type CandidateRow = {
 	id: string;
@@ -129,6 +130,7 @@ type ApproveResult = {
 
 const reviewTabs: Array<{ id: ReviewTab; states: PipelineState[] }> = [
 	{ id: 'manual', states: ['waiting_manual_review'] },
+	{ id: 'auto_apply', states: ['auto_decision_pending_apply'] },
 	{ id: 'region', states: ['waiting_region_reconciliation'] },
 	{ id: 'awaiting', states: ['awaiting_current_llm_review', 'llm_processing', 'llm_failed'] },
 	{ id: 'not_reviewed', states: ['not_reviewed_yet'] },

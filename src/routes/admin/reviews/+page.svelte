@@ -24,9 +24,10 @@
 		| 'llm_processing'
 		| 'llm_failed'
 		| 'not_reviewed_yet'
+		| 'auto_decision_pending_apply'
 		| 'waiting_manual_review'
 		| 'waiting_region_reconciliation';
-	type ReviewTab = 'manual' | 'region' | 'awaiting' | 'not_reviewed' | 'history';
+	type ReviewTab = 'manual' | 'auto_apply' | 'region' | 'awaiting' | 'not_reviewed' | 'history';
 
 	type Candidate = {
 		id: string;
@@ -106,6 +107,7 @@
 
 	const reviewTabLabels: Record<ReviewTab, string> = {
 		manual: 'Manual Review',
+		auto_apply: 'Pending Auto-Apply',
 		region: 'Region Reconciliation',
 		awaiting: 'Awaiting Current LLM',
 		not_reviewed: 'Not Reviewed',
@@ -121,6 +123,7 @@
 		llm_processing: 'LLM processing',
 		llm_failed: 'LLM failed',
 		not_reviewed_yet: 'Not reviewed',
+		auto_decision_pending_apply: 'Pending auto-apply',
 		waiting_manual_review: 'Manual review',
 		waiting_region_reconciliation: 'Region reconciliation'
 	};
@@ -321,7 +324,7 @@
 	</header>
 
 	<section
-		class="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-5"
+		class="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-6"
 		aria-label="Location pipeline states"
 	>
 		{#each data.reviewTabs as tab}
