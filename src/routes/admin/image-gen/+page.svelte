@@ -67,7 +67,6 @@
 	let publishMode: 'auto' | 'review' | 'force' = 'auto';
 	let direction = '';
 	let confirmReplace = false;
-	let publishing: Candidate | null = null;
 	let pendingAction = '';
 	let modalError = '';
 	let selectedRegenerationSlugs = new Set<string>();
@@ -80,6 +79,7 @@
 	$: selectedBrand = data.brands.find((brand) => brand.slug === selectedSlug) ?? null;
 	$: comparisonCandidate = comparisonQueue[0] ?? null;
 
+	const MAX_REGENERATION_BATCH = 20;
 	const number = new Intl.NumberFormat('en-US');
 
 	function pageUrl(view = data.view, search = q) {
@@ -110,7 +110,6 @@
 	function closeModal() {
 		if (pendingAction) return;
 		generating = false;
-		publishing = null;
 		selectedSlug = '';
 		direction = '';
 		confirmReplace = false;
@@ -124,17 +123,32 @@
 	function toggleRegeneration(slug: string) {
 		const next = new Set(selectedRegenerationSlugs);
 		if (next.has(slug)) next.delete(slug);
-		else if (next.size < 5) next.add(slug);
+		else if (next.size < MAX_REGENERATION_BATCH) next.add(slug);
 		selectedRegenerationSlugs = next;
 	}
 
+	function selectRegenerationCount(count: number) {
+		selectedRegenerationSlugs = new Set(
+			data.generatedBrands
+				.slice(0, Math.min(count, MAX_REGENERATION_BATCH))
+				.map((brand) => brand.slug)
+		);
+	}
+
 	function openRegeneration(slugs?: string[]) {
-		if (slugs) selectedRegenerationSlugs = new Set(slugs.slice(0, 5));
+		if (slugs) selectedRegenerationSlugs = new Set(slugs.slice(0, MAX_REGENERATION_BATCH));
 		if (!selectedRegenerationSlugs.size) return;
 		regenerationQuality = 'auto';
 		regenerationDirection = '';
 		modalError = '';
 		regenerationConfirm = true;
+	}
+
+	function openComparison(candidates: Candidate[]) {
+		comparisonQueue = candidates;
+		comparisonTotal = candidates.length;
+		comparisonCompleted = 0;
+		modalError = '';
 	}
 
 	function actionEnhance(action: string): SubmitFunction {
@@ -159,22 +173,9 @@
 				if (result.type === 'success') {
 					toasts.success(message);
 					if (action === 'regenerateSelected') {
-						const regenerationResult = resultData as Record<string, unknown> | null;
-						const candidateIds =
-							regenerationResult && Array.isArray(regenerationResult.candidateIds)
-								? regenerationResult.candidateIds.filter(
-										(candidateId: unknown): candidateId is string => typeof candidateId === 'string'
-									)
-								: [];
 						regenerationConfirm = false;
 						selectedRegenerationSlugs = new Set();
 						await invalidateAll();
-						comparisonQueue = candidateIds.flatMap((candidateId: string) => {
-							const candidate = data.reviewCandidates.find((item) => item.id === candidateId);
-							return candidate ? [candidate] : [];
-						});
-						comparisonTotal = comparisonQueue.length;
-						comparisonCompleted = 0;
 						return;
 					}
 					if (action === 'publishComparison' || action === 'rejectComparison') {
@@ -184,7 +185,6 @@
 						return;
 					}
 					generating = false;
-					publishing = null;
 					await invalidateAll();
 					return;
 				}
@@ -237,8 +237,7 @@
 		return 'bg-zinc-100 text-zinc-700';
 	}
 
-	function selectionLabel() {
-		const count = selectedRegenerationSlugs.size;
+	function selectionLabel(count: number) {
 		return count === 1 ? 'Regenerate 1 brand' : `Regenerate ${count} brands`;
 	}
 </script>
@@ -334,25 +333,53 @@
 				method="post"
 				action="?/generateBatch"
 				use:enhance={actionEnhance('generateBatch')}
-				class="flex items-center gap-2"
+				class="flex flex-wrap items-center justify-end gap-2"
 			>
 				<label class="sr-only" for="batch-count">Batch size</label>
 				<select id="batch-count" name="count" class="h-10 rounded border-zinc-300 text-sm">
 					<option value="1">Next 1</option>
 					<option value="3">Next 3</option>
 					<option value="5">Next 5</option>
+					<option value="10">Next 10</option>
+					<option value="20">Next 20</option>
+					<option value="50">Next 50</option>
+				</select>
+				<label class="sr-only" for="batch-publish-mode">Publication mode</label>
+				<select
+					id="batch-publish-mode"
+					name="publish_mode"
+					class="h-10 rounded border-zinc-300 text-sm"
+				>
+					<option value="auto">Auto-publish</option>
+					<option value="review">Manual review</option>
 				</select>
 				<button
 					disabled={!data.storage.ready || !data.storage.isPublic || Boolean(pendingAction)}
 					class="h-10 rounded border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 hover:bg-zinc-50 disabled:opacity-40"
 				>
-					{pendingAction === 'generateBatch' ? 'Running…' : 'Run small batch'}
+					{pendingAction === 'generateBatch' ? 'Queueing…' : 'Queue batch'}
 				</button>
 			</form>
 		{:else if data.view === 'generated'}
-			<div class="flex items-center gap-3">
+			<div class="flex flex-wrap items-center justify-end gap-2">
+				<button
+					type="button"
+					onclick={() => selectRegenerationCount(10)}
+					disabled={!data.generatedBrands.length || Boolean(pendingAction)}
+					class="h-10 rounded border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+				>
+					Select 10
+				</button>
+				<button
+					type="button"
+					onclick={() => selectRegenerationCount(20)}
+					disabled={!data.generatedBrands.length || Boolean(pendingAction)}
+					class="h-10 rounded border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+				>
+					Select 20
+				</button>
 				<span class="text-xs text-zinc-500 tabular-nums">
-					{selectedRegenerationSlugs.size}/5 selected
+					{selectedRegenerationSlugs.size}/{MAX_REGENERATION_BATCH} selected
 				</span>
 				<button
 					type="button"
@@ -360,13 +387,13 @@
 					disabled={!selectedRegenerationSlugs.size || Boolean(pendingAction)}
 					class="h-10 rounded bg-zinc-950 px-3 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
 				>
-					{selectionLabel()}
+					{selectionLabel(selectedRegenerationSlugs.size)}
 				</button>
 			</div>
 		{/if}
 	</div>
 
-	{#if modalError && !generating && !publishing && !regenerationConfirm && !comparisonCandidate}
+	{#if modalError && !generating && !regenerationConfirm && !comparisonCandidate}
 		<div class="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{modalError}</div>
 	{/if}
 
@@ -437,7 +464,8 @@
 		<section>
 			<div class="mb-3 flex flex-wrap items-center justify-between gap-3">
 				<p class="text-sm text-zinc-600">
-					Select up to five brands. Regenerations stay private until you choose which icon to use.
+					Select up to 20 brands. Regenerations are queued and stay private until you choose which
+					icon to use.
 				</p>
 				{#if selectedRegenerationSlugs.size}
 					<button
@@ -463,14 +491,30 @@
 								type="checkbox"
 								checked={selected}
 								onchange={() => toggleRegeneration(brand.slug)}
-								disabled={!selected && selectedRegenerationSlugs.size >= 5}
-								class="h-5 w-5 rounded border-zinc-400 bg-white text-zinc-950 shadow-sm disabled:opacity-40"
+								disabled={!selected && selectedRegenerationSlugs.size >= MAX_REGENERATION_BATCH}
+								class="peer sr-only"
 							/>
+							<span
+								class="flex h-5 w-5 items-center justify-center rounded border border-zinc-400 bg-white shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-zinc-950 peer-focus-visible:ring-offset-2 peer-disabled:opacity-40"
+								aria-hidden="true"
+							>
+								{#if selected}
+									<svg viewBox="0 0 20 20" class="h-4 w-4 text-zinc-950" fill="none">
+										<path
+											d="m4 10 4 4 8-9"
+											stroke="currentColor"
+											stroke-width="2.25"
+											stroke-linecap="round"
+											stroke-linejoin="round"
+										/>
+									</svg>
+								{/if}
+							</span>
 						</label>
 						<button
 							type="button"
 							onclick={() => toggleRegeneration(brand.slug)}
-							disabled={!selected && selectedRegenerationSlugs.size >= 5}
+							disabled={!selected && selectedRegenerationSlugs.size >= MAX_REGENERATION_BATCH}
 							class="flex aspect-square w-full items-center justify-center border-b border-zinc-200 bg-[linear-gradient(45deg,#f4f4f5_25%,transparent_25%),linear-gradient(-45deg,#f4f4f5_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f4f4f5_75%),linear-gradient(-45deg,transparent_75%,#f4f4f5_75%)] bg-[length:16px_16px] bg-[position:0_0,0_8px,8px_-8px,-8px_0px] p-4 disabled:cursor-not-allowed"
 						>
 							{#if brand.icon_thumbnail_url ?? brand.icon_url}
@@ -568,13 +612,10 @@
 						>
 						{#if candidate.status === 'generated'}<button
 								type="button"
-								onclick={() => {
-									publishing = candidate;
-									modalError = '';
-								}}
+								onclick={() => openComparison([candidate])}
 								disabled={!data.storage.ready || !data.storage.isPublic}
 								class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
-								>Publish</button
+								>Compare</button
 							>{/if}
 					</div>
 				</article>
@@ -730,10 +771,10 @@
 						</span>
 					</label>
 					<div class="border-l-4 border-amber-500 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-						This starts {selectedRegenerationSlugs.size} paid image generation request{selectedRegenerationSlugs.size ===
+						This queues {selectedRegenerationSlugs.size} paid image generation request{selectedRegenerationSlugs.size ===
 						1
 							? ''
-							: 's'}. The batch limit is five.
+							: 's'} for manual review. The batch limit is 20.
 					</div>
 					{#if modalError}<div
 							class="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
@@ -754,7 +795,7 @@
 						disabled={Boolean(pendingAction)}
 						class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
 					>
-						{pendingAction === 'regenerateSelected' ? 'Generating…' : 'Confirm regeneration'}
+						{pendingAction === 'regenerateSelected' ? 'Queueing…' : 'Queue regenerations'}
 					</button>
 				</footer>
 			</form>
@@ -794,11 +835,15 @@
 									src={comparisonCandidate.current_icon_url}
 									alt={`Current icon for ${comparisonCandidate.brand_display}`}
 									class="h-full w-full object-contain"
-								/>{/if}
+								/>{:else}<span class="text-sm text-zinc-500">No current icon</span>{/if}
 						</div>
 						<div class="border-t border-zinc-200 p-3">
 							<p class="text-sm font-semibold text-zinc-950">Current icon</p>
-							<p class="text-xs text-zinc-500">Remains live unless you publish the regeneration.</p>
+							<p class="text-xs text-zinc-500">
+								{comparisonCandidate.current_icon_url
+									? 'Remains live unless you publish the new candidate.'
+									: 'This brand does not have a live icon yet.'}
+							</p>
 						</div>
 					</section>
 					<section class="overflow-hidden rounded-lg border border-zinc-950 ring-1 ring-zinc-950">
@@ -810,7 +855,7 @@
 								/>{/if}
 						</div>
 						<div class="border-t border-zinc-200 p-3">
-							<p class="text-sm font-semibold text-zinc-950">Regenerated icon</p>
+							<p class="text-sm font-semibold text-zinc-950">New candidate</p>
 							<p class="text-xs text-zinc-500">
 								{comparisonCandidate.model} · {comparisonCandidate.quality} · {comparisonCandidate.creative_mode.replaceAll(
 									'_',
@@ -860,7 +905,7 @@
 						disabled={Boolean(pendingAction)}
 						class="w-full rounded bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
 					>
-						{pendingAction === 'publishComparison' ? 'Publishing…' : 'Use regenerated'}
+						{pendingAction === 'publishComparison' ? 'Publishing…' : 'Publish new'}
 					</button>
 				</form>
 			</footer>
@@ -881,7 +926,9 @@
 			aria-labelledby="generate-title"
 		>
 			<header class="border-b border-zinc-200 px-5 py-4">
-				<h2 id="generate-title" class="text-lg font-semibold text-zinc-950">Generate brand mascot</h2>
+				<h2 id="generate-title" class="text-lg font-semibold text-zinc-950">
+					Generate brand mascot
+				</h2>
 				<p class="mt-1 text-sm text-zinc-600">
 					The function loads canonical identity and enrichment evidence directly.
 				</p>
@@ -929,9 +976,9 @@
 								name="quality"
 								bind:value={quality}
 								class="mt-1 block w-full rounded border-zinc-300 text-sm"
-								><option value="auto">Automatic (GPT Image 2 · Low)</option><option value="low">Low</option><option
-									value="medium">Medium</option
-								><option value="high">High</option></select
+								><option value="auto">Automatic (GPT Image 2 · Low)</option><option value="low"
+									>Low</option
+								><option value="medium">Medium</option><option value="high">High</option></select
 							></label
 						>
 						<label class="block"
@@ -1010,63 +1057,6 @@
 						>
 					</div>
 				</footer>
-			</form>
-		</div>
-	</div>
-{/if}
-
-{#if publishing}
-	<div
-		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-		role="presentation"
-		onclick={(event) => event.currentTarget === event.target && closeModal()}
-	>
-		<div
-			class="w-full max-w-lg rounded-lg bg-white shadow-xl"
-			role="dialog"
-			aria-modal="true"
-			aria-labelledby="publish-title"
-		>
-			<header class="border-b border-zinc-200 px-5 py-4">
-				<h2 id="publish-title" class="text-lg font-semibold text-zinc-950">
-					Publish reviewed icon
-				</h2>
-				<p class="mt-1 text-sm text-zinc-600">
-					This candidate will replace the current live icon for {publishing.brand_display}.
-				</p>
-			</header>
-			<form
-				method="post"
-				action="?/publishCandidate"
-				use:enhance={actionEnhance('publishCandidate')}
-				class="space-y-4 px-5 py-5"
-			>
-				<input type="hidden" name="candidate_id" value={publishing.id} />
-				{#if publishing.preview_url}<div
-						class="mx-auto flex aspect-square w-48 items-center justify-center border border-zinc-200 bg-zinc-50"
-					>
-						<img
-							src={publishing.preview_url}
-							alt={`Candidate for ${publishing.brand_display}`}
-							class="h-full w-full object-contain"
-						/>
-					</div>{/if}
-				{#if modalError}<div class="border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-						{modalError}
-					</div>{/if}
-				<div class="flex justify-end gap-2">
-					<button
-						type="button"
-						onclick={closeModal}
-						disabled={Boolean(pendingAction)}
-						class="rounded border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
-						>Cancel</button
-					><button
-						disabled={Boolean(pendingAction)}
-						class="rounded bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40"
-						>{pendingAction === 'publishCandidate' ? 'Publishing…' : 'Confirm and publish'}</button
-					>
-				</div>
 			</form>
 		</div>
 	</div>

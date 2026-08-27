@@ -6,7 +6,8 @@ type ImageQuality = 'auto' | 'low' | 'medium' | 'high';
 type PublishMode = 'auto' | 'review' | 'force';
 type ImageView = 'ready' | 'generated' | 'review' | 'history';
 
-const MAX_REGENERATION_BATCH = 5;
+const MAX_GENERATION_BATCH = 50;
+const MAX_REGENERATION_BATCH = 20;
 
 type BrandRow = {
 	slug: string;
@@ -56,6 +57,15 @@ function isQuality(value: string): value is ImageQuality {
 
 function isPublishMode(value: string): value is PublishMode {
 	return ['auto', 'review', 'force'].includes(value);
+}
+
+function queueFailureDetail(outcomes: Array<{ ok: boolean; message?: string }>) {
+	const messages = [
+		...new Set(
+			outcomes.flatMap((outcome) => (!outcome.ok && outcome.message ? [outcome.message] : []))
+		)
+	];
+	return messages.length ? `: ${messages.slice(0, 2).join('; ')}` : '';
 }
 
 async function functionErrorMessage(error: unknown) {
@@ -381,11 +391,17 @@ export const actions: Actions = {
 		}
 		const form = await request.formData();
 		const count = Number.parseInt(formValue(form, 'count'), 10);
-		if (!Number.isInteger(count) || count < 1 || count > 5) {
+		const publishMode = formValue(form, 'publish_mode') || 'auto';
+		if (
+			!Number.isInteger(count) ||
+			count < 1 ||
+			count > MAX_GENERATION_BATCH ||
+			!['auto', 'review'].includes(publishMode)
+		) {
 			return fail(400, {
 				ok: false,
 				action: 'generateBatch',
-				message: 'Batch size must be from 1 to 5.'
+				message: `Batch size must be from 1 to ${MAX_GENERATION_BATCH}, with a valid publication mode.`
 			});
 		}
 		const storage = await storageReadiness();
@@ -399,7 +415,7 @@ export const actions: Actions = {
 		}
 
 		const admin = supabaseAdmin();
-		const [dossierResult, brandResult] = await Promise.all([
+		const [dossierResult, brandResult, activeCandidateResult] = await Promise.all([
 			admin
 				.schema('mod')
 				.from('brand_dossiers')
@@ -411,7 +427,12 @@ export const actions: Actions = {
 				.eq('status', 'active')
 				.eq('is_demo', false)
 				.or('icon_path.is.null,icon_path.eq.')
-				.order('created_at')
+				.order('created_at'),
+			admin
+				.schema('mod')
+				.from('brand_icon_candidates')
+				.select('brand_slug')
+				.in('status', ['generating', 'processing', 'generated'])
 		]);
 		const { data: dossiers, error: dossierError } = dossierResult;
 		if (dossierError) {
@@ -420,9 +441,19 @@ export const actions: Actions = {
 		if (brandResult.error) {
 			return fail(400, { ok: false, action: 'generateBatch', message: brandResult.error.message });
 		}
+		if (activeCandidateResult.error) {
+			return fail(400, {
+				ok: false,
+				action: 'generateBatch',
+				message: activeCandidateResult.error.message
+			});
+		}
 		const approvedSlugs = new Set((dossiers ?? []).map((dossier) => dossier.brand_slug));
+		const activeCandidateSlugs = new Set(
+			(activeCandidateResult.data ?? []).map((candidate) => candidate.brand_slug)
+		);
 		const brands = (brandResult.data ?? [])
-			.filter((brand) => approvedSlugs.has(brand.slug))
+			.filter((brand) => approvedSlugs.has(brand.slug) && !activeCandidateSlugs.has(brand.slug))
 			.slice(0, count);
 		if (!brands.length) {
 			return fail(409, {
@@ -432,34 +463,35 @@ export const actions: Actions = {
 			});
 		}
 
-		const outcomes: Array<{ slug: string; ok: boolean; message?: string }> = [];
-		for (const brand of brands) {
-			const { data, error: invokeError } = await locals.supabase.functions.invoke(
-				'generate-brand-icon',
-				{
-					body: { brand_slug: brand.slug, quality: 'auto', publish_mode: 'auto' }
-				}
-			);
-			const responseError =
-				data && typeof data === 'object' && 'error' in data && data.error
-					? String(data.error)
-					: null;
-			outcomes.push({
-				slug: brand.slug,
-				ok: !invokeError && !responseError,
-				message:
-					responseError ?? (invokeError ? await functionErrorMessage(invokeError) : undefined)
-			});
-		}
+		const outcomes: Array<{ slug: string; ok: boolean; message?: string }> = await Promise.all(
+			brands.map(async (brand) => {
+				const { error: queueError } = await locals.supabase.rpc(
+					'admin_queue_brand_icon_generation',
+					{
+						p_brand_slug: brand.slug,
+						p_quality: 'auto',
+						p_publish_mode: publishMode,
+						p_direction: null,
+						p_confirm_replace_existing: false
+					}
+				);
+				return {
+					slug: brand.slug,
+					ok: !queueError,
+					message: queueError?.message
+				};
+			})
+		);
 		const succeeded = outcomes.filter((outcome) => outcome.ok).length;
 		const failed = outcomes.length - succeeded;
+		if (failed) console.error('[image gen] generateBatch queue failures', outcomes);
 		const result = {
-			ok: failed === 0,
+			ok: succeeded > 0,
 			action: 'generateBatch',
 			data: outcomes,
-			message: `Generated ${succeeded} icon${succeeded === 1 ? '' : 's'}${failed ? `; ${failed} failed` : ''}.`
+			message: `Queued ${succeeded} mascot generation${succeeded === 1 ? '' : 's'}${publishMode === 'review' ? ' for manual review' : ''}${failed ? `; ${failed} failed to queue${queueFailureDetail(outcomes)}` : ''}.`
 		};
-		return failed ? fail(400, result) : result;
+		return succeeded === 0 ? fail(400, result) : result;
 	},
 
 	regenerateSelected: async ({ request, locals }) => {
@@ -527,50 +559,36 @@ export const actions: Actions = {
 			slug: string;
 			display: string;
 			ok: boolean;
-			candidate_id?: string;
 			message?: string;
 		}> = await Promise.all(
 			slugs.map(async (slug) => {
-				const { data, error: invokeError } = await locals.supabase.functions.invoke(
-					'generate-brand-icon',
+				const { error: queueError } = await locals.supabase.rpc(
+					'admin_queue_brand_icon_generation',
 					{
-						body: {
-							brand_slug: slug,
-							quality,
-							publish_mode: 'review',
-							direction: direction || undefined
-						}
+						p_brand_slug: slug,
+						p_quality: quality,
+						p_publish_mode: 'review',
+						p_direction: direction || null,
+						p_confirm_replace_existing: false
 					}
 				);
-				const responseError =
-					data && typeof data === 'object' && 'error' in data && data.error
-						? String(data.error)
-						: null;
-				const candidateId =
-					data && typeof data === 'object' && 'candidate_id' in data
-						? String(data.candidate_id ?? '')
-						: '';
 				return {
 					slug,
 					display: brandBySlug.get(slug)?.display ?? slug,
-					ok: !invokeError && !responseError && Boolean(candidateId),
-					candidate_id: candidateId || undefined,
-					message:
-						responseError ?? (invokeError ? await functionErrorMessage(invokeError) : undefined)
+					ok: !queueError,
+					message: queueError?.message
 				};
 			})
 		);
 
 		const succeeded = outcomes.filter((outcome) => outcome.ok).length;
 		const failed = outcomes.length - succeeded;
+		if (failed) console.error('[image gen] regenerateSelected queue failures', outcomes);
 		const result = {
-			ok: failed === 0,
+			ok: succeeded > 0,
 			action: 'regenerateSelected',
 			outcomes,
-			candidateIds: outcomes.flatMap((outcome) =>
-				outcome.ok && outcome.candidate_id ? [outcome.candidate_id] : []
-			),
-			message: `Generated ${succeeded} replacement${succeeded === 1 ? '' : 's'} for review${failed ? `; ${failed} failed` : ''}.`
+			message: `Queued ${succeeded} replacement${succeeded === 1 ? '' : 's'} for manual review${failed ? `; ${failed} failed to queue${queueFailureDetail(outcomes)}` : ''}.`
 		};
 		return succeeded === 0 ? fail(400, result) : result;
 	},
