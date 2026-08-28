@@ -1,3 +1,4 @@
+import { env } from '$env/dynamic/private';
 import { error, fail } from '@sveltejs/kit';
 import { supabaseAdmin } from '$lib/supabase.server';
 import type { Actions, PageServerLoad } from './$types';
@@ -8,6 +9,9 @@ type ImageView = 'ready' | 'generated' | 'review' | 'history';
 
 const MAX_GENERATION_BATCH = 50;
 const MAX_REGENERATION_BATCH = 20;
+const DISABLE_STORAGE_IMAGE_TRANSFORMS = ['1', 'true', 'yes'].includes(
+	(env.DISABLE_STORAGE_IMAGE_TRANSFORMS ?? '').trim().toLowerCase()
+);
 
 type BrandRow = {
 	slug: string;
@@ -114,6 +118,21 @@ function publicStoredIconThumbnailUrl(
 	return publicStorageUrl(bucket, storedIconThumbnailPath(path, size));
 }
 
+function publicCandidateThumbnailUrl(bucket: string, path: string | null, size: number) {
+	if (!path) return null;
+	if (DISABLE_STORAGE_IMAGE_TRANSFORMS) return publicStorageUrl(bucket, path);
+	return supabaseAdmin()
+		.storage.from(bucket)
+		.getPublicUrl(path, {
+			transform: {
+				width: size,
+				height: size,
+				resize: 'contain',
+				quality: 45
+			}
+		}).data.publicUrl;
+}
+
 function candidatePreviewPath(candidate: CandidateRow) {
 	return (
 		candidate.published_storage_path ?? candidate.processed_storage_path ?? candidate.storage_path
@@ -195,9 +214,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 								latestCandidate.storage_bucket || 'shop-media',
 								latestCandidate.published_storage_path
 							)
-						: publicStorageUrl(
+						: publicCandidateThumbnailUrl(
 								latestCandidate.storage_bucket || 'shop-media',
-								candidatePreviewPath(latestCandidate)
+								candidatePreviewPath(latestCandidate),
+								96
 							)
 					: null,
 			icon_url:
@@ -241,7 +261,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 								candidate.storage_bucket || 'shop-media',
 								candidate.published_storage_path
 							)
-						: publicStorageUrl(candidate.storage_bucket || 'shop-media', previewPath)
+						: publicCandidateThumbnailUrl(
+								candidate.storage_bucket || 'shop-media',
+								previewPath,
+								192
+							)
 					: null,
 			current_icon_url:
 				storage.ready && storage.isPublic
