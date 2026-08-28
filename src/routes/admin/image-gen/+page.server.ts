@@ -100,18 +100,18 @@ function publicStorageUrl(bucket: string, path: string | null) {
 	return supabaseAdmin().storage.from(bucket).getPublicUrl(path).data.publicUrl;
 }
 
-function publicStorageThumbnailUrl(bucket: string, path: string | null, size = 128) {
+function storedIconThumbnailPath(path: string, size: 256 | 512 = 256) {
+	const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+	return `thumbs/s${size}/${cleanPath}`;
+}
+
+function publicStoredIconThumbnailUrl(
+	bucket: string,
+	path: string | null,
+	size: 256 | 512 = 256
+) {
 	if (!path) return null;
-	return supabaseAdmin()
-		.storage.from(bucket)
-		.getPublicUrl(path, {
-			transform: {
-				width: size,
-				height: size,
-				resize: 'contain',
-				quality: 45
-			}
-		}).data.publicUrl;
+	return publicStorageUrl(bucket, storedIconThumbnailPath(path, size));
 }
 
 function candidatePreviewPath(candidate: CandidateRow) {
@@ -190,17 +190,21 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 					: null,
 			latest_candidate_thumbnail_url:
 				storage.ready && storage.isPublic && latestCandidate
-					? publicStorageThumbnailUrl(
-							latestCandidate.storage_bucket || 'shop-media',
-							candidatePreviewPath(latestCandidate),
-							96
-						)
+					? latestCandidate.published_storage_path
+						? publicStoredIconThumbnailUrl(
+								latestCandidate.storage_bucket || 'shop-media',
+								latestCandidate.published_storage_path
+							)
+						: publicStorageUrl(
+								latestCandidate.storage_bucket || 'shop-media',
+								candidatePreviewPath(latestCandidate)
+							)
 					: null,
 			icon_url:
 				storage.ready && storage.isPublic ? publicStorageUrl('shop-media', brand.icon_path) : null,
 			icon_thumbnail_url:
 				storage.ready && storage.isPublic
-					? publicStorageThumbnailUrl('shop-media', brand.icon_path)
+					? publicStoredIconThumbnailUrl('shop-media', brand.icon_path)
 					: null
 		};
 	});
@@ -232,7 +236,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 					: null,
 			thumbnail_url:
 				storage.ready && storage.isPublic
-					? publicStorageThumbnailUrl(candidate.storage_bucket || 'shop-media', previewPath, 192)
+					? candidate.published_storage_path
+						? publicStoredIconThumbnailUrl(
+								candidate.storage_bucket || 'shop-media',
+								candidate.published_storage_path
+							)
+						: publicStorageUrl(candidate.storage_bucket || 'shop-media', previewPath)
 					: null,
 			current_icon_url:
 				storage.ready && storage.isPublic
