@@ -1,3 +1,4 @@
+import { supabaseAdmin } from '$lib/supabase.server';
 import type { RequestHandler } from './$types';
 
 type BrandResult = {
@@ -17,6 +18,8 @@ const json = (body: unknown, status = 200) =>
 	});
 
 export const GET: RequestHandler = async ({ url, locals }) => {
+	if (!locals.isAdmin) return json({ error: 'Admin access required.' }, 403);
+
 	const rawQuery = (url.searchParams.get('q') ?? '').trim();
 	const query = rawQuery
 		.replace(/[,%()]/g, ' ')
@@ -24,9 +27,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		.trim();
 	if (query.length < 2) return json([]);
 	const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]+/g, '');
+	const admin = supabaseAdmin();
 
 	const [brandResult, aliasResult] = await Promise.all([
-		locals.supabase
+		admin
 			.from('brands')
 			.select('slug,display,website,wikidata,enrichment_location_anchor')
 			.or(`display.ilike.%${query}%,slug.ilike.%${query}%`)
@@ -34,7 +38,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			.eq('is_demo', false)
 			.order('display', { ascending: true })
 			.limit(12),
-		locals.supabase
+		admin
 			.from('brand_aliases')
 			.select('brand_slug,normalized_name,alias_display')
 			.or(`normalized_name.ilike.%${normalizedQuery}%,alias_display.ilike.%${query}%`)
@@ -55,7 +59,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		...new Set(aliasRows.map((alias) => alias.brand_slug).filter((slug) => !results.has(slug)))
 	];
 	if (missingSlugs.length) {
-		const { data: aliasBrands, error: aliasBrandError } = await locals.supabase
+		const { data: aliasBrands, error: aliasBrandError } = await admin
 			.from('brands')
 			.select('slug,display,website,wikidata,enrichment_location_anchor')
 			.in('slug', missingSlugs)
@@ -81,7 +85,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const resultSlugs = [...results.keys()];
 	if (resultSlugs.length) {
-		const { data: observedNodes, error: observedNodesError } = await locals.supabase
+		const { data: observedNodes, error: observedNodesError } = await admin
 			.schema('ingest')
 			.from('osm_candidate_pipeline_states')
 			.select('id,source_key,matched_brand_slug')

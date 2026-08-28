@@ -1785,6 +1785,17 @@
 	</section>
 </main>
 
+{#if merging}
+	<BrandMergeDialog
+		source={{ slug: merging.brand_slug, display: merging.identity.display }}
+		action="?/mergeBrand"
+		enhanceSubmit={actionEnhance('mergeBrand')}
+		busy={pendingAction === 'mergeBrand'}
+		error={mergeError}
+		onClose={closeMerge}
+	/>
+{/if}
+
 {#if publishing}
 	<div
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-3 sm:p-5"
