@@ -163,7 +163,7 @@
 												class="text-blue-700">Source</a
 											>{/if}
 									</div>
-									<p class="mt-1">{observation.name ?? candidate.canonical_name}</p>
+									<p class="mt-1">{observation.observed_name ?? candidate.canonical_name}</p>
 									<p class="mt-1 text-zinc-500">
 										{observation.address_input ?? 'No provider address'}
 									</p>
