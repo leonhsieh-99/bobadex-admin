@@ -8,11 +8,11 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 
 	const admin = supabaseAdmin();
 	const [reviewResult, enrichmentResult, imageResult] = await Promise.all([
-		locals.supabase
+		admin
 			.schema('ingest')
-			.from('osm_candidate_pipeline_states')
+			.from('poi_candidates')
 			.select('*', { count: 'exact', head: true })
-			.eq('pipeline_state', 'waiting_manual_review'),
+			.in('process_status', ['needs_exception_resolution', 'needs_manual_review']),
 		admin
 			.schema('mod')
 			.from('brand_dossiers')
