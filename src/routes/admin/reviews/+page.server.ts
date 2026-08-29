@@ -106,7 +106,7 @@ export const load: PageServerLoad = async ({ url }) => {
 				.schema('ingest')
 				.from('poi_observations')
 				.select(
-					'id,provider,provider_record_id,name,address_input,lat,lon,categories,source_url,last_seen_at'
+					'id,provider,provider_record_id,observed_name,address_input,lat,lon,categories,source_url,last_seen_at'
 				)
 				.in('id', observationIds);
 			if (result.error) throw error(500, 'Failed to load observations: ' + result.error.message);
