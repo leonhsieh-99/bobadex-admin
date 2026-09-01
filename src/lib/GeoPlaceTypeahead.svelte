@@ -25,6 +25,7 @@
 	export let onselect: (place: GeoPlaceResult) => void;
 	export let onclear: (() => void) | null = null;
 	export let oncancel: (() => void) | null = null;
+	export let importable = false;
 
 	let query = value;
 	let results: GeoPlaceResult[] = [];
@@ -76,6 +77,7 @@
 	function searchParams(q: string) {
 		const params = new URLSearchParams({ q });
 		if (level) params.set('level', level);
+		if (importable) params.set('importable', '1');
 		return params;
 	}
 
@@ -172,13 +174,15 @@
 		oninput={scheduleSearch}
 		onfocus={() => results.length && (open = true)}
 		onkeydown={handleKeydown}
-		placeholder={level === 'admin1'
-			? 'Search state or province'
-			: level === 'metro'
-				? 'Search metro area'
-				: level
-					? `Search ${level}`
-					: 'Search country, state, metro, or city'}
+		placeholder={importable
+			? 'Search a region with a stored boundary'
+			: level === 'admin1'
+				? 'Search state or province'
+				: level === 'metro'
+					? 'Search metro area'
+					: level
+						? `Search ${level}`
+						: 'Search country, state, metro, or city'}
 		aria-label="Canonical market place"
 		aria-autocomplete="list"
 		aria-expanded={open}

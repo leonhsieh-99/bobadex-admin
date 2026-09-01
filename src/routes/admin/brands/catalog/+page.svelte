@@ -223,6 +223,7 @@
 	let enrichmentDossier: EnrichmentDossierView | null = null;
 	let enrichmentDossierLoading = false;
 	let enrichmentDossierError = '';
+	let enrichmentRerunForm: HTMLFormElement | null = null;
 
 	const number = new Intl.NumberFormat('en-US');
 
@@ -417,6 +418,40 @@
 					closeModal();
 					details = {};
 					expandedSlug = '';
+					await invalidateAll();
+					return;
+				}
+				modalError = message;
+				toasts.error(message);
+				await applyAction(result);
+			};
+		};
+	}
+
+	function enrichmentRerunEnhance(): SubmitFunction {
+		return ({ cancel }) => {
+			if (pendingAction) {
+				cancel();
+				return;
+			}
+			pendingAction = 'rerunEnrichment';
+			modalError = '';
+			return async ({ result }) => {
+				pendingAction = '';
+				const resultData =
+					result.type === 'success' || result.type === 'failure' ? result.data : null;
+				const message =
+					resultData && typeof resultData.message === 'string'
+						? resultData.message
+						: result.type === 'error'
+							? result.error.message
+							: 'The enrichment rerun could not be queued.';
+
+				if (result.type === 'success') {
+					toasts.success(message);
+					if (enrichmentDossierBrand) {
+						await openEnrichmentDossier(enrichmentDossierBrand);
+					}
 					await invalidateAll();
 					return;
 				}
@@ -2091,15 +2126,33 @@
 				</button>
 			</div>
 			<div class="min-h-0 flex-1 overflow-y-auto p-5">
+				<form
+					bind:this={enrichmentRerunForm}
+					method="post"
+					action="?/rerunEnrichment"
+					use:enhance={enrichmentRerunEnhance()}
+					class="hidden"
+				>
+					<input type="hidden" name="brand_slug" value={enrichmentDossierBrand.slug} />
+				</form>
 				{#if enrichmentDossierLoading}
 					<p class="py-10 text-center text-sm text-zinc-500">Loading enrichment dossier…</p>
 				{:else if enrichmentDossierError}
 					<p class="py-10 text-center text-sm text-red-700">{enrichmentDossierError}</p>
 				{:else if enrichmentDossier}
-					<EnrichmentDossierCard dossier={enrichmentDossier} />
+					<EnrichmentDossierCard
+						dossier={enrichmentDossier}
+						{pendingAction}
+						onRerun={() => enrichmentRerunForm?.requestSubmit()}
+					/>
 				{:else}
 					<p class="py-10 text-center text-sm text-zinc-500">
 						This brand does not have an enrichment dossier yet.
+					</p>
+				{/if}
+				{#if modalError}
+					<p class="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+						{modalError}
 					</p>
 				{/if}
 			</div>

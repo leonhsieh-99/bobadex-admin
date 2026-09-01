@@ -18,3 +18,23 @@ export function googleMapsCoordinatesUrl(lat: number | null, lon: number | null)
 export function coordinatesLabel(lat: number | null, lon: number | null) {
 	return googleMapsCoordinatesUrl(lat, lon) ? `${lat?.toFixed(5)}, ${lon?.toFixed(5)}` : null;
 }
+
+export function formatPostalAddress(parts: {
+	street?: string | null;
+	locality?: string | null;
+	admin1?: string | null;
+	postalCode?: string | null;
+}) {
+	const street = parts.street?.trim() || '';
+	const locality = parts.locality?.trim() || '';
+	const admin1 = parts.admin1?.trim() || '';
+	const postalCode = parts.postalCode?.trim() || '';
+	const cityLine = [locality, [admin1, postalCode].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+	if (street && locality && street.toLowerCase().includes(locality.toLowerCase())) return street;
+	return [street, cityLine].filter(Boolean).join(', ') || null;
+}
+
+export function foursquarePlaceUrl(providerRecordId: string | null | undefined) {
+	const id = providerRecordId?.trim();
+	return id ? `https://foursquare.com/placemakers/review-place/${encodeURIComponent(id)}` : null;
+}

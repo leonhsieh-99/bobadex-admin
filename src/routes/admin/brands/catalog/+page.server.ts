@@ -250,6 +250,53 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 };
 
 export const actions: Actions = {
+	rerunEnrichment: async ({ request, locals }) => {
+		if (!locals.isAdmin) {
+			return fail(403, {
+				ok: false,
+				action: 'rerunEnrichment',
+				message: 'Admin access required.'
+			});
+		}
+		const form = await request.formData();
+		const slug = formValue(form, 'brand_slug');
+		if (!slug) {
+			return fail(400, {
+				ok: false,
+				action: 'rerunEnrichment',
+				message: 'A brand slug is required.'
+			});
+		}
+
+		const { data, error } = await locals.supabase.rpc('admin_queue_brand_enrichment', {
+			p_brand_slug: slug,
+			p_location_anchor: null,
+			p_expected_canonical_name: null,
+			p_expected_origin: null,
+			p_expected_official_website: null,
+			p_verified_source_kind: 'unknown',
+			p_verified_source_url: null,
+			p_note: 'Queued from the brand catalog enrichment dossier.'
+		});
+		if (error) {
+			console.error('[brand catalog] rerunEnrichment', error);
+			return fail(400, {
+				ok: false,
+				action: 'rerunEnrichment',
+				message: error.message || 'The enrichment rerun could not be queued.'
+			});
+		}
+
+		const payload = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+		const jobId = typeof payload.job_id === 'string' ? payload.job_id : null;
+		return {
+			ok: true,
+			action: 'rerunEnrichment',
+			jobId,
+			message: `Queued enrichment rerun ${jobId ?? ''} for ${slug}.`.replace('  ', ' ')
+		};
+	},
+
 	updateIdentity: async ({ request, locals }) => {
 		if (!locals.isAdmin) return fail(403, { ok: false, message: 'Admin access required.' });
 		const form = await request.formData();

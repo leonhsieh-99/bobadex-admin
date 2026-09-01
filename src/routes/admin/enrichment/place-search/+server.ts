@@ -15,14 +15,33 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		.filter((level) => levels.has(level));
 	if (query.length < 2) return json({ places: [] });
 
+	const importable = url.searchParams.get('importable') === '1';
 	const { data, error } = await supabaseAdmin().rpc('admin_search_geo_places', {
 		p_query: query,
-		p_levels: requestedLevels.length ? requestedLevels : allLevels,
-		p_limit: 12
+		p_levels: requestedLevels.length ? requestedLevels : importable ? ['admin1'] : allLevels,
+		p_limit: importable ? 20 : 12
 	});
 	if (error) {
 		console.error('[enrichment] place search', { query, requestedLevels, error });
 		return json({ error: error.message }, { status: 500 });
 	}
-	return json({ places: data ?? [] });
+
+	let places = (data ?? []) as Array<{ place_id: string }>;
+	if (importable && places.length) {
+		const { data: bounded, error: boundaryError } = await supabaseAdmin()
+			.from('geo_place_boundaries')
+			.select('geo_place_id')
+			.in(
+				'geo_place_id',
+				places.map((place: { place_id: string }) => place.place_id)
+			);
+		if (boundaryError) {
+			console.error('[enrichment] importable place filter', boundaryError);
+			return json({ error: boundaryError.message }, { status: 500 });
+		}
+		const allowed = new Set((bounded ?? []).map((row) => row.geo_place_id));
+		places = places.filter((place: { place_id: string }) => allowed.has(place.place_id));
+	}
+
+	return json({ places });
 };

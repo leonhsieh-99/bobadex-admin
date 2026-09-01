@@ -1,11 +1,11 @@
 <script lang="ts">
-	type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'retry_waiting';
+	type JobStatus = string;
 
 	export let data: {
 		metrics: {
 			reviewQueue: number;
 			needsReview: number;
-			regionReconciliation: number;
+			exceptions: number;
 			activeJobs: number;
 			failedJobs: number;
 			pendingIntake: number;
@@ -24,36 +24,34 @@
 		};
 		pipeline: {
 			candidateStatusCounts: Record<string, number>;
-			llmStatusCounts: Record<string, number>;
-			jobStatusCounts: Record<string, number>;
+			shardCounts: Record<string, number>;
 		};
 		latestImport: {
 			id: string;
 			status: JobStatus;
+			scope_label: string;
 			region_key: string | null;
 			created_at: string;
 			started_at: string | null;
 			finished_at: string | null;
 			error_text: string | null;
-			tileCounts: Record<string, number>;
-			completedTiles: number;
-			tileTotal: number;
+			providers: string[];
+			completedShards: number;
+			shardTotal: number;
 		} | null;
 		recentImports: Array<{
 			id: string;
 			status: JobStatus;
+			scope_label: string;
 			region_key: string | null;
 			created_at: string;
 		}>;
 		reviewCandidates: Array<{
 			id: string;
-			name: string | null;
+			canonical_name: string | null;
 			process_status: string;
-			llm_review_status: string | null;
-			match_score: number | null;
 			region_key: string | null;
-			pipeline_state: string;
-			created_at: string;
+			updated_at: string;
 		}>;
 		stagingRows: Array<{
 			id: string;
@@ -93,11 +91,12 @@
 		return 'bg-zinc-100 text-zinc-700';
 	}
 
-	$: importProgress = data.latestImport?.tileTotal
-		? Math.round((data.latestImport.completedTiles / data.latestImport.tileTotal) * 100)
+	$: importProgress = data.latestImport?.shardTotal
+		? Math.round((data.latestImport.completedShards / data.latestImport.shardTotal) * 100)
 		: 0;
-	$: autoMatched = data.pipeline.candidateStatusCounts.merged ?? 0;
-	$: llmReviewed = data.pipeline.llmStatusCounts.reviewed ?? 0;
+	$: resolved =
+		(data.pipeline.candidateStatusCounts.resolved ?? 0) +
+		(data.pipeline.candidateStatusCounts.resolved_existing ?? 0);
 </script>
 
 <svelte:head><title>Dashboard | Bobadex Admin</title></svelte:head>
@@ -139,7 +138,7 @@
 				<span class="h-2.5 w-2.5 rounded-full bg-amber-400"></span>
 			</div>
 			<p class="mt-3 text-3xl font-semibold text-zinc-950">{number.format(data.metrics.reviewQueue)}</p>
-			<p class="mt-1 text-xs text-zinc-500">{data.metrics.needsReview} manual · {data.metrics.regionReconciliation} region reconciliation</p>
+			<p class="mt-1 text-xs text-zinc-500">{data.metrics.needsReview} manual · {data.metrics.exceptions} exceptions</p>
 		</a>
 
 		<a href="/admin/imports" class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition hover:border-zinc-300 hover:shadow">
@@ -201,8 +200,7 @@
 			<p class="mt-1 text-sm text-zinc-500">Work waiting on an admin decision or a failed pipeline step.</p>
 		</div>
 		<div class="divide-y divide-zinc-200 border-y border-zinc-200">
-			<a href="/admin/reviews?tab=manual" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Location manual reviews</span><strong class="tabular-nums text-zinc-950">{data.metrics.needsReview}</strong></a>
-			<a href="/admin/reviews?tab=region" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Region reconciliation</span><strong class="tabular-nums text-zinc-950">{data.metrics.regionReconciliation}</strong></a>
+			<a href="/admin/reviews?tab=manual" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">POI exceptions and manual reviews</span><strong class="tabular-nums text-zinc-950">{data.metrics.reviewQueue}</strong></a>
 			<a href="/admin/enrichment" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Brand dossiers</span><strong class="tabular-nums text-zinc-950">{data.metrics.dossiersNeedingReview}</strong></a>
 			<a href="/admin/imports" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Failed pipeline jobs</span><strong class="tabular-nums {data.metrics.failedJobs + data.metrics.failedEnrichmentJobs ? 'text-red-700' : 'text-zinc-950'}">{data.metrics.failedJobs + data.metrics.failedEnrichmentJobs}</strong></a>
 			<a href="/admin/brands" class="flex items-center justify-between gap-4 px-1 py-3 hover:bg-zinc-50"><span class="text-sm text-zinc-700">Brand submissions and reports</span><strong class="tabular-nums text-zinc-950">{data.metrics.pendingIntake}</strong></a>
@@ -225,12 +223,12 @@
 					<p class="text-sm font-semibold text-zinc-900">1. Ingest</p>
 					<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(data.latestImport?.status ?? 'idle')}">{data.latestImport?.status ?? 'No run'}</span>
 				</div>
-				<p class="mt-3 text-2xl font-semibold text-zinc-950">{data.latestImport?.region_key ?? 'No region'}</p>
+					<p class="mt-3 text-2xl font-semibold text-zinc-950">{data.latestImport?.scope_label ?? 'No region'}</p>
 				{#if data.latestImport}
 					<div class="mt-4 h-2 overflow-hidden rounded-full bg-zinc-100">
 						<div class="h-full bg-emerald-500" style={`width: ${Math.min(importProgress, 100)}%`}></div>
 					</div>
-					<p class="mt-2 text-xs text-zinc-500">{data.latestImport.completedTiles} of {data.latestImport.tileTotal} tiles · started {relativeDate(data.latestImport.started_at ?? data.latestImport.created_at)}</p>
+					<p class="mt-2 text-xs text-zinc-500">{data.latestImport.completedShards} of {data.latestImport.shardTotal} shards · started {relativeDate(data.latestImport.started_at ?? data.latestImport.created_at)}</p>
 				{:else}
 					<p class="mt-2 text-sm text-zinc-500">Start a region import to populate the pipeline.</p>
 				{/if}
@@ -238,27 +236,27 @@
 
 			<div class="border-b border-zinc-200 py-5 lg:border-b-0 lg:px-6">
 				<div class="flex items-center justify-between">
-					<p class="text-sm font-semibold text-zinc-900">2. Deterministic matching</p>
+					<p class="text-sm font-semibold text-zinc-900">2. Candidate resolution</p>
 					<span class="text-xs text-zinc-500">current dataset</span>
 				</div>
-				<p class="mt-3 text-2xl font-semibold text-zinc-950">{number.format(autoMatched)} merged</p>
+				<p class="mt-3 text-2xl font-semibold text-zinc-950">{number.format(resolved)} resolved</p>
 				<div class="mt-4 grid grid-cols-3 gap-2 text-xs">
-					<div><p class="font-semibold text-zinc-900">{data.pipeline.candidateStatusCounts.approved ?? 0}</p><p class="text-zinc-500">approved</p></div>
-					<div><p class="font-semibold text-zinc-900">{data.pipeline.candidateStatusCounts.needs_review ?? 0}</p><p class="text-zinc-500">review</p></div>
-					<div><p class="font-semibold text-red-700">{data.pipeline.candidateStatusCounts.blocked ?? 0}</p><p class="text-zinc-500">blocked</p></div>
+					<div><p class="font-semibold text-zinc-900">{data.pipeline.candidateStatusCounts.ready_for_enrichment ?? 0}</p><p class="text-zinc-500">ready</p></div>
+					<div><p class="font-semibold text-zinc-900">{data.metrics.reviewQueue}</p><p class="text-zinc-500">exceptions</p></div>
+					<div><p class="font-semibold text-red-700">{data.pipeline.candidateStatusCounts.known_negative ?? 0}</p><p class="text-zinc-500">negatives</p></div>
 				</div>
 			</div>
 
 			<div class="py-5 lg:pl-6">
 				<div class="flex items-center justify-between">
-					<p class="text-sm font-semibold text-zinc-900">3. LLM review</p>
-					<a href="/admin/imports#llm-review" class="text-xs font-medium text-zinc-600 hover:text-zinc-950">Manage</a>
+					<p class="text-sm font-semibold text-zinc-900">3. Provider shards</p>
+					<a href="/admin/imports" class="text-xs font-medium text-zinc-600 hover:text-zinc-950">Manage</a>
 				</div>
-				<p class="mt-3 text-2xl font-semibold text-zinc-950">{number.format(llmReviewed)} reviewed</p>
+				<p class="mt-3 text-2xl font-semibold text-zinc-950">{number.format(data.pipeline.shardCounts.succeeded ?? 0)} succeeded</p>
 				<div class="mt-4 grid grid-cols-3 gap-2 text-xs">
-					<div><p class="font-semibold text-zinc-900">{data.pipeline.llmStatusCounts.pending ?? 0}</p><p class="text-zinc-500">pending</p></div>
-					<div><p class="font-semibold text-blue-700">{data.pipeline.llmStatusCounts.processing ?? 0}</p><p class="text-zinc-500">processing</p></div>
-					<div><p class="font-semibold text-red-700">{data.pipeline.llmStatusCounts.failed ?? 0}</p><p class="text-zinc-500">failed</p></div>
+					<div><p class="font-semibold text-zinc-900">{data.pipeline.shardCounts.queued ?? 0}</p><p class="text-zinc-500">queued</p></div>
+					<div><p class="font-semibold text-blue-700">{data.pipeline.shardCounts.processing ?? 0}</p><p class="text-zinc-500">processing</p></div>
+					<div><p class="font-semibold text-red-700">{data.pipeline.shardCounts.failed ?? 0}</p><p class="text-zinc-500">failed</p></div>
 				</div>
 			</div>
 		</div>
@@ -275,15 +273,12 @@
 			</div>
 			<div class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
 				{#each data.reviewCandidates as candidate}
-					<a href={`/admin/reviews?tab=${candidate.pipeline_state === 'waiting_region_reconciliation' ? 'region' : 'manual'}&q=${encodeURIComponent(candidate.name ?? '')}`} class="flex items-center justify-between gap-4 border-b border-zinc-100 px-4 py-3 last:border-b-0 hover:bg-zinc-50">
+					<a href={`/admin/reviews?tab=manual&q=${encodeURIComponent(candidate.canonical_name ?? '')}`} class="flex items-center justify-between gap-4 border-b border-zinc-100 px-4 py-3 last:border-b-0 hover:bg-zinc-50">
 						<div class="min-w-0">
-							<p class="truncate text-sm font-medium text-zinc-900">{candidate.name ?? 'Unnamed candidate'}</p>
-							<p class="mt-0.5 text-xs text-zinc-500">{candidate.region_key ?? 'Unknown region'} · LLM {candidate.llm_review_status ?? 'unassigned'} · {relativeDate(candidate.created_at)}</p>
+							<p class="truncate text-sm font-medium text-zinc-900">{candidate.canonical_name ?? 'Unnamed candidate'}</p>
+							<p class="mt-0.5 text-xs text-zinc-500">{candidate.region_key ?? 'Unknown region'} · {relativeDate(candidate.updated_at)}</p>
 						</div>
-						<div class="flex shrink-0 items-center gap-3">
-							{#if candidate.match_score != null}<span class="text-xs tabular-nums text-zinc-500">{Math.round(candidate.match_score * 100)}%</span>{/if}
-							<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(candidate.process_status)}">{candidate.process_status.replace('_', ' ')}</span>
-						</div>
+						<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(candidate.process_status)}">{candidate.process_status.replaceAll('_', ' ')}</span>
 					</a>
 				{/each}
 				{#if data.reviewCandidates.length === 0}
@@ -304,7 +299,7 @@
 				{#each data.recentImports as job}
 					<div class="flex items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3 last:border-b-0">
 						<div>
-							<p class="text-sm font-medium text-zinc-900">{job.region_key ?? 'Unknown region'}</p>
+							<p class="text-sm font-medium text-zinc-900">{job.scope_label}</p>
 							<p class="mt-0.5 text-xs text-zinc-500">{relativeDate(job.created_at)}</p>
 						</div>
 						<span class="rounded px-2 py-1 text-xs font-medium {statusClasses(job.status)}">{job.status.replace('_', ' ')}</span>
@@ -321,7 +316,7 @@
 		<div class="mb-3 flex items-center justify-between">
 			<div>
 				<h3 class="text-lg font-semibold text-zinc-950">Incoming admin work</h3>
-				<p class="mt-1 text-sm text-zinc-500">Requests originating outside the OSM pipeline.</p>
+				<p class="mt-1 text-sm text-zinc-500">Requests originating outside the POI pipeline.</p>
 			</div>
 		</div>
 		<div class="grid gap-4 sm:grid-cols-2">

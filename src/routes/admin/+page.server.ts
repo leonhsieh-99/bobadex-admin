@@ -1,43 +1,23 @@
 import type { PageServerLoad } from './$types';
+import { supabaseAdmin } from '$lib/supabase.server';
+import {
+	countByStatus,
+	increment,
+	loadPipelineRuns,
+	loadProviderRuns,
+	loadShards
+} from '$lib/server/poi-import.server';
 
-type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'retry_waiting';
-type CandidateStatus =
-	| 'pending'
-	| 'merged'
-	| 'approved'
-	| 'needs_review'
-	| 'blocked'
-	| 'rejected';
-
-type JobRow = {
-	id: string;
-	status: JobStatus;
-	job_kind: 'region' | 'tile';
-	parent_job_id: string | null;
-	region_key: string | null;
-	tile_index: number | null;
-	total_tiles: number | null;
-	created_at: string;
-	started_at: string | null;
-	finished_at: string | null;
-	error_text: string | null;
-};
-
-type CandidateSummaryRow = {
-	process_status: CandidateStatus;
-	llm_review_status: 'pending' | 'processing' | 'reviewed' | 'failed' | null;
-	pipeline_state: string;
+type CandidateStatusRow = {
+	process_status: string;
 };
 
 type ReviewCandidateRow = {
 	id: string;
-	name: string | null;
-	process_status: CandidateStatus;
-	llm_review_status: string | null;
-	match_score: number | null;
+	canonical_name: string | null;
+	process_status: string;
 	region_key: string | null;
-	pipeline_state: string;
-	created_at: string;
+	updated_at: string;
 };
 
 type StagingRow = {
@@ -66,22 +46,18 @@ type CronStatusPayload = {
 
 const expectedCronSignals = [
 	'drain-osm-import-queue',
-	'process_osm_candidates_batch',
-	'score-osm-candidates-batch',
-	'admin_apply_auto_osm_llm_reviews',
+	'drain-poi-resolution',
 	'process-brand-enrichment-jobs',
-	'enqueue_due_brand_refreshes'
+	'enqueue_due_brand_refreshes',
+	'drain-brand-location-geocode'
 ];
-
-function increment(record: Record<string, number>, key: string) {
-	record[key] = (record[key] ?? 0) + 1;
-}
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+	const admin = supabaseAdmin();
 
 	const [
-		jobsResult,
+		pipelineRuns,
 		candidateSummaryResult,
 		reviewCandidatesResult,
 		stagingResult,
@@ -95,25 +71,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 		integrityFlagsResult,
 		cronStatusResult
 	] = await Promise.all([
-		locals.supabase
+		loadPipelineRuns(25).catch((error) => ({ error })),
+		admin.schema('ingest').from('poi_candidates').select('process_status').limit(10000),
+		admin
 			.schema('ingest')
-			.from('osm_import_jobs')
-			.select(
-				'id,status,job_kind,parent_job_id,region_key,tile_index,total_tiles,created_at,started_at,finished_at,error_text'
-			)
-			.order('created_at', { ascending: false })
-			.limit(5000),
-		locals.supabase
-			.schema('ingest')
-			.from('osm_candidate_pipeline_states')
-			.select('process_status,llm_review_status,pipeline_state')
-			.limit(10000),
-		locals.supabase
-			.schema('ingest')
-			.from('osm_candidate_pipeline_states')
-			.select('id,name,process_status,llm_review_status,match_score,region_key,pipeline_state,created_at')
-			.in('pipeline_state', ['waiting_manual_review', 'waiting_region_reconciliation'])
-			.order('created_at', { ascending: false })
+			.from('poi_candidates')
+			.select('id,canonical_name,process_status,region_key,updated_at')
+			.in('process_status', ['needs_exception_resolution', 'needs_manual_review'])
+			.order('updated_at', { ascending: false })
 			.limit(6),
 		locals.supabase
 			.schema('ingest')
@@ -134,23 +99,19 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.from('brands')
 			.select('*', { count: 'exact', head: true })
 			.gte('created_at', sevenDaysAgo),
-		locals.supabase
-			.schema('ingest')
-			.from('brand_enrichment_jobs')
-			.select('status')
-			.limit(10000),
-		locals.supabase
+		admin.schema('ingest').from('brand_enrichment_jobs').select('status').limit(10000),
+		admin
 			.schema('mod')
 			.from('brand_dossiers')
 			.select('*', { count: 'exact', head: true })
 			.eq('approval_status', 'needs_review'),
 		locals.supabase.from('brand_profiles').select('*', { count: 'exact', head: true }),
-		locals.supabase
+		admin
 			.schema('mod')
 			.from('brand_dossiers')
 			.select('*', { count: 'exact', head: true })
 			.lte('refresh_after', new Date().toISOString()),
-		locals.supabase
+		admin
 			.schema('mod')
 			.from('brand_integrity_flags')
 			.select('*', { count: 'exact', head: true })
@@ -159,8 +120,24 @@ export const load: PageServerLoad = async ({ locals }) => {
 		locals.supabase.rpc('admin_pipeline_cron_status')
 	]);
 
+	const pipelineError =
+		pipelineRuns && typeof pipelineRuns === 'object' && 'error' in pipelineRuns
+			? (pipelineRuns as { error: { message?: string } | unknown }).error
+			: null;
+	const pipelineErrorMessage =
+		pipelineError && typeof pipelineError === 'object' && 'message' in pipelineError
+			? String(pipelineError.message)
+			: pipelineError
+				? String(pipelineError)
+				: null;
+	const runs = Array.isArray(pipelineRuns) ? pipelineRuns : [];
+	const latestRun = runs[0] ?? null;
+	const providerRuns = latestRun ? await loadProviderRuns([latestRun.id]).catch(() => []) : [];
+	const shards = latestRun ? await loadShards(providerRuns.map((run) => run.id)).catch(() => []) : [];
+	const shardCounts = countByStatus(shards);
+
 	const sourceErrors = [
-		['Imports', jobsResult.error],
+		['Imports', pipelineErrorMessage],
 		['Candidates', candidateSummaryResult.error ?? reviewCandidatesResult.error],
 		['Brand submissions', stagingResult.error],
 		['Reports', reportsResult.error],
@@ -174,44 +151,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.filter((entry) => entry[1])
 		.map(([source]) => String(source));
 
-	for (const result of [
-		jobsResult,
-		candidateSummaryResult,
-		reviewCandidatesResult,
-		stagingResult,
-		reportsResult,
-		brandCountResult,
-		newBrandCountResult,
-		enrichmentJobsResult,
-		dossiersResult,
-		profilesResult,
-		dueRefreshesResult,
-		integrityFlagsResult
-	]) {
-		if (result.error) console.error('[dashboard]', result.error);
-	}
-
-	const jobs = (jobsResult.data ?? []) as JobRow[];
-	const candidates = (candidateSummaryResult.data ?? []) as CandidateSummaryRow[];
+	const candidates = (candidateSummaryResult.data ?? []) as CandidateStatusRow[];
 	const candidateStatusCounts: Record<string, number> = {};
-	const llmStatusCounts: Record<string, number> = {};
-	const pipelineStateCounts: Record<string, number> = {};
-	const jobStatusCounts: Record<string, number> = {};
-
-	for (const row of candidates) {
-		increment(candidateStatusCounts, row.process_status);
-		increment(pipelineStateCounts, row.pipeline_state);
-		increment(llmStatusCounts, row.llm_review_status ?? 'unassigned');
-	}
-	for (const job of jobs) increment(jobStatusCounts, job.status);
-
-	const regionJobs = jobs.filter((job) => job.job_kind === 'region');
-	const latestRegionJob = regionJobs[0] ?? null;
-	const latestTiles = latestRegionJob
-		? jobs.filter((job) => job.parent_job_id === latestRegionJob.id)
-		: [];
-	const latestTileCounts: Record<string, number> = {};
-	for (const tile of latestTiles) increment(latestTileCounts, tile.status);
+	for (const row of candidates) increment(candidateStatusCounts, row.process_status);
 
 	const stagingRows = (stagingResult.data ?? []) as StagingRow[];
 	const reportRows = (reportsResult.data ?? []) as ReportRow[];
@@ -232,18 +174,20 @@ export const load: PageServerLoad = async ({ locals }) => {
 		? null
 		: expectedCronSignals.filter((signal) => !cronSearchText.includes(signal.toLowerCase())).length;
 
+	const activeImportStatuses = ['awaiting_adapters', 'queued', 'running', 'partial'];
+	const activeJobs = runs.filter((run) => activeImportStatuses.includes(run.status)).length;
+	const failedJobs =
+		runs.filter((run) => run.status === 'failed').length + (shardCounts.failed ?? 0);
+
 	return {
 		metrics: {
 			reviewQueue:
-				(pipelineStateCounts.waiting_manual_review ?? 0) +
-				(pipelineStateCounts.waiting_region_reconciliation ?? 0),
-			needsReview: pipelineStateCounts.waiting_manual_review ?? 0,
-			regionReconciliation: pipelineStateCounts.waiting_region_reconciliation ?? 0,
-			activeJobs:
-				(jobStatusCounts.queued ?? 0) +
-				(jobStatusCounts.running ?? 0) +
-				(jobStatusCounts.retry_waiting ?? 0),
-			failedJobs: jobStatusCounts.failed ?? 0,
+				(candidateStatusCounts.needs_exception_resolution ?? 0) +
+				(candidateStatusCounts.needs_manual_review ?? 0),
+			needsReview: candidateStatusCounts.needs_manual_review ?? 0,
+			exceptions: candidateStatusCounts.needs_exception_resolution ?? 0,
+			activeJobs,
+			failedJobs,
 			pendingIntake: (stagingResult.count ?? 0) + (reportsResult.count ?? 0),
 			pendingBrands: stagingResult.count ?? 0,
 			pendingReports: reportsResult.count ?? 0,
@@ -251,8 +195,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			newBrands: newBrandCountResult.count ?? 0,
 			totalCandidates: candidates.length,
 			enrichmentQueue:
-				(enrichmentJobStatusCounts.queued ?? 0) +
-				(enrichmentJobStatusCounts.running ?? 0),
+				(enrichmentJobStatusCounts.queued ?? 0) + (enrichmentJobStatusCounts.running ?? 0),
 			failedEnrichmentJobs: enrichmentJobStatusCounts.failed ?? 0,
 			dossiersNeedingReview: dossiersResult.count ?? 0,
 			publishedProfiles: profilesResult.count ?? 0,
@@ -262,21 +205,33 @@ export const load: PageServerLoad = async ({ locals }) => {
 		},
 		pipeline: {
 			candidateStatusCounts,
-			llmStatusCounts,
-			jobStatusCounts
+			shardCounts
 		},
-		latestImport: latestRegionJob
+		latestImport: latestRun
 			? {
-					...latestRegionJob,
-					tileCounts: latestTileCounts,
-					completedTiles:
-						(latestTileCounts.succeeded ?? 0) +
-						(latestTileCounts.failed ?? 0) +
-						(latestTileCounts.cancelled ?? 0),
-					tileTotal: latestTiles.length || latestRegionJob.total_tiles || 0
+					id: latestRun.id,
+					status: latestRun.status,
+					scope_label: latestRun.scope_label,
+					region_key: latestRun.region_key,
+					created_at: latestRun.created_at,
+					started_at: latestRun.started_at,
+					finished_at: latestRun.completed_at,
+					error_text: latestRun.last_error,
+					providers: latestRun.requested_providers,
+					completedShards:
+						(shardCounts.succeeded ?? 0) +
+						(shardCounts.failed ?? 0) +
+						(shardCounts.cancelled ?? 0),
+					shardTotal: shards.length
 				}
 			: null,
-		recentImports: regionJobs.slice(0, 5),
+		recentImports: runs.slice(0, 5).map((run) => ({
+			id: run.id,
+			status: run.status,
+			scope_label: run.scope_label,
+			region_key: run.region_key,
+			created_at: run.created_at
+		})),
 		reviewCandidates: (reviewCandidatesResult.data ?? []) as ReviewCandidateRow[],
 		stagingRows,
 		reportRows,
