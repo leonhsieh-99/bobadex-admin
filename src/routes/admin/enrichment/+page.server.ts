@@ -1,6 +1,7 @@
 import { fail } from '@sveltejs/kit';
 import { mergeBrands } from '$lib/server/brand-merge.server';
 import { isBrandMatchPolicy } from '$lib/brand-match-policy';
+import { brandPaletteFromBrief } from '$lib/enrichment-dossier';
 import { supabaseAdmin } from '$lib/supabase.server';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -770,6 +771,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 					currentDossier
 						? (dossier?.research_topics ?? run?.research_topics ?? null)
 						: (run?.research_topics ?? null)
+				),
+				brand_palette: brandPaletteFromBrief(
+					currentDossier
+						? (dossier?.creative_brief ?? run?.creative_brief_draft ?? null)
+						: (run?.creative_brief_draft ?? null)
 				),
 				research_route:
 					readStringMetric(metrics, 'research_route') ??

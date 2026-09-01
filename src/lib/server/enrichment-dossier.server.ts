@@ -31,7 +31,7 @@ export async function loadBrandEnrichmentDossier(
 		.schema('mod')
 		.from('brand_dossiers')
 		.select(
-			'brand_slug,research_run_id,approval_status,customer_summary,public_summary_draft,research_topics,quality_metrics,updated_at,review_reasons'
+			'brand_slug,research_run_id,approval_status,customer_summary,public_summary_draft,research_topics,creative_brief,quality_metrics,updated_at,review_reasons'
 		)
 		.eq('brand_slug', brandSlug)
 		.maybeSingle();
@@ -52,7 +52,7 @@ export async function loadBrandEnrichmentDossier(
 					.schema('ingest')
 					.from('brand_research_runs')
 					.select(
-						'id,model,researcher_version,input_snapshot,customer_summary_draft,public_summary_draft,research_topics,quality_metrics,overall_confidence'
+						'id,model,researcher_version,input_snapshot,customer_summary_draft,public_summary_draft,research_topics,creative_brief_draft,quality_metrics,overall_confidence'
 					)
 					.eq('id', runId)
 					.maybeSingle()
@@ -112,6 +112,7 @@ export async function loadBrandEnrichmentDossier(
 			customer_summary: dossier.customer_summary,
 			public_summary_draft: dossier.public_summary_draft,
 			research_topics: (dossier.research_topics ?? null) as JsonRecord | null,
+			creative_brief: (dossier.creative_brief ?? null) as JsonRecord | string | null,
 			quality_metrics: qualityMetrics,
 			updated_at: dossier.updated_at,
 			review_reasons: dossier.review_reasons ?? null,
@@ -136,7 +137,8 @@ export async function loadBrandEnrichmentDossier(
 						customer_summary_draft: run.customer_summary_draft,
 						public_summary_draft: run.public_summary_draft,
 						research_topics: (run.research_topics ?? null) as JsonRecord | null,
-						quality_metrics: (run.quality_metrics ?? null) as JsonRecord | null
+						quality_metrics: (run.quality_metrics ?? null) as JsonRecord | null,
+						creative_brief_draft: (run.creative_brief_draft ?? null) as JsonRecord | string | null
 					}
 				: null,
 			claims: ((claimsResult.data ?? []) as EnrichmentDossierView['claims']),

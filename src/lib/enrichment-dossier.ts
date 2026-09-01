@@ -18,6 +18,7 @@ export type EnrichmentDossierView = {
 		credibleSources: number | null;
 		independentSources: number | null;
 	};
+	creative_brief?: Record<string, unknown> | string | null;
 	run: {
 		id: string;
 		model: string | null;
@@ -27,6 +28,7 @@ export type EnrichmentDossierView = {
 		public_summary_draft?: string | null;
 		research_topics?: Record<string, unknown> | null;
 		quality_metrics?: Record<string, unknown> | null;
+		creative_brief_draft?: Record<string, unknown> | string | null;
 	} | null;
 	claims: Array<{
 		claim_key: string;
@@ -73,6 +75,88 @@ type ResearchTopic = {
 	summary?: string;
 	route?: ResearchRoute;
 };
+
+export type BrandPaletteColor = {
+	name: string;
+	approx_hex: string | null;
+	role: string;
+};
+
+export type BrandPalette = {
+	coverage: TopicCoverage | undefined;
+	colors: BrandPaletteColor[];
+};
+
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+	if (!value) return null;
+	if (typeof value === 'string') {
+		try {
+			const parsed = JSON.parse(value) as unknown;
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				return parsed as Record<string, unknown>;
+			}
+		} catch {
+			return null;
+		}
+		return null;
+	}
+	if (typeof value === 'object' && !Array.isArray(value)) {
+		return value as Record<string, unknown>;
+	}
+	return null;
+}
+
+export function parseBrandPalette(value: unknown): BrandPalette | null {
+	if (value == null) return null;
+	const raw = jsonRecord(value);
+	if (!raw) return { coverage: 'unavailable', colors: [] };
+	const coverageRaw = raw.coverage;
+	const coverage: TopicCoverage | undefined =
+		coverageRaw === 'supported' ||
+		coverageRaw === 'partial' ||
+		coverageRaw === 'unavailable' ||
+		coverageRaw === 'not_applicable'
+			? coverageRaw
+			: undefined;
+	const colors = Array.isArray(raw.colors)
+		? raw.colors.flatMap((item) => {
+				const color = jsonRecord(item);
+				if (!color) return [];
+				const name = typeof color.name === 'string' ? color.name.trim() : '';
+				if (!name) return [];
+				const hex = typeof color.approx_hex === 'string' ? color.approx_hex.trim() : '';
+				return [
+					{
+						name,
+						approx_hex: /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toUpperCase() : null,
+						role: typeof color.role === 'string' ? color.role : 'accent'
+					}
+				];
+			})
+		: [];
+	return { coverage, colors };
+}
+
+export function dossierCreativeBrief(
+	dossier: Pick<EnrichmentDossierView, 'creative_brief' | 'run'> & {
+		creative_brief?: unknown;
+		run?: { creative_brief_draft?: unknown } | null;
+	}
+) {
+	return jsonRecord(dossier.creative_brief) ?? jsonRecord(dossier.run?.creative_brief_draft);
+}
+
+export function brandPaletteFromBrief(brief: unknown): BrandPalette | null {
+	const record = jsonRecord(brief);
+	if (!record || !('brand_palette' in record)) return null;
+	return parseBrandPalette(record.brand_palette);
+}
+
+export function dossierBrandPalette(
+	dossier: Parameters<typeof dossierCreativeBrief>[0]
+): BrandPalette | null {
+	return brandPaletteFromBrief(dossierCreativeBrief(dossier));
+}
 
 export const researchTopicRows = [
 	{ key: 'identity', label: 'Identity' },

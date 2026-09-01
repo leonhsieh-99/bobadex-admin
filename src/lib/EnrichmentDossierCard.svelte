@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import BrandPaletteBlock from '$lib/BrandPaletteBlock.svelte';
 	import {
 		approvalStatusClass,
 		approvalStatusLabel,
 		automaticGeography,
 		canonicalResearchLocations,
+		dossierBrandPalette,
 		dossierResearchTopics,
 		flagDescription,
 		flagSourceUrls,
@@ -153,6 +155,9 @@
 							<p class="mt-1 text-xs leading-5 text-zinc-600">
 								{topic?.summary || 'No supported finding was produced for this topic.'}
 							</p>
+							{#if row.key === 'visual_identity'}
+								<BrandPaletteBlock palette={dossierBrandPalette(dossier)} />
+							{/if}
 						</div>
 					{/each}
 				</div>

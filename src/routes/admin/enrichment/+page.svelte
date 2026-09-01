@@ -4,9 +4,11 @@
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
 	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
+	import BrandPaletteBlock from '$lib/BrandPaletteBlock.svelte';
 	import EnrichmentDossierCard from '$lib/EnrichmentDossierCard.svelte';
 	import GeoPlaceTypeahead from '$lib/GeoPlaceTypeahead.svelte';
 	import { isBrandMatchPolicy, type BrandMatchPolicy } from '$lib/brand-match-policy';
+	import type { BrandPalette } from '$lib/enrichment-dossier';
 	import { coordinatesLabel, googleMapsCoordinatesUrl } from '$lib/maps';
 	import { toasts } from '$lib/toast';
 	import { onMount } from 'svelte';
@@ -326,6 +328,7 @@
 			brand_status: string | null;
 			markets: Array<{ name: string; level: string | null; confidence: number | null }>;
 			research_topics: ResearchTopics | null;
+			brand_palette: BrandPalette | null;
 			research_route: string | null;
 			review_reasons: string[];
 			identity_confidence: number | null;
@@ -1646,6 +1649,9 @@
 																			{topic?.summary ||
 																				'No supported finding was produced for this topic.'}
 																		</p>
+																		{#if row.key === 'visual_identity'}
+																			<BrandPaletteBlock palette={job.details.brand_palette} />
+																		{/if}
 																	</div>
 																{/each}
 															</div>
