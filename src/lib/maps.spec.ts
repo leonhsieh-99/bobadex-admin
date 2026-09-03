@@ -3,7 +3,9 @@ import {
 	coordinatesLabel,
 	formatPostalAddress,
 	foursquarePlaceUrl,
-	googleMapsCoordinatesUrl
+	googleMapsCoordinatesUrl,
+	locationEvidenceHref,
+	locationEvidenceLabel
 } from './maps';
 
 describe('Google Maps coordinate links', () => {
@@ -55,5 +57,43 @@ describe('foursquarePlaceUrl', () => {
 		expect(foursquarePlaceUrl('4b8c3a0df964a5207f0c33e3')).toBe(
 			'https://foursquare.com/placemakers/review-place/4b8c3a0df964a5207f0c33e3'
 		);
+	});
+});
+
+describe('locationEvidenceLabel', () => {
+	it('labels FSQ and Overture evidence instead of treating them as manual', () => {
+		expect(
+			locationEvidenceLabel({
+				source: 'fsq',
+				source_key: '5b4bdee2ee71200039d527ba',
+				address_input: '10787 S Blaney Ave'
+			})
+		).toBe('FSQ · 5b4bdee2ee71200039d527ba · 10787 S Blaney Ave');
+		expect(
+			locationEvidenceLabel({
+				source: 'overture',
+				source_key: 'ovt-place-1',
+				address_input: '540 Bryant St'
+			})
+		).toBe('Overture · ovt-place-1 · 540 Bryant St');
+	});
+
+	it('keeps OSM node labels', () => {
+		expect(
+			locationEvidenceLabel({
+				source: 'osm',
+				osm_type: 'node',
+				osm_id: 9741978715
+			})
+		).toBe('OSM node 9741978715');
+	});
+
+	it('links FSQ evidence to PlaceMaker', () => {
+		expect(
+			locationEvidenceHref({
+				source: 'fsq',
+				source_key: '5b4bdee2ee71200039d527ba'
+			})
+		).toBe('https://foursquare.com/placemakers/review-place/5b4bdee2ee71200039d527ba');
 	});
 });

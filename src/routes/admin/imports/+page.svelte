@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { applyAction, enhance } from '$app/forms';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto, invalidate } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import GeoPlaceTypeahead from '$lib/GeoPlaceTypeahead.svelte';
 	import type { SubmitFunction } from './$types';
@@ -152,7 +152,8 @@
 	const enhancePipelineAction: SubmitFunction = () => {
 		return async ({ result }) => {
 			if (result.type === 'redirect') {
-				await goto(result.location, { invalidateAll: true, keepFocus: true, noScroll: true });
+				await goto(result.location, { keepFocus: true, noScroll: true });
+				await invalidate('app:imports');
 				return;
 			}
 			await applyAction(result);
@@ -161,7 +162,7 @@
 
 	onMount(() => {
 		const refreshTimer = window.setInterval(() => {
-			if (data.view === 'current' && runIsActive) void invalidateAll();
+			if (data.view === 'current' && runIsActive) void invalidate('app:imports');
 		}, 20_000);
 		return () => window.clearInterval(refreshTimer);
 	});

@@ -1,11 +1,11 @@
 import { error, isRedirect, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { supabaseAdmin } from '$lib/supabase.server';
+import { countByValues } from '$lib/server/status-counts.server';
 import {
 	adminClient,
 	countByStatus,
 	expectedImportCronWorkers,
-	increment,
 	loadPipelineRuns,
 	loadProviderRuns,
 	loadResolutionJobs,
@@ -68,7 +68,8 @@ function providerSummaries(providerRuns: ProviderRunRow[], shards: ShardRow[]) {
 	});
 }
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+export const load: PageServerLoad = async ({ locals, url, depends }) => {
+	depends('app:imports');
 	const pipelineRuns = await loadPipelineRuns(25).catch((err: { message?: string }) => {
 		throw error(500, `Failed to load POI pipeline runs: ${err.message ?? String(err)}`);
 	});
@@ -139,16 +140,24 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		: await exceptionQuery;
 	if (exceptionError) throw error(500, `Failed to load exceptions: ${exceptionError.message}`);
 
-	const { data: candidateStatusRows, error: candidateStatusError } = await adminClient()
-		.schema('ingest')
-		.from('poi_candidates')
-		.select('process_status')
-		.limit(10000);
+	const { counts: candidateStatusCounts, error: candidateStatusError } = await countByValues(
+		adminClient(),
+		'poi_candidates',
+		'process_status',
+		[
+			'needs_exception_resolution',
+			'needs_manual_review',
+			'ready_for_enrichment',
+			'pending',
+			'resolved',
+			'resolved_existing',
+			'known_negative'
+		],
+		'ingest'
+	);
 	if (candidateStatusError) {
 		throw error(500, `Failed to load candidate statuses: ${candidateStatusError.message}`);
 	}
-	const candidateStatusCounts: Record<string, number> = {};
-	for (const row of candidateStatusRows ?? []) increment(candidateStatusCounts, row.process_status);
 
 	const cronPayload =
 		cronStatus && typeof cronStatus === 'object' && !Array.isArray(cronStatus)

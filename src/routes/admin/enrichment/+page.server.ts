@@ -52,8 +52,7 @@ type ResearchRunRow = {
 	provider: string | null;
 	model: string | null;
 	researcher_version: string | null;
-	input_snapshot: JsonRecord | null;
-	raw_response: JsonRecord | null;
+	input_snapshot?: JsonRecord | null;
 	customer_summary_draft: string | null;
 	public_summary_draft: string | null;
 	research_topics: JsonRecord | null;
@@ -309,21 +308,6 @@ function readMetric(metrics: JsonRecord | null, key: string) {
 	return null;
 }
 
-function recordArray(value: unknown) {
-	return Array.isArray(value)
-		? value.filter(
-				(item): item is JsonRecord =>
-					Boolean(item) && typeof item === 'object' && !Array.isArray(item)
-			)
-		: [];
-}
-
-function stringArray(value: unknown) {
-	return Array.isArray(value)
-		? value.filter((item): item is string => typeof item === 'string')
-		: [];
-}
-
 function parseResearchScope(value: string): ResearchScope {
 	let parsed: unknown;
 	try {
@@ -399,15 +383,22 @@ function parseResearchScope(value: string): ResearchScope {
 	};
 }
 
-export const load: PageServerLoad = async ({ locals }) => {
-	const [
-		jobsResult,
-		dossiersResult,
-		profilesResult,
-		flagsResult,
-		cronStatusResult,
-		recentRunsResult
-	] = await Promise.all([
+const REVIEW_DOSSIER_COLUMNS =
+	'brand_slug,research_run_id,approval_status,customer_summary,public_summary_draft,research_topics,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method,recommended_match_policy,match_policy_route,match_policy_evidence';
+const HISTORY_DOSSIER_COLUMNS =
+	'brand_slug,research_run_id,approval_status,customer_summary,public_summary_draft,research_topics,creative_brief,profile_facts,quality_metrics,review_reasons,approval_method';
+const REVIEW_RUN_COLUMNS =
+	'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,customer_summary_draft,public_summary_draft,research_topics,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics';
+const HISTORY_RUN_COLUMNS =
+	'id,job_id,brand_slug,status,model,researcher_version,customer_summary_draft,public_summary_draft,research_topics,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics';
+const PROFILE_COLUMNS =
+	'brand_slug,summary,public_summary,public_summary_source_run_id,public_summary_model,public_summary_generated_at,summary_confidence,publication_method,published_at,updated_at';
+const HISTORY_LIMIT = 80;
+
+export const load: PageServerLoad = async ({ locals, depends }) => {
+	depends('app:enrichment');
+
+	const [jobsResult, reviewDossiersResult, cronStatusResult] = await Promise.all([
 		locals.supabase
 			.schema('ingest')
 			.from('brand_enrichment_jobs')
@@ -419,50 +410,23 @@ export const load: PageServerLoad = async ({ locals }) => {
 		locals.supabase
 			.schema('mod')
 			.from('brand_dossiers')
-			.select(
-				'brand_slug,research_run_id,approval_status,customer_summary,public_summary_draft,research_topics,creative_brief,profile_facts,last_researched_at,refresh_after,updated_at,quality_metrics,review_reasons,approval_method,recommended_match_policy,match_policy_route,match_policy_evidence'
-			)
+			.select(REVIEW_DOSSIER_COLUMNS)
+			.eq('approval_status', 'needs_review')
 			.order('updated_at', { ascending: false }),
-		locals.supabase
-			.from('brand_profiles')
-			.select(
-				'brand_slug,summary,public_summary,public_summary_source_run_id,public_summary_model,public_summary_generated_at,summary_confidence,publication_method,published_at,updated_at'
-			),
-		locals.supabase
-			.schema('mod')
-			.from('brand_integrity_flags')
-			.select('id,brand_slug,severity,status,title,details,recommended_action,last_seen_at')
-			.order('last_seen_at', { ascending: false }),
-		locals.supabase.rpc('admin_brand_enrichment_cron_status'),
-		locals.supabase
-			.schema('ingest')
-			.from('brand_research_runs')
-			.select(
-				'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,public_summary_draft,research_topics,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
-			)
-			.order('created_at', { ascending: false })
-			.limit(125)
+		locals.supabase.rpc('admin_brand_enrichment_cron_status')
 	]);
 
-	const sourceResults = [
-		['Enrichment jobs', jobsResult],
-		['Dossiers', dossiersResult],
-		['Profiles', profilesResult],
-		['Integrity flags', flagsResult],
-		['Research runs', recentRunsResult]
-	] as const;
-	const sourceErrors: string[] = sourceResults
-		.filter(([, result]) => result.error)
-		.map(([label]) => label);
-	for (const [label, result] of sourceResults) {
-		if (result.error) console.error(`[enrichment] ${label}`, result.error);
-	}
+	const sourceErrors: string[] = [];
+	const noteError = (label: string, error: { message?: string } | null) => {
+		if (!error) return;
+		console.error(`[enrichment] ${label}`, error);
+		sourceErrors.push(label);
+	};
+	noteError('Enrichment jobs', jobsResult.error);
+	noteError('Review dossiers', reviewDossiersResult.error);
 
 	const jobs = (jobsResult.data ?? []) as EnrichmentJobRow[];
-	const dossiers = (dossiersResult.data ?? []) as DossierRow[];
-	const profiles = (profilesResult.data ?? []) as ProfileRow[];
-	const flags = (flagsResult.data ?? []) as IntegrityFlagRow[];
-	const recentRuns = (recentRunsResult.data ?? []) as ResearchRunRow[];
+	const reviewDossiers = (reviewDossiersResult.data ?? []) as DossierRow[];
 	const cronPayload =
 		cronStatusResult.data &&
 		typeof cronStatusResult.data === 'object' &&
@@ -471,12 +435,21 @@ export const load: PageServerLoad = async ({ locals }) => {
 			: null;
 	const enrichmentCronJobs = cronPayload?.jobs ?? [];
 	const enrichmentCronRuns = cronPayload?.runs ?? [];
-	const reviewDossiers = dossiers.filter((row) => row.approval_status === 'needs_review');
 	const reviewRunIds = [
 		...new Set(reviewDossiers.flatMap((row) => (row.research_run_id ? [row.research_run_id] : [])))
 	];
 	const reviewBrandSlugs = reviewDossiers.map((row) => row.brand_slug);
+	const historyJobRows = [...jobs]
+		.sort((a, b) => Date.parse(jobActivityAt(b)) - Date.parse(jobActivityAt(a)))
+		.slice(0, HISTORY_LIMIT);
+	const historySlugs = [...new Set(historyJobRows.map((job) => job.brand_slug))];
+	const historyJobIds = historyJobRows.map((job) => job.id);
+	const profileSlugs = [...new Set([...reviewBrandSlugs, ...historySlugs])];
 
+	let historyDossiers: DossierRow[] = [];
+	let profiles: ProfileRow[] = [];
+	let flags: IntegrityFlagRow[] = [];
+	let historyRuns: ResearchRunRow[] = [];
 	let reviewRuns: ResearchRunRow[] = [];
 	let claims: ClaimRow[] = [];
 	let claimSources: ClaimSourceRow[] = [];
@@ -485,154 +458,204 @@ export const load: PageServerLoad = async ({ locals }) => {
 	let brandAliases: BrandAliasRow[] = [];
 	let physicalLocationsByBrand: Record<string, PhysicalLocationRow[]> = {};
 	let enrichmentFootprints: EnrichmentFootprintRow[] = [];
+	let historyBrands = new Map<string, { display: string; website: string | null }>();
 
+	const followUp: Promise<void>[] = [];
+
+	if (historySlugs.length) {
+		followUp.push(
+			(async () => {
+				const [dossiersResult, brandsResult] = await Promise.all([
+					locals.supabase
+						.schema('mod')
+						.from('brand_dossiers')
+						.select(HISTORY_DOSSIER_COLUMNS)
+						.in('brand_slug', historySlugs),
+					locals.supabase.from('brands').select('slug,display,website').in('slug', historySlugs)
+				]);
+				noteError('History dossiers', dossiersResult.error);
+				noteError('History brands', brandsResult.error);
+				historyDossiers = (dossiersResult.data ?? []) as DossierRow[];
+				historyBrands = new Map(
+					(
+						(brandsResult.data ?? []) as Array<{
+							slug: string;
+							display: string;
+							website: string | null;
+						}>
+					).map((brand) => [brand.slug, { display: brand.display, website: brand.website }])
+				);
+			})()
+		);
+	}
+	if (profileSlugs.length) {
+		followUp.push(
+			(async () => {
+				const result = await locals.supabase
+					.from('brand_profiles')
+					.select(PROFILE_COLUMNS)
+					.in('brand_slug', profileSlugs);
+				noteError('Profiles', result.error);
+				profiles = (result.data ?? []) as ProfileRow[];
+			})()
+		);
+	}
+	if (historyJobIds.length) {
+		followUp.push(
+			(async () => {
+				const result = await locals.supabase
+					.schema('ingest')
+					.from('brand_research_runs')
+					.select(HISTORY_RUN_COLUMNS)
+					.in('job_id', historyJobIds);
+				noteError('History research runs', result.error);
+				historyRuns = (result.data ?? []) as ResearchRunRow[];
+			})()
+		);
+	}
 	if (reviewBrandSlugs.length) {
-		const [identitiesResult, aliasesResult, physicalLocationsResult, footprintResult] =
-			await Promise.all([
-				locals.supabase
-					.from('brands')
-					.select(
-						'slug,display,website,wikidata,status,is_demo,match_policy,enrichment_mode,enrichment_location_anchor'
-					)
-					.in('slug', reviewBrandSlugs),
-				locals.supabase
-					.from('brand_aliases')
-					.select('id,brand_slug,normalized_name,alias_display,match_mode')
-					.in('brand_slug', reviewBrandSlugs)
-					.order('normalized_name'),
-				locals.supabase.rpc('admin_get_brand_physical_locations_batch', {
-					p_brand_slugs: reviewBrandSlugs
-				}),
-				locals.supabase
-					.from('brand_footprint')
-					.select('brand_slug,place_id,location_count,geo_places(level,code,name)')
-					.eq('source', 'enrichment_markets')
-					.in('brand_slug', reviewBrandSlugs)
-			]);
-		if (identitiesResult.error) {
-			console.error('[enrichment] Brand identities', identitiesResult.error);
-			sourceErrors.push('Brand identities');
-		}
-		if (aliasesResult.error) {
-			console.error('[enrichment] Brand aliases', aliasesResult.error);
-			sourceErrors.push('Brand aliases');
-		}
-		if (physicalLocationsResult.error) {
-			console.error('[enrichment] Physical locations', physicalLocationsResult.error);
-			sourceErrors.push('Physical locations');
-		}
-		if (footprintResult.error) {
-			console.error('[enrichment] Enrichment footprints', footprintResult.error);
-			sourceErrors.push('Enrichment footprints');
-		}
-		brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
-		brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
-		physicalLocationsByBrand = (physicalLocationsResult.data ?? {}) as Record<
-			string,
-			PhysicalLocationRow[]
-		>;
-		enrichmentFootprints = (
-			(footprintResult.data ?? []) as Array<{
-				brand_slug: string;
-				place_id: string;
-				location_count: number;
-				geo_places:
-					| { level: string; code: string; name: string }
-					| { level: string; code: string; name: string }[]
-					| null;
-			}>
-		)
-			.map((row) => {
-				const place = Array.isArray(row.geo_places) ? row.geo_places[0] : row.geo_places;
-				if (!place) return null;
-				return {
-					brand_slug: row.brand_slug,
-					place_id: row.place_id,
-					location_count: row.location_count,
-					level: String(place.level),
-					code: place.code,
-					name: place.name
-				} satisfies EnrichmentFootprintRow;
-			})
-			.filter((row): row is EnrichmentFootprintRow => Boolean(row));
+		followUp.push(
+			(async () => {
+				const [
+					identitiesResult,
+					aliasesResult,
+					physicalLocationsResult,
+					footprintResult,
+					flagsResult
+				] = await Promise.all([
+					locals.supabase
+						.from('brands')
+						.select(
+							'slug,display,website,wikidata,status,is_demo,match_policy,enrichment_mode,enrichment_location_anchor'
+						)
+						.in('slug', reviewBrandSlugs),
+					locals.supabase
+						.from('brand_aliases')
+						.select('id,brand_slug,normalized_name,alias_display,match_mode')
+						.in('brand_slug', reviewBrandSlugs)
+						.order('normalized_name'),
+					locals.supabase.rpc('admin_get_brand_physical_locations_batch', {
+						p_brand_slugs: reviewBrandSlugs
+					}),
+					locals.supabase
+						.from('brand_footprint')
+						.select('brand_slug,place_id,location_count,geo_places(level,code,name)')
+						.eq('source', 'enrichment_markets')
+						.in('brand_slug', reviewBrandSlugs),
+					locals.supabase
+						.schema('mod')
+						.from('brand_integrity_flags')
+						.select('id,brand_slug,severity,status,title,details,recommended_action,last_seen_at')
+						.in('brand_slug', reviewBrandSlugs)
+						.neq('status', 'resolved')
+						.neq('status', 'closed')
+						.order('last_seen_at', { ascending: false })
+				]);
+				noteError('Brand identities', identitiesResult.error);
+				noteError('Brand aliases', aliasesResult.error);
+				noteError('Physical locations', physicalLocationsResult.error);
+				noteError('Enrichment footprints', footprintResult.error);
+				noteError('Integrity flags', flagsResult.error);
+				brandIdentities = (identitiesResult.data ?? []) as BrandIdentityRow[];
+				brandAliases = (aliasesResult.data ?? []) as BrandAliasRow[];
+				flags = (flagsResult.data ?? []) as IntegrityFlagRow[];
+				physicalLocationsByBrand = (physicalLocationsResult.data ?? {}) as Record<
+					string,
+					PhysicalLocationRow[]
+				>;
+				enrichmentFootprints = (
+					(footprintResult.data ?? []) as Array<{
+						brand_slug: string;
+						place_id: string;
+						location_count: number;
+						geo_places:
+							| { level: string; code: string; name: string }
+							| { level: string; code: string; name: string }[]
+							| null;
+					}>
+				)
+					.map((row) => {
+						const place = Array.isArray(row.geo_places) ? row.geo_places[0] : row.geo_places;
+						if (!place) return null;
+						return {
+							brand_slug: row.brand_slug,
+							place_id: row.place_id,
+							location_count: row.location_count,
+							level: String(place.level),
+							code: place.code,
+							name: place.name
+						} satisfies EnrichmentFootprintRow;
+					})
+					.filter((row): row is EnrichmentFootprintRow => Boolean(row));
+			})()
+		);
 	}
-
-	// Scope claims/sources to review runs only. Including recentRuns here previously
-	// hit PostgREST's ~1000-row cap and silently dropped claims for many dossiers.
 	if (reviewRunIds.length) {
-		const [runsResult, claimsResult, claimSourcesResult, sourcesResult] = await Promise.all([
-			locals.supabase
-				.schema('ingest')
-				.from('brand_research_runs')
-				.select(
-					'id,job_id,brand_slug,status,provider,model,researcher_version,input_snapshot,raw_response,customer_summary_draft,public_summary_draft,research_topics,creative_brief_draft,overall_confidence,started_at,completed_at,error_text,quality_metrics'
-				)
-				.in('id', reviewRunIds),
-			locals.supabase
-				.schema('ingest')
-				.from('brand_research_claims')
-				.select(
-					'id,run_id,brand_slug,claim_key,claim_value,confidence,evidence_assessment,review_status,materiality,rationale'
-				)
-				.in('run_id', reviewRunIds),
-			locals.supabase
-				.schema('ingest')
-				.from('brand_research_claim_sources')
-				.select('run_id,claim_id,source_id,citation_role,evidence_excerpt')
-				.in('run_id', reviewRunIds),
-			locals.supabase
-				.schema('ingest')
-				.from('brand_research_sources')
-				.select('id,run_id,source_type,url,title,publisher,published_at,excerpt,credibility')
-				.in('run_id', reviewRunIds)
-		]);
-
-		const detailResults = [
-			['Research runs', runsResult],
-			['Claims', claimsResult],
-			['Claim citations', claimSourcesResult],
-			['Sources', sourcesResult]
-		] as const;
-		for (const [label, result] of detailResults) {
-			if (result.error) {
-				console.error(`[enrichment] ${label}`, result.error);
-				sourceErrors.push(label);
-			}
-		}
-		reviewRuns = (runsResult.data ?? []) as ResearchRunRow[];
-		claims = (claimsResult.data ?? []) as ClaimRow[];
-		claimSources = (claimSourcesResult.data ?? []) as ClaimSourceRow[];
-		sources = (sourcesResult.data ?? []) as SourceRow[];
+		followUp.push(
+			(async () => {
+				const [runsResult, claimsResult, claimSourcesResult, sourcesResult] = await Promise.all([
+					locals.supabase
+						.schema('ingest')
+						.from('brand_research_runs')
+						.select(REVIEW_RUN_COLUMNS)
+						.in('id', reviewRunIds),
+					locals.supabase
+						.schema('ingest')
+						.from('brand_research_claims')
+						.select(
+							'id,run_id,brand_slug,claim_key,claim_value,confidence,evidence_assessment,review_status,materiality,rationale'
+						)
+						.in('run_id', reviewRunIds),
+					locals.supabase
+						.schema('ingest')
+						.from('brand_research_claim_sources')
+						.select('run_id,claim_id,source_id,citation_role,evidence_excerpt')
+						.in('run_id', reviewRunIds),
+					locals.supabase
+						.schema('ingest')
+						.from('brand_research_sources')
+						.select('id,run_id,source_type,url,title,publisher,published_at,excerpt,credibility')
+						.in('run_id', reviewRunIds)
+				]);
+				noteError('Research runs', runsResult.error);
+				noteError('Claims', claimsResult.error);
+				noteError('Claim citations', claimSourcesResult.error);
+				noteError('Sources', sourcesResult.error);
+				reviewRuns = (runsResult.data ?? []) as ResearchRunRow[];
+				claims = (claimsResult.data ?? []) as ClaimRow[];
+				claimSources = (claimSourcesResult.data ?? []) as ClaimSourceRow[];
+				sources = (sourcesResult.data ?? []) as SourceRow[];
+			})()
+		);
 	}
+
+	await Promise.all(followUp);
 
 	const runById = new Map<string, ResearchRunRow>();
-	for (const run of recentRuns) runById.set(run.id, run);
+	for (const run of historyRuns) runById.set(run.id, run);
 	for (const run of reviewRuns) runById.set(run.id, run);
-	const runs = [...runById.values()];
 
 	const sourceById = new Map(sources.map((row) => [row.id, row]));
 	const profileByBrand = new Map(profiles.map((row) => [row.brand_slug, row]));
-	const dossierByBrand = new Map(dossiers.map((row) => [row.brand_slug, row]));
+	const dossierByBrand = new Map<string, DossierRow>();
+	for (const row of historyDossiers) dossierByBrand.set(row.brand_slug, row);
+	for (const row of reviewDossiers) dossierByBrand.set(row.brand_slug, row);
 	const dossierByRunId = new Map(
-		dossiers.flatMap((row) => (row.research_run_id ? [[row.research_run_id, row] as const] : []))
+		[...dossierByBrand.values()].flatMap((row) =>
+			row.research_run_id ? [[row.research_run_id, row] as const] : []
+		)
 	);
 	const identityByBrand = new Map(brandIdentities.map((row) => [row.slug, row]));
 	const openFlags = flags.filter((row) => row.status !== 'resolved' && row.status !== 'closed');
 	const jobStatusCounts = countByStatus(jobs);
 	const runByJobId = new Map<string, ResearchRunRow>();
-	for (const run of runs) {
+	for (const run of runById.values()) {
 		if (run.job_id && !runByJobId.has(run.job_id)) runByJobId.set(run.job_id, run);
 	}
-	const monitoredJobs = jobs.map((job) => {
+	const decorateJob = (job: EnrichmentJobRow) => {
 		const run = runByJobId.get(job.id) ?? null;
 		const runDossier = run ? (dossierByRunId.get(run.id) ?? null) : null;
 		const reviewReasons = runDossier?.review_reasons ?? [];
-		const rawResponse = run?.raw_response ?? null;
-		const retrievedSources = recordArray(rawResponse?.search_results).map((source) => ({
-			url: typeof source.url === 'string' ? source.url : null,
-			title: typeof source.title === 'string' ? source.title : null
-		}));
-		const retainedSources = run ? sources.filter((source) => source.run_id === run.id) : [];
 		const identityConfidence = readMetric(run?.quality_metrics ?? null, 'identity_confidence');
 		const hasAdequateInput = run?.quality_metrics?.has_adequate_input === true;
 		const hasBlockingFlag = run?.quality_metrics?.has_blocking_flag === true;
@@ -659,9 +682,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 						startedAt: run.started_at,
 						completedAt: run.completed_at,
 						error: run.error_text,
-						executedQueries: stringArray(rawResponse?.executed_queries),
-						retrievedSources,
-						retainedSources,
+						executedQueries: [] as string[],
+						retrievedSources: [] as Array<{ url: string | null; title: string | null }>,
+						retainedSources: [] as Array<{ id: string; url: string; title: string | null }>,
 						qualityMetrics: run.quality_metrics ?? {},
 						reviewReasons,
 						autoPublishEligible: runDossier ? reviewReasons.length === 0 : null,
@@ -683,35 +706,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 					}
 				: null
 		};
-	});
+	};
+	const monitoredJobs = jobs.map(decorateJob);
 	const activeJobs = monitoredJobs.filter(
 		(row) => row.status === 'queued' || row.status === 'running'
 	);
-	const historyJobs = [...monitoredJobs]
-		.sort((a, b) => Date.parse(jobActivityAt(b)) - Date.parse(jobActivityAt(a)))
-		.slice(0, 80);
-	const historySlugs = [...new Set(historyJobs.map((job) => job.brand_slug))];
-	let historyBrands = new Map<string, { display: string; website: string | null }>();
-	if (historySlugs.length) {
-		const historyBrandsResult = await locals.supabase
-			.from('brands')
-			.select('slug,display,website')
-			.in('slug', historySlugs);
-		if (historyBrandsResult.error) {
-			console.error('[enrichment] History brands', historyBrandsResult.error);
-			sourceErrors.push('History brands');
-		} else {
-			historyBrands = new Map(
-				(
-					(historyBrandsResult.data ?? []) as Array<{
-						slug: string;
-						display: string;
-						website: string | null;
-					}>
-				).map((brand) => [brand.slug, { display: brand.display, website: brand.website }])
-			);
-		}
-	}
+	const historyJobs = historyJobRows.map(
+		(job) => monitoredJobs.find((row) => row.id === job.id) ?? decorateJob(job)
+	);
 	const history = historyJobs.map((job) => {
 		const run = runByJobId.get(job.id) ?? null;
 		const dossier = dossierByBrand.get(job.brand_slug) ?? null;
@@ -759,7 +761,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 					? (dossier?.customer_summary ?? run?.customer_summary_draft ?? null)
 					: (run?.customer_summary_draft ?? null),
 				public_summary: currentDossier
-					? (profile?.public_summary ?? dossier?.public_summary_draft ?? run?.public_summary_draft ?? null)
+					? (profile?.public_summary ??
+						dossier?.public_summary_draft ??
+						run?.public_summary_draft ??
+						null)
 					: (run?.public_summary_draft ?? null),
 				official_website: officialWebsite,
 				website: brand?.website ?? null,

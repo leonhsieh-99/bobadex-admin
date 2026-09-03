@@ -1,13 +1,18 @@
 <script lang="ts">
 	import { applyAction, enhance } from '$app/forms';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto, invalidate } from '$app/navigation';
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
 	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
 	import EnrichmentDossierCard from '$lib/EnrichmentDossierCard.svelte';
 	import type { EnrichmentDossierView } from '$lib/enrichment-dossier';
 	import type { BrandMatchPolicy } from '$lib/brand-match-policy';
-	import { coordinatesLabel, googleMapsCoordinatesUrl } from '$lib/maps';
+	import {
+		coordinatesLabel,
+		googleMapsCoordinatesUrl,
+		locationEvidenceHref,
+		locationEvidenceLabel
+	} from '$lib/maps';
 	import { toasts } from '$lib/toast';
 	import type { SubmitFunction } from './$types';
 
@@ -305,7 +310,7 @@
 					: 'Kept as a separate storefront.'
 			);
 			await loadBrandDetails(brandSlug);
-			await invalidateAll();
+			await invalidate('app:catalog');
 		} catch (error) {
 			toasts.error(error instanceof Error ? error.message : 'Could not resolve the storefront match.');
 		} finally {
@@ -334,7 +339,7 @@
 			manualEvidenceRemoval = null;
 			manualEvidenceRemovalReason = '';
 			await loadBrandDetails(brand.slug);
-			await invalidateAll();
+			await invalidate('app:catalog');
 		} catch (error) {
 			modalError = error instanceof Error ? error.message : 'Could not remove manual evidence.';
 			toasts.error(modalError);
@@ -418,7 +423,7 @@
 					closeModal();
 					details = {};
 					expandedSlug = '';
-					await invalidateAll();
+					await invalidate('app:catalog');
 					return;
 				}
 				modalError = message;
@@ -452,7 +457,7 @@
 					if (enrichmentDossierBrand) {
 						await openEnrichmentDossier(enrichmentDossierBrand);
 					}
-					await invalidateAll();
+					await invalidate('app:catalog');
 					return;
 				}
 				modalError = message;
@@ -723,10 +728,10 @@
 	}
 
 	function locationPlaceLabel(location: PhysicalLocation) {
-		const place = [location.city, location.county, location.region].filter(Boolean).join(', ');
-		if (place) return place;
 		const address = location.evidence.find((evidence) => evidence.address_input)?.address_input;
 		if (address) return address;
+		const place = [location.city, location.county, location.region].filter(Boolean).join(', ');
+		if (place) return place;
 		return coordinatesLabel(location.lat, location.lon);
 	}
 
@@ -1176,8 +1181,8 @@
 															<div class="mt-2 space-y-1">
 																{#each location.evidence as evidence (evidence.id)}
 																	<div class="flex items-center gap-2 rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5">
-																		<a href={evidence.source_url || googleMapsCoordinatesUrl(evidence.lat, evidence.lon)} target="_blank" rel="noreferrer" class="min-w-0 flex-1 truncate text-xs text-zinc-700 hover:underline" title={evidence.address_input ?? evidence.source_key}>
-																			{evidence.osm_id ? `OSM ${evidence.osm_type ?? 'node'} ${evidence.osm_id}` : `Manual · ${evidence.verification_status ?? 'unverified'}${evidence.address_input ? ` · ${evidence.address_input}` : ''}`}
+																		<a href={locationEvidenceHref(evidence) ?? googleMapsCoordinatesUrl(evidence.lat, evidence.lon)} target="_blank" rel="noreferrer" class="min-w-0 flex-1 truncate text-xs text-zinc-700 hover:underline" title={evidence.address_input ?? evidence.source_key}>
+																			{locationEvidenceLabel(evidence)}
 																		</a>
 																		<button type="button" onclick={() => evidence.osm_id ? openNodeRepairForEvidence(brand, detail, evidence) : openManualEvidenceRemoval(brand, location, evidence)} disabled={brand.status === 'merged' || brand.is_demo} class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-100 hover:text-red-700 disabled:opacity-35" title={evidence.osm_id ? 'Remove or split OSM evidence' : 'Remove manual evidence'} aria-label={evidence.osm_id ? `Manage OSM evidence for ${brand.display}` : `Remove manual location from ${brand.display}`}>
 																			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>

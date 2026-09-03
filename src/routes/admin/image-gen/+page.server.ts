@@ -1,6 +1,7 @@
 import { env } from '$env/dynamic/private';
 import { error, fail } from '@sveltejs/kit';
 import { supabaseAdmin } from '$lib/supabase.server';
+import { countByValues } from '$lib/server/status-counts.server';
 import type { Actions, PageServerLoad } from './$types';
 
 type ImageQuality = 'auto' | 'low' | 'medium' | 'high';
@@ -9,6 +10,7 @@ type ImageView = 'ready' | 'generated' | 'review' | 'history';
 
 const MAX_GENERATION_BATCH = 50;
 const MAX_REGENERATION_BATCH = 20;
+const IMAGE_LIST_LIMIT = 80;
 const DISABLE_STORAGE_IMAGE_TRANSFORMS = ['1', 'true', 'yes'].includes(
 	(env.DISABLE_STORAGE_IMAGE_TRANSFORMS ?? '').trim().toLowerCase()
 );
@@ -34,7 +36,8 @@ type CandidateRow = {
 	quality: string;
 	quality_score: number;
 	model: string;
-	concept: Record<string, unknown>;
+	concept?: Record<string, unknown>;
+	generation_prompt?: string | null;
 	storage_bucket: string;
 	storage_path: string | null;
 	error_text: string | null;
@@ -139,7 +142,8 @@ function candidatePreviewPath(candidate: CandidateRow) {
 	);
 }
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+export const load: PageServerLoad = async ({ locals, url, depends }) => {
+	depends('app:image-gen');
 	if (!locals.isAdmin) throw error(403, 'Admin access required.');
 
 	const requestedView = url.searchParams.get('view');
@@ -147,43 +151,141 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		requestedView === 'generated' || requestedView === 'review' || requestedView === 'history'
 			? requestedView
 			: 'ready';
-	const q = cleanSearch(url.searchParams.get('q')).toLowerCase();
+	const q = cleanSearch(url.searchParams.get('q'));
+	const qNeedle = q.toLowerCase();
 	const admin = supabaseAdmin();
-	const [brandsResult, dossiersResult, candidatesResult, storage] = await Promise.all([
-		admin
+	const reviewStatuses = ['generating', 'generated', 'processing', 'failed'] as const;
+	const historyStatuses = ['approved', 'published', 'rejected', 'superseded'] as const;
+	const candidateStatuses = [...reviewStatuses, ...historyStatuses];
+
+	const brandCountQuery = admin
+		.from('brands')
+		.select('slug', { count: 'exact', head: true })
+		.eq('status', 'active')
+		.eq('is_demo', false);
+	const [eligibleResult, iconlessResult, generatedCountResult, candidateStatusResult, storage] =
+		await Promise.all([
+			brandCountQuery,
+			admin
+				.from('brands')
+				.select('slug', { count: 'exact', head: true })
+				.eq('status', 'active')
+				.eq('is_demo', false)
+				.is('icon_path', null),
+			admin
+				.from('brands')
+				.select('slug', { count: 'exact', head: true })
+				.eq('status', 'active')
+				.eq('is_demo', false)
+				.not('icon_path', 'is', null),
+			countByValues(admin, 'brand_icon_candidates', 'status', candidateStatuses, 'mod'),
+			storageReadiness()
+		]);
+	if (eligibleResult.error) {
+		console.error('[image gen] brand counts', eligibleResult.error);
+		throw error(500, `Could not load brands: ${eligibleResult.error.message}`);
+	}
+	if (iconlessResult.error || generatedCountResult.error) {
+		console.error('[image gen] iconless counts', iconlessResult.error ?? generatedCountResult.error);
+		throw error(
+			500,
+			`Could not load brands: ${(iconlessResult.error ?? generatedCountResult.error)?.message}`
+		);
+	}
+	if (candidateStatusResult.error) {
+		console.error('[image gen] candidate counts', candidateStatusResult.error);
+		throw error(500, `Could not load image candidates: ${candidateStatusResult.error.message}`);
+	}
+
+	const statusCounts = candidateStatusResult.counts;
+	let brands: BrandRow[] = [];
+	let dossiers: DossierRow[] = [];
+	let candidates: CandidateRow[] = [];
+
+	if (view === 'ready' || view === 'generated') {
+		let brandQuery = admin
 			.from('brands')
 			.select('slug,display,icon_path,created_at')
 			.eq('status', 'active')
 			.eq('is_demo', false)
-			.order('display'),
-		admin.schema('mod').from('brand_dossiers').select('brand_slug,approval_status,updated_at'),
-		admin
+			.order('display')
+			.limit(IMAGE_LIST_LIMIT);
+		brandQuery =
+			view === 'ready' ? brandQuery.is('icon_path', null) : brandQuery.not('icon_path', 'is', null);
+		if (qNeedle) {
+			const safe = q.replace(/[%_,()]/g, ' ').trim();
+			if (safe) brandQuery = brandQuery.or(`display.ilike.%${safe}%,slug.ilike.%${safe}%`);
+		}
+		const brandsResult = await brandQuery;
+		if (brandsResult.error) {
+			console.error('[image gen] brands', brandsResult.error);
+			throw error(500, `Could not load brands: ${brandsResult.error.message}`);
+		}
+		brands = (brandsResult.data ?? []) as BrandRow[];
+		const slugs = brands.map((brand) => brand.slug);
+		if (slugs.length) {
+			const [dossiersResult, latestCandidatesResult] = await Promise.all([
+				admin
+					.schema('mod')
+					.from('brand_dossiers')
+					.select('brand_slug,approval_status,updated_at')
+					.in('brand_slug', slugs),
+				admin
+					.schema('mod')
+					.from('brand_icon_candidates')
+					.select(
+						'id,brand_slug,status,creative_mode,quality,quality_score,model,storage_bucket,storage_path,error_text,created_at,updated_at,publication_strategy,processed_storage_path,published_storage_path,previous_icon_path,published_at'
+					)
+					.in('brand_slug', slugs)
+					.order('updated_at', { ascending: false })
+					.limit(IMAGE_LIST_LIMIT)
+			]);
+			if (dossiersResult.error) {
+				console.error('[image gen] dossiers', dossiersResult.error);
+				throw error(500, `Could not load enrichment readiness: ${dossiersResult.error.message}`);
+			}
+			if (latestCandidatesResult.error) {
+				console.error('[image gen] candidates', latestCandidatesResult.error);
+				throw error(500, `Could not load image candidates: ${latestCandidatesResult.error.message}`);
+			}
+			dossiers = (dossiersResult.data ?? []) as DossierRow[];
+			candidates = (latestCandidatesResult.data ?? []) as CandidateRow[];
+		}
+	} else {
+		const statuses = view === 'review' ? [...reviewStatuses] : [...historyStatuses];
+		const candidateSelect =
+			view === 'review'
+				? 'id,brand_slug,status,creative_mode,quality,quality_score,model,concept,generation_prompt,storage_bucket,storage_path,error_text,created_at,updated_at,publication_strategy,processed_storage_path,published_storage_path,previous_icon_path,published_at'
+				: 'id,brand_slug,status,creative_mode,quality,quality_score,model,storage_bucket,storage_path,error_text,created_at,updated_at,publication_strategy,processed_storage_path,published_storage_path,previous_icon_path,published_at';
+		let candidateQuery = admin
 			.schema('mod')
 			.from('brand_icon_candidates')
-			.select(
-				'id,brand_slug,status,creative_mode,quality,quality_score,model,concept,storage_bucket,storage_path,error_text,created_at,updated_at,publication_strategy,processed_storage_path,published_storage_path,previous_icon_path,published_at'
-			)
+			.select(candidateSelect as 'id')
+			.in('status', statuses)
 			.order('updated_at', { ascending: false })
-			.limit(500),
-		storageReadiness()
-	]);
+			.limit(IMAGE_LIST_LIMIT);
+		const safe = qNeedle ? q.replace(/[%_,()]/g, ' ').trim() : '';
+		if (safe) candidateQuery = candidateQuery.ilike('brand_slug', `%${safe}%`);
+		const candidatesResult = await candidateQuery;
+		if (candidatesResult.error) {
+			console.error('[image gen] candidates', candidatesResult.error);
+			throw error(500, `Could not load image candidates: ${candidatesResult.error.message}`);
+		}
+		candidates = (candidatesResult.data ?? []) as CandidateRow[];
+		const slugs = [...new Set(candidates.map((candidate) => candidate.brand_slug))];
+		if (slugs.length) {
+			const brandsResult = await admin
+				.from('brands')
+				.select('slug,display,icon_path,created_at')
+				.in('slug', slugs);
+			if (brandsResult.error) {
+				console.error('[image gen] brands', brandsResult.error);
+				throw error(500, `Could not load brands: ${brandsResult.error.message}`);
+			}
+			brands = (brandsResult.data ?? []) as BrandRow[];
+		}
+	}
 
-	if (brandsResult.error) {
-		console.error('[image gen] brands', brandsResult.error);
-		throw error(500, `Could not load brands: ${brandsResult.error.message}`);
-	}
-	if (dossiersResult.error) {
-		console.error('[image gen] dossiers', dossiersResult.error);
-		throw error(500, `Could not load enrichment readiness: ${dossiersResult.error.message}`);
-	}
-	if (candidatesResult.error) {
-		console.error('[image gen] candidates', candidatesResult.error);
-		throw error(500, `Could not load image candidates: ${candidatesResult.error.message}`);
-	}
-
-	const brands = (brandsResult.data ?? []) as BrandRow[];
-	const dossiers = (dossiersResult.data ?? []) as DossierRow[];
-	const candidates = (candidatesResult.data ?? []) as CandidateRow[];
 	const dossierByBrand = new Map(dossiers.map((dossier) => [dossier.brand_slug, dossier]));
 	const latestCandidateByBrand = new Map<string, CandidateRow>();
 	for (const candidate of candidates) {
@@ -228,19 +330,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 					: null
 		};
 	});
-	const filteredBrands = q
-		? enrichedBrands.filter(
-				(brand) => brand.display.toLowerCase().includes(q) || brand.slug.toLowerCase().includes(q)
-			)
-		: enrichedBrands;
-	const iconless = filteredBrands
+	const iconless = enrichedBrands
 		.filter((brand) => !brand.icon_path?.trim())
 		.sort((a, b) => {
 			const aReady = a.dossier_status === 'approved' ? 1 : 0;
 			const bReady = b.dossier_status === 'approved' ? 1 : 0;
 			return bReady - aReady || a.display.localeCompare(b.display);
 		});
-	const generatedBrands = filteredBrands
+	const generatedBrands = enrichedBrands
 		.filter((brand) => Boolean(brand.icon_path?.trim()))
 		.sort((a, b) => a.display.localeCompare(b.display));
 	const decoratedCandidates = candidates.map((candidate) => {
@@ -248,6 +345,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		const previewPath = candidatePreviewPath(candidate);
 		return {
 			...candidate,
+			concept: candidate.concept ?? {},
+			generation_prompt: candidate.generation_prompt ?? null,
 			brand_display: brand?.display ?? candidate.brand_slug,
 			current_icon_path: brand?.icon_path ?? null,
 			preview_url:
@@ -273,40 +372,39 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 					: null
 		};
 	});
-	const visibleCandidates = q
-		? decoratedCandidates.filter(
-				(candidate) =>
-					candidate.brand_display.toLowerCase().includes(q) ||
-					candidate.brand_slug.toLowerCase().includes(q)
-			)
-		: decoratedCandidates;
-	const reviewCandidates = visibleCandidates.filter((candidate) =>
-		['generating', 'generated', 'processing', 'failed'].includes(candidate.status)
+	const reviewCandidates = decoratedCandidates.filter((candidate) =>
+		reviewStatuses.includes(candidate.status as (typeof reviewStatuses)[number])
 	);
-	const historyCandidates = visibleCandidates.filter((candidate) =>
-		['approved', 'published', 'rejected', 'superseded'].includes(candidate.status)
+	const historyCandidates = decoratedCandidates.filter((candidate) =>
+		historyStatuses.includes(candidate.status as (typeof historyStatuses)[number])
 	);
-	const statusCounts: Record<string, number> = {};
-	for (const candidate of candidates) {
-		statusCounts[candidate.status] = (statusCounts[candidate.status] ?? 0) + 1;
-	}
+	const readyCount = iconless.filter((brand) => brand.dossier_status === 'approved').length;
 
 	return {
 		view,
-		q: cleanSearch(url.searchParams.get('q')),
+		q,
 		storage,
 		metrics: {
-			eligible: brands.length,
-			iconless: enrichedBrands.filter((brand) => !brand.icon_path?.trim()).length,
-			ready: enrichedBrands.filter(
-				(brand) => !brand.icon_path?.trim() && brand.dossier_status === 'approved'
-			).length,
+			eligible: eligibleResult.count ?? 0,
+			iconless: iconlessResult.count ?? 0,
+			ready: view === 'ready' ? readyCount : iconlessResult.count ?? 0,
 			review: statusCounts.generated ?? 0,
 			active: (statusCounts.generating ?? 0) + (statusCounts.processing ?? 0),
 			failed: statusCounts.failed ?? 0,
-			published: statusCounts.published ?? 0
+			published: statusCounts.published ?? 0,
+			generated: generatedCountResult.count ?? 0,
+			reviewQueue:
+				(statusCounts.generating ?? 0) +
+				(statusCounts.generated ?? 0) +
+				(statusCounts.processing ?? 0) +
+				(statusCounts.failed ?? 0),
+			history:
+				(statusCounts.approved ?? 0) +
+				(statusCounts.published ?? 0) +
+				(statusCounts.rejected ?? 0) +
+				(statusCounts.superseded ?? 0)
 		},
-		brands: filteredBrands,
+		brands: enrichedBrands,
 		iconless,
 		generatedBrands,
 		reviewCandidates,

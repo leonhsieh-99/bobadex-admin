@@ -4,7 +4,7 @@
 	export let active: 'candidates' | 'submissions' | 'reports';
 
 	const tabs = [
-		{ id: 'candidates', label: 'Candidates', href: '/admin/reviews' },
+		{ id: 'candidates', label: 'Storefronts', href: '/admin/reviews' },
 		{ id: 'submissions', label: 'Brand submissions', href: '/admin/brands' },
 		{ id: 'reports', label: 'Reports', href: '/admin/reports' }
 	] as const;

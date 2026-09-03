@@ -1,16 +1,13 @@
 import type { PageServerLoad } from './$types';
 import { supabaseAdmin } from '$lib/supabase.server';
+import { countByValues, countExact } from '$lib/server/status-counts.server';
 import {
-	countByStatus,
-	increment,
-	loadPipelineRuns,
 	loadProviderRuns,
-	loadShards
+	loadPipelineRuns,
+	loadShards,
+	countByStatus
 } from '$lib/server/poi-import.server';
-
-type CandidateStatusRow = {
-	process_status: string;
-};
+import { loadStorefrontReviewDossiers } from '$lib/server/poi-storefront.server';
 
 type ReviewCandidateRow = {
 	id: string;
@@ -36,10 +33,6 @@ type ReportRow = {
 	created_at: string;
 };
 
-type EnrichmentJobSummaryRow = {
-	status: string;
-};
-
 type CronStatusPayload = {
 	jobs?: Array<{ jobname?: string | null; command?: string | null }>;
 };
@@ -52,13 +45,26 @@ const expectedCronSignals = [
 	'drain-brand-location-geocode'
 ];
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, depends }) => {
+	depends('app:admin-home');
 	const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 	const admin = supabaseAdmin();
 
+	const poiStatuses = [
+		'needs_exception_resolution',
+		'needs_manual_review',
+		'ready_for_enrichment',
+		'pending',
+		'resolved',
+		'resolved_existing',
+		'known_negative'
+	] as const;
+	const enrichmentStatuses = ['queued', 'running', 'failed'] as const;
+
 	const [
 		pipelineRuns,
-		candidateSummaryResult,
+		candidateStatusResult,
+		candidateTotalResult,
 		reviewCandidatesResult,
 		stagingResult,
 		reportsResult,
@@ -72,14 +78,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		cronStatusResult
 	] = await Promise.all([
 		loadPipelineRuns(25).catch((error) => ({ error })),
-		admin.schema('ingest').from('poi_candidates').select('process_status').limit(10000),
-		admin
-			.schema('ingest')
-			.from('poi_candidates')
-			.select('id,canonical_name,process_status,region_key,updated_at')
-			.in('process_status', ['needs_exception_resolution', 'needs_manual_review'])
-			.order('updated_at', { ascending: false })
-			.limit(6),
+		countByValues(admin, 'poi_candidates', 'process_status', poiStatuses, 'ingest'),
+		countExact(admin, 'poi_candidates', 'ingest'),
+		loadStorefrontReviewDossiers(locals.supabase, 6, 0),
 		locals.supabase
 			.schema('ingest')
 			.from('brand_staging')
@@ -99,7 +100,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.from('brands')
 			.select('*', { count: 'exact', head: true })
 			.gte('created_at', sevenDaysAgo),
-		admin.schema('ingest').from('brand_enrichment_jobs').select('status').limit(10000),
+		countByValues(admin, 'brand_enrichment_jobs', 'status', enrichmentStatuses, 'ingest'),
 		admin
 			.schema('mod')
 			.from('brand_dossiers')
@@ -133,12 +134,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const runs = Array.isArray(pipelineRuns) ? pipelineRuns : [];
 	const latestRun = runs[0] ?? null;
 	const providerRuns = latestRun ? await loadProviderRuns([latestRun.id]).catch(() => []) : [];
-	const shards = latestRun ? await loadShards(providerRuns.map((run) => run.id)).catch(() => []) : [];
+	const shards = latestRun
+		? await loadShards(providerRuns.map((run) => run.id)).catch(() => [])
+		: [];
 	const shardCounts = countByStatus(shards);
 
 	const sourceErrors = [
 		['Imports', pipelineErrorMessage],
-		['Candidates', candidateSummaryResult.error ?? reviewCandidatesResult.error],
+		[
+			'Candidates',
+			candidateStatusResult.error ?? candidateTotalResult.error ?? reviewCandidatesResult.error
+		],
 		['Brand submissions', stagingResult.error],
 		['Reports', reportsResult.error],
 		['Brands', brandCountResult.error ?? newBrandCountResult.error],
@@ -151,16 +157,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.filter((entry) => entry[1])
 		.map(([source]) => String(source));
 
-	const candidates = (candidateSummaryResult.data ?? []) as CandidateStatusRow[];
-	const candidateStatusCounts: Record<string, number> = {};
-	for (const row of candidates) increment(candidateStatusCounts, row.process_status);
+	const storefrontDossiers = reviewCandidatesResult.dossiers;
 
+	const candidateStatusCounts = candidateStatusResult.counts;
 	const stagingRows = (stagingResult.data ?? []) as StagingRow[];
 	const reportRows = (reportsResult.data ?? []) as ReportRow[];
-	const enrichmentJobStatusCounts: Record<string, number> = {};
-	for (const row of (enrichmentJobsResult.data ?? []) as EnrichmentJobSummaryRow[]) {
-		increment(enrichmentJobStatusCounts, row.status);
-	}
+	const enrichmentJobStatusCounts = enrichmentJobsResult.counts;
 	const cronPayload =
 		cronStatusResult.data &&
 		typeof cronStatusResult.data === 'object' &&
@@ -181,10 +183,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	return {
 		metrics: {
-			reviewQueue:
-				(candidateStatusCounts.needs_exception_resolution ?? 0) +
-				(candidateStatusCounts.needs_manual_review ?? 0),
-			needsReview: candidateStatusCounts.needs_manual_review ?? 0,
+			reviewQueue: storefrontDossiers.length,
+			needsReview: storefrontDossiers.length,
 			exceptions: candidateStatusCounts.needs_exception_resolution ?? 0,
 			activeJobs,
 			failedJobs,
@@ -193,7 +193,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			pendingReports: reportsResult.count ?? 0,
 			brandCount: brandCountResult.count ?? 0,
 			newBrands: newBrandCountResult.count ?? 0,
-			totalCandidates: candidates.length,
+			totalCandidates: candidateTotalResult.count ?? 0,
 			enrichmentQueue:
 				(enrichmentJobStatusCounts.queued ?? 0) + (enrichmentJobStatusCounts.running ?? 0),
 			failedEnrichmentJobs: enrichmentJobStatusCounts.failed ?? 0,
@@ -219,9 +219,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					error_text: latestRun.last_error,
 					providers: latestRun.requested_providers,
 					completedShards:
-						(shardCounts.succeeded ?? 0) +
-						(shardCounts.failed ?? 0) +
-						(shardCounts.cancelled ?? 0),
+						(shardCounts.succeeded ?? 0) + (shardCounts.failed ?? 0) + (shardCounts.cancelled ?? 0),
 					shardTotal: shards.length
 				}
 			: null,
@@ -232,7 +230,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 			region_key: run.region_key,
 			created_at: run.created_at
 		})),
-		reviewCandidates: (reviewCandidatesResult.data ?? []) as ReviewCandidateRow[],
+		reviewCandidates: storefrontDossiers.map((dossier) => ({
+			id: dossier.id,
+			canonical_name:
+				dossier.display_address ??
+				dossier.address_input ??
+				dossier.normalized_address ??
+				'Unknown address',
+			process_status: dossier.review_reason ?? dossier.status ?? 'needs_review',
+			region_key: dossier.region_key ?? null,
+			updated_at: dossier.updated_at ?? dossier.created_at ?? new Date().toISOString()
+		})),
 		stagingRows,
 		reportRows,
 		sourceErrors

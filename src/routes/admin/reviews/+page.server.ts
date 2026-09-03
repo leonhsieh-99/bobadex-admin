@@ -2,12 +2,21 @@
 import { error, redirect } from '@sveltejs/kit';
 import { supabaseAdmin } from '$lib/supabase.server';
 import { blockedCreateReasons, isCancelledLatestReview } from '$lib/poi-review-actions';
+import {
+	dossierMatchesQuery,
+	isStorefrontResolution,
+	type StorefrontDossier
+} from '$lib/poi-storefront-dossiers';
+import { formatPostalAddress } from '$lib/maps';
+import { loadStorefrontReviewDossiers } from '$lib/server/poi-storefront.server';
+import { countByValues } from '$lib/server/status-counts.server';
 import type { Actions, PageServerLoad } from './$types';
 
+const STOREFRONT_PAGE_SIZE = 25;
 const tabs = [
 	{
 		id: 'manual',
-		label: 'Manual review',
+		label: 'Storefronts',
 		statuses: ['needs_exception_resolution', 'needs_manual_review']
 	},
 	{ id: 'ready', label: 'Ready for enrichment', statuses: ['ready_for_enrichment'] },
@@ -22,6 +31,8 @@ const actionable = [
 ];
 const CANDIDATE_COLUMNS =
 	'id,canonical_name,normalized_name,lat,lon,address_input,region_key,route_class,process_status,process_reason,matched_brand_slug,matched_brand_location_id,identity_confidence,eligibility_confidence,freshness_confidence,brand_creation_gate_status,risk_flags,created_at,updated_at';
+const HISTORY_CANDIDATE_COLUMNS =
+	'id,canonical_name,region_key,route_class,process_status,process_reason,matched_brand_slug,address_input,lat,lon,updated_at,created_at';
 
 function destination(form: FormData, values: Record<string, string | null | undefined>) {
 	const params = new URLSearchParams();
@@ -77,21 +88,79 @@ async function applyTargetedResolution(
 	return rpcError;
 }
 
-export const load: PageServerLoad = async ({ url }) => {
+function displayAddressForCandidate(
+	candidate: { address_input?: string | null } | undefined,
+	places: Array<{
+		address_input?: string | null;
+		locality?: string | null;
+		admin1?: string | null;
+		postal_code?: string | null;
+	}>
+) {
+	const place = places.find(
+		(observation) => observation.locality || observation.admin1 || observation.postal_code
+	);
+	return formatPostalAddress({
+		street: candidate?.address_input ?? place?.address_input ?? places[0]?.address_input,
+		locality: place?.locality,
+		admin1: place?.admin1,
+		postalCode: place?.postal_code
+	});
+}
+
+async function observationPlacesByCandidate(admin: ReturnType<typeof supabaseAdmin>, ids: string[]) {
+	const byCandidate: Record<
+		string,
+		Array<{
+			address_input?: string | null;
+			locality?: string | null;
+			admin1?: string | null;
+			postal_code?: string | null;
+		}>
+	> = {};
+	if (!ids.length) return byCandidate;
+	const { data: links, error: linkError } = await admin
+		.schema('ingest')
+		.from('poi_candidate_observations')
+		.select('candidate_id,observation_id')
+		.in('candidate_id', ids)
+		.is('unlinked_at', null);
+	if (linkError) throw error(500, 'Failed to load review history: ' + linkError.message);
+	const observationIds = [...new Set((links ?? []).map((link) => link.observation_id).filter(Boolean))];
+	if (!observationIds.length) return byCandidate;
+	const { data: places, error: placeError } = await admin
+		.schema('ingest')
+		.from('poi_observations')
+		.select('id,address_input,locality,admin1,postal_code')
+		.in('id', observationIds);
+	if (placeError) throw error(500, 'Failed to load review history: ' + placeError.message);
+	const placeById = new Map((places ?? []).map((place) => [place.id, place]));
+	for (const link of links ?? []) {
+		const place = placeById.get(link.observation_id);
+		if (!place) continue;
+		(byCandidate[link.candidate_id] ??= []).push(place);
+	}
+	return byCandidate;
+}
+
+export const load: PageServerLoad = async ({ url, depends, locals }) => {
+	depends('app:reviews');
 	const admin = supabaseAdmin();
 	const selected = tabs.find((tab) => tab.id === url.searchParams.get('tab')) ?? tabs[0];
 	const q = url.searchParams.get('q')?.trim() ?? '';
 	const historyMode = selected.id === 'history';
+	const storefrontMode = selected.id === 'manual';
+	const page = Math.max(1, Number(url.searchParams.get('page') ?? 1) || 1);
+	const offset = (page - 1) * STOREFRONT_PAGE_SIZE;
+	const tabStatuses = [
+		'needs_exception_resolution',
+		'needs_manual_review',
+		'ready_for_enrichment',
+		'pending'
+	] as const;
 
-	const statusResult = await admin
-		.schema('ingest')
-		.from('poi_candidates')
-		.select('process_status')
-		.limit(10000);
-	if (statusResult.error)
-		throw error(500, 'Failed to load POI queue: ' + statusResult.error.message);
-
-	const [historyCountResult, cancelledCountResult, brandResult, aliasResult] = await Promise.all([
+	const [statusCountResult, historyCountResult, cancelledCountResult] = await Promise.all([
+		countByValues(admin, 'poi_candidates', 'process_status', tabStatuses, 'ingest'),
 		admin
 			.schema('ingest')
 			.from('poi_candidate_reviews')
@@ -101,16 +170,33 @@ export const load: PageServerLoad = async ({ url }) => {
 			.schema('ingest')
 			.from('poi_candidate_reviews')
 			.select('*', { count: 'exact', head: true })
-			.eq('status', 'cancelled'),
-		admin.from('brands').select('slug,display').limit(10000),
-		admin.from('brand_aliases').select('brand_slug,alias_display,normalized_name').limit(10000)
+			.eq('status', 'cancelled')
 	]);
-	const lookupError = brandResult.error ?? aliasResult.error;
-	if (lookupError) throw error(500, 'Failed to load POI queue: ' + lookupError.message);
+	if (statusCountResult.error)
+		throw error(500, 'Failed to load POI queue: ' + statusCountResult.error.message);
 
 	let candidates: any[] = [];
 	let history: any[] = [];
-	if (historyMode) {
+	let dossiers: StorefrontDossier[] = [];
+	let dossierCount = 0;
+	let dossierHasMore = false;
+	if (storefrontMode) {
+		const loaded = await loadStorefrontReviewDossiers(
+			locals.supabase,
+			q ? 100 : STOREFRONT_PAGE_SIZE + 1,
+			q ? 0 : offset
+		);
+		if (loaded.error) throw error(500, 'Failed to load storefront dossiers: ' + loaded.error);
+		dossiers = loaded.dossiers;
+		if (q) {
+			dossiers = dossiers.filter((dossier) => dossierMatchesQuery(dossier, q));
+			dossierCount = dossiers.length;
+		} else {
+			dossierHasMore = dossiers.length > STOREFRONT_PAGE_SIZE;
+			dossiers = dossiers.slice(0, STOREFRONT_PAGE_SIZE);
+			dossierCount = offset + dossiers.length + (dossierHasMore ? 1 : 0);
+		}
+	} else if (historyMode) {
 		const [reviewResult, terminalResult] = await Promise.all([
 			admin
 				.schema('ingest')
@@ -124,9 +210,7 @@ export const load: PageServerLoad = async ({ url }) => {
 			admin
 				.schema('ingest')
 				.from('poi_candidates')
-				.select(
-					'id,canonical_name,region_key,route_class,process_status,process_reason,matched_brand_slug,updated_at,created_at'
-				)
+				.select(HISTORY_CANDIDATE_COLUMNS)
 				.in('process_status', ['resolved', 'resolved_existing', 'known_negative', 'rejected'])
 				.order('updated_at', { ascending: false })
 				.limit(150)
@@ -146,23 +230,27 @@ export const load: PageServerLoad = async ({ url }) => {
 			const namedResult = await admin
 				.schema('ingest')
 				.from('poi_candidates')
-				.select(
-					'id,canonical_name,region_key,route_class,process_status,process_reason,matched_brand_slug,updated_at'
-				)
+				.select(HISTORY_CANDIDATE_COLUMNS)
 				.in('id', historyIds);
 			if (namedResult.error)
 				throw error(500, 'Failed to load review history: ' + namedResult.error.message);
 			for (const row of namedResult.data ?? []) named.set(row.id, row);
 		}
+		const placesByCandidate = await observationPlacesByCandidate(admin, historyIds);
 		const reviewRows = reviews.map((review) => {
 			const candidate = named.get(review.candidate_id);
 			return {
 				id: review.id,
 				candidate_id: review.candidate_id,
 				canonical_name: candidate?.canonical_name ?? 'Unnamed POI',
+				display_address: displayAddressForCandidate(
+					candidate,
+					placesByCandidate[review.candidate_id] ?? []
+				),
 				region_key: candidate?.region_key ?? null,
 				route_class: candidate?.route_class ?? null,
 				process_status: candidate?.process_status ?? null,
+				matched_brand_slug: candidate?.matched_brand_slug ?? null,
 				kind: review.review_kind,
 				status: review.status,
 				decision: review.decision ?? review.question ?? candidate?.process_reason ?? null,
@@ -180,9 +268,11 @@ export const load: PageServerLoad = async ({ url }) => {
 				id: 'candidate:' + row.id,
 				candidate_id: row.id,
 				canonical_name: row.canonical_name ?? 'Unnamed POI',
+				display_address: displayAddressForCandidate(row, placesByCandidate[row.id] ?? []),
 				region_key: row.region_key,
 				route_class: row.route_class,
 				process_status: row.process_status,
+				matched_brand_slug: row.matched_brand_slug ?? null,
 				kind: 'candidate_resolution',
 				status: row.process_status === 'rejected' ? 'rejected' : 'completed',
 				decision: row.process_reason,
@@ -198,7 +288,15 @@ export const load: PageServerLoad = async ({ url }) => {
 		if (q) {
 			const needle = q.toLowerCase();
 			history = history.filter((row) =>
-				[row.canonical_name, row.decision, row.kind, row.status, row.region_key]
+				[
+					row.canonical_name,
+					row.display_address,
+					row.decision,
+					row.kind,
+					row.status,
+					row.region_key,
+					row.matched_brand_slug
+				]
 					.filter(Boolean)
 					.some((value) => String(value).toLowerCase().includes(needle))
 			);
@@ -272,19 +370,74 @@ export const load: PageServerLoad = async ({ url }) => {
 	candidates = candidates.filter(
 		(candidate) => !isCancelledLatestReview(latestReviewByCandidate[candidate.id])
 	);
-	const statusCounts: Record<string, number> = {};
-	for (const row of statusResult.data ?? [])
-		statusCounts[row.process_status] = (statusCounts[row.process_status] ?? 0) + 1;
+
+	const brandSlugs = new Set<string>();
+	for (const candidate of candidates) {
+		if (candidate.matched_brand_slug) brandSlugs.add(candidate.matched_brand_slug);
+	}
+	for (const review of reviews) {
+		if (review.proposed_brand_slug) brandSlugs.add(review.proposed_brand_slug);
+	}
+	const needles = [
+		...new Set(
+			candidates.flatMap((candidate) => {
+				const name = String(candidate.normalized_name ?? candidate.canonical_name ?? '')
+					.toLowerCase()
+					.replace(/[%_,()]/g, ' ')
+					.replace(/\s+/g, ' ')
+					.trim();
+				return name.length >= 3 ? [name.slice(0, 80)] : [];
+			})
+		)
+	].slice(0, 12);
+	let aliases: Array<{
+		brand_slug: string;
+		alias_display: string | null;
+		normalized_name: string;
+	}> = [];
+	if (needles.length) {
+		const aliasResult = await admin
+			.from('brand_aliases')
+			.select('brand_slug,alias_display,normalized_name')
+			.or(
+				needles
+					.flatMap((needle) => [
+						`normalized_name.ilike.%${needle}%`,
+						`alias_display.ilike.%${needle}%`
+					])
+					.join(',')
+			)
+			.limit(80);
+		if (aliasResult.error)
+			throw error(500, 'Failed to load POI queue: ' + aliasResult.error.message);
+		aliases = aliasResult.data ?? [];
+		for (const alias of aliases) brandSlugs.add(alias.brand_slug);
+	}
+	let brands: Array<{ slug: string; display: string }> = [];
+	if (brandSlugs.size) {
+		const brandResult = await admin
+			.from('brands')
+			.select('slug,display')
+			.in('slug', [...brandSlugs])
+			.eq('status', 'active');
+		if (brandResult.error)
+			throw error(500, 'Failed to load POI queue: ' + brandResult.error.message);
+		brands = brandResult.data ?? [];
+	}
 
 	return {
 		candidates,
+		dossiers,
+		dossierCount,
+		dossierPage: page,
+		dossierHasMore,
 		history,
 		observationsByCandidate,
 		latestReviewByCandidate,
-		brands: brandResult.data ?? [],
-		aliases: aliasResult.data ?? [],
+		brands,
+		aliases,
 		reviewTabs: tabs,
-		statusCounts,
+		statusCounts: statusCountResult.counts,
 		historyCount: historyCountResult.count ?? history.length,
 		cancelledReviewCount: cancelledCountResult.count ?? 0,
 		reviewTab: selected.id,
@@ -293,6 +446,37 @@ export const load: PageServerLoad = async ({ url }) => {
 };
 
 export const actions: Actions = {
+	resolveDossier: async ({ request, locals }) => {
+		if (!locals.isAdmin) throw error(403, 'Forbidden');
+		const form = await request.formData();
+		const id = String(form.get('dossier_id') ?? '').trim();
+		const resolution = String(form.get('resolution') ?? '').trim();
+		const identityKey = String(form.get('selected_identity_key') ?? '').trim();
+		if (!id || !isStorefrontResolution(resolution)) {
+			throw redirect(303, destination(form, { toast: 'resolve_failed', msg: 'missing_params' }));
+		}
+		if (resolution === 'select_identity' && !identityKey) {
+			throw redirect(
+				303,
+				destination(form, { toast: 'resolve_failed', msg: 'select_an_identity_tile' })
+			);
+		}
+		const { error: rpcError } = await locals.supabase.rpc('admin_resolve_poi_storefront_dossier', {
+			p_dossier_id: id,
+			p_resolution: resolution,
+			p_selected_identity_key: identityKey || null,
+			p_note: String(form.get('note') ?? '').trim() || null
+		});
+		if (rpcError)
+			throw redirect(303, destination(form, { toast: 'resolve_failed', msg: rpcError.message }));
+		const toast =
+			resolution === 'select_identity'
+				? 'storefront_current'
+				: resolution === 'closed_or_vacant'
+					? 'storefront_closed'
+					: 'storefront_unresolved';
+		throw redirect(303, destination(form, { toast }));
+	},
 	approve: async ({ request, locals }) => {
 		if (!locals.isAdmin) throw error(403, 'Forbidden');
 		const form = await request.formData();

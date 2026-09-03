@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { applyAction, enhance } from '$app/forms';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto, invalidate } from '$app/navigation';
+	import { conceptDirection, conceptPalette, conceptSummary } from '$lib/mascot-concept';
 	import { toasts } from '$lib/toast';
 	import type { SubmitFunction } from './$types';
 
@@ -28,6 +29,7 @@
 		quality_score: number;
 		model: string;
 		concept: Record<string, unknown>;
+		generation_prompt: string | null;
 		storage_path: string | null;
 		error_text: string | null;
 		created_at: string;
@@ -51,6 +53,9 @@
 			active: number;
 			failed: number;
 			published: number;
+			generated: number;
+			reviewQueue: number;
+			history: number;
 		};
 		brands: Brand[];
 		iconless: Brand[];
@@ -75,6 +80,7 @@
 	let regenerationDirection = '';
 	let comparisonQueue: Candidate[] = [];
 	let comparisonTotal = 0;
+	let expandedPromptId: string | null = null;
 	let comparisonCompleted = 0;
 	$: selectedBrand = data.brands.find((brand) => brand.slug === selectedSlug) ?? null;
 	$: comparisonCandidate = comparisonQueue[0] ?? null;
@@ -175,17 +181,17 @@
 					if (action === 'regenerateSelected') {
 						regenerationConfirm = false;
 						selectedRegenerationSlugs = new Set();
-						await invalidateAll();
+						await invalidate('app:image-gen');
 						return;
 					}
 					if (action === 'publishComparison' || action === 'rejectComparison') {
 						comparisonQueue = comparisonQueue.slice(1);
 						comparisonCompleted += 1;
-						await invalidateAll();
+						await invalidate('app:image-gen');
 						return;
 					}
 					generating = false;
-					await invalidateAll();
+					await invalidate('app:image-gen');
 					return;
 				}
 				modalError = message;
@@ -204,29 +210,6 @@
 		const hours = Math.floor(minutes / 60);
 		if (hours < 24) return `${hours}h ago`;
 		return `${Math.floor(hours / 24)}d ago`;
-	}
-
-	function conceptText(candidate: Candidate, key: string) {
-		const value = candidate.concept?.[key];
-		if (typeof value === 'string') return value;
-		if (Array.isArray(value)) return value.filter((item) => typeof item === 'string').join(', ');
-		return '';
-	}
-
-	function conceptIdentity(candidate: Candidate) {
-		return [conceptText(candidate, 'ancestry_family'), conceptText(candidate, 'body_plan')]
-			.filter(Boolean)
-			.join(' · ');
-	}
-
-	function conceptDirection(candidate: Candidate) {
-		return [
-			conceptText(candidate, 'dominant_feature'),
-			conceptText(candidate, 'secondary_marking'),
-			conceptText(candidate, 'temperament_pose')
-		]
-			.filter(Boolean)
-			.join(' · ');
 	}
 
 	function statusClass(status: string) {
@@ -296,7 +279,7 @@
 		class="sticky top-[65px] z-30 flex gap-6 overflow-x-auto border-y border-zinc-200 bg-white/95 px-1 backdrop-blur"
 		aria-label="Image generation views"
 	>
-		{#each [{ id: 'ready', label: 'Ready', count: data.metrics.iconless }, { id: 'generated', label: 'Generated', count: data.generatedBrands.length }, { id: 'review', label: 'Review', count: data.reviewCandidates.length }, { id: 'history', label: 'History', count: data.historyCandidates.length }] as tab (tab.id)}
+		{#each [{ id: 'ready', label: 'Ready', count: data.metrics.iconless }, { id: 'generated', label: 'Generated', count: data.metrics.generated }, { id: 'review', label: 'Review', count: data.metrics.reviewQueue }, { id: 'history', label: 'History', count: data.metrics.history }] as tab (tab.id)}
 			<a
 				href={pageUrl(tab.id as 'ready' | 'generated' | 'review' | 'history')}
 				class="shrink-0 border-b-2 px-1 py-3 text-sm {data.view === tab.id
@@ -583,10 +566,13 @@
 						</div>
 						<code class="block truncate text-xs text-zinc-500">{candidate.brand_slug}</code>
 						<p class="mt-2 text-sm text-zinc-700">
-							{conceptIdentity(candidate) || 'Concept unavailable'}
+							{conceptSummary(candidate.concept) || 'Concept unavailable'}
 						</p>
-						{#if conceptDirection(candidate)}
-							<p class="mt-1 text-xs text-zinc-500">{conceptDirection(candidate)}</p>
+						{#if conceptDirection(candidate.concept)}
+							<p class="mt-1 text-xs text-zinc-500">{conceptDirection(candidate.concept)}</p>
+						{/if}
+						{#if conceptPalette(candidate.concept)}
+							<p class="mt-1 text-xs text-zinc-500">{conceptPalette(candidate.concept)}</p>
 						{/if}
 						<p class="mt-1 text-xs text-zinc-500">
 							{candidate.model} · {candidate.quality} · {candidate.creative_mode.replaceAll(
@@ -594,6 +580,21 @@
 								' '
 							)} · updated {relativeDate(candidate.updated_at)}
 						</p>
+						{#if candidate.generation_prompt}
+							<button
+								type="button"
+								class="mt-2 text-xs font-medium text-zinc-700 underline decoration-zinc-300 underline-offset-2 hover:text-zinc-950"
+								aria-expanded={expandedPromptId === candidate.id}
+								onclick={() =>
+									(expandedPromptId = expandedPromptId === candidate.id ? null : candidate.id)}
+							>
+								{expandedPromptId === candidate.id ? 'Hide image prompt' : 'Show image prompt'}
+							</button>
+							{#if expandedPromptId === candidate.id}
+								<pre
+									class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] leading-5 text-zinc-700">{candidate.generation_prompt}</pre>
+							{/if}
+						{/if}
 						{#if candidate.error_text}<p class="mt-2 text-xs text-red-700">
 								{candidate.error_text}
 							</p>{/if}
@@ -862,6 +863,15 @@
 									' '
 								)}
 							</p>
+							{#if conceptSummary(comparisonCandidate.concept)}
+								<p class="mt-2 text-sm text-zinc-700">
+									{conceptSummary(comparisonCandidate.concept)}
+								</p>
+							{/if}
+							{#if comparisonCandidate.generation_prompt}
+								<pre
+									class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-zinc-200 bg-zinc-50 px-2 py-2 text-[11px] leading-5 text-zinc-600">{comparisonCandidate.generation_prompt}</pre>
+							{/if}
 						</div>
 					</section>
 				</div>

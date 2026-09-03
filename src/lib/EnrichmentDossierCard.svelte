@@ -22,7 +22,7 @@
 		topicCoverageLabel,
 		type EnrichmentDossierView
 	} from '$lib/enrichment-dossier';
-	import { coordinatesLabel, googleMapsCoordinatesUrl } from '$lib/maps';
+	import { coordinatesLabel, googleMapsCoordinatesUrl, locationEvidenceLabel } from '$lib/maps';
 
 	export let dossier: EnrichmentDossierView;
 	export let pendingAction = '';
@@ -195,7 +195,8 @@
 						<div class="py-2.5">
 							<p class="font-mono text-[10px] text-zinc-400">Location {location.id.slice(0, 8)}</p>
 							<p class="mt-0.5 truncate text-xs font-medium text-zinc-800">
-								{[location.city, location.county, location.region].filter(Boolean).join(', ') ||
+								{location.evidence.find((evidence) => evidence.address_input)?.address_input ||
+									[location.city, location.county, location.region].filter(Boolean).join(', ') ||
 									'Unresolved place'}
 							</p>
 							{#if googleMapsCoordinatesUrl(location.lat, location.lon)}
@@ -214,9 +215,7 @@
 									{#each location.evidence as evidence}
 										<span
 											class="rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600"
-											>{evidence.osm_id
-												? `OSM ${evidence.osm_type ?? 'node'} ${evidence.osm_id}`
-												: `Manual · ${evidence.verification_status ?? 'unverified'}`}</span
+											>{locationEvidenceLabel(evidence)}</span>
 										>
 									{/each}
 								</div>

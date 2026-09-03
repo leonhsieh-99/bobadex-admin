@@ -1,10 +1,16 @@
 <script lang="ts">
 	/* eslint-disable @typescript-eslint/no-explicit-any, svelte/prefer-svelte-reactivity, svelte/require-each-key */
 	import { applyAction, enhance } from '$app/forms';
-	import { goto } from '$app/navigation';
+	import { goto, invalidate } from '$app/navigation';
 	import ReviewTabs from '$lib/ReviewTabs.svelte';
 	import { formatPostalAddress, foursquarePlaceUrl, googleMapsCoordinatesUrl } from '$lib/maps';
 	import { reviewActionFlags } from '$lib/poi-review-actions';
+	import {
+		STOREFRONT_RESOLUTIONS,
+		storefrontLifecycleLabel,
+		storefrontReasonLabel,
+		storefrontRelationshipLabel
+	} from '$lib/poi-storefront-dossiers';
 	import type { SubmitFunction } from './$types';
 
 	export let data: any;
@@ -14,21 +20,24 @@
 		() =>
 		async ({ result }) => {
 			if (result.type === 'redirect') {
-				await goto(result.location, { invalidateAll: true, keepFocus: true, noScroll: true });
+				await goto(result.location, { keepFocus: true, noScroll: true });
+				await invalidate('app:reviews');
 				return;
 			}
 			await applyAction(result);
 		};
 	function tabCount(tab: any) {
 		if (tab.id === 'history') return data.historyCount ?? 0;
+		if (tab.id === 'manual') return data.dossierCount ?? 0;
 		return tab.statuses.reduce(
 			(sum: number, status: string) => sum + (data.statusCounts[status] ?? 0),
 			0
 		);
 	}
-	function reviewUrl(tab: string) {
+	function reviewUrl(tab: string, page = 1) {
 		const params = new URLSearchParams({ tab });
 		if (searchTerm.trim()) params.set('q', searchTerm.trim());
+		if (tab === 'manual' && page > 1) params.set('page', String(page));
 		return '/admin/reviews?' + params.toString();
 	}
 	function safeUrl(value: unknown) {
@@ -118,8 +127,8 @@
 			<div>
 				<h1 class="mt-1 text-2xl font-semibold text-zinc-950">POI review queue</h1>
 				<p class="mt-2 max-w-3xl text-sm text-zinc-600">
-					Canonical candidates stay separate from FSQ, Overture, and OSM observations. Completed and
-					cancelled reviews live in History.
+					One storefront dossier per normalized address. Competing identities stay separate until
+					you choose the current tenant, mark the space closed or vacant, or leave it unresolved.
 				</p>
 			</div>
 			{#if data.reviewTab === 'ready'}
@@ -162,13 +171,236 @@
 		<input
 			name="q"
 			bind:value={searchTerm}
-			placeholder="Filter POIs"
+			placeholder="Filter addresses or identities"
 			class="min-w-0 flex-1 rounded-md border-zinc-300 text-sm"
 		/>
 		<button class="rounded-md border border-zinc-300 bg-white px-4 text-sm">Search</button>
 	</form>
 
-	{#if data.reviewTab === 'history'}
+	{#if data.reviewTab === 'manual'}
+		<section class="mt-5 space-y-4">
+			{#each data.dossiers as dossier}
+				{@const groups = dossier.identity_groups ?? []}
+				<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
+					<header
+						class="flex flex-wrap justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3"
+					>
+						<div>
+							<h2 class="font-semibold text-zinc-950">
+								{dossier.display_address ??
+									dossier.address_input ??
+									dossier.normalized_address ??
+									'Unknown address'}
+							</h2>
+							<p class="mt-1 text-xs text-zinc-500">
+								{dossier.region_key ?? 'No region'}
+								{#if googleMapsCoordinatesUrl(dossier.lat ?? null, dossier.lon ?? null)}
+									·
+									<a
+										href={googleMapsCoordinatesUrl(dossier.lat ?? null, dossier.lon ?? null) ?? '#'}
+										target="_blank"
+										rel="noreferrer"
+										class="text-blue-700">Map</a
+									>
+								{/if}
+							</p>
+							<p class="mt-1 text-xs text-zinc-400">
+								{#if formatWhen(dossier.updated_at)}Updated {formatWhen(dossier.updated_at)}{/if}
+							</p>
+						</div>
+						<div class="text-right text-xs">
+							<p class="font-medium text-zinc-800">
+								{storefrontReasonLabel(dossier.review_reason)}
+							</p>
+							<p class="mt-1 text-zinc-500">{groups.length} identity tiles</p>
+						</div>
+					</header>
+
+					<div class="grid lg:grid-cols-[1fr_19rem]">
+						<section class="space-y-3 p-4">
+							<h3 class="text-xs font-semibold text-zinc-500 uppercase">Identity tiles</h3>
+							<p class="text-[11px] text-zinc-500">
+								Same-identity observations are already merged. Provider refresh time is a
+								tie-breaker, not proof of the current tenant.
+							</p>
+							{#each groups as group}
+								<div
+									class="rounded-md border p-3 {group.identity_key ===
+									dossier.suggested_identity_key
+										? 'border-teal-300 bg-teal-50/40'
+										: 'border-zinc-200'}"
+								>
+									<div class="flex flex-wrap items-start justify-between gap-2">
+										<div>
+											<p class="text-sm font-semibold text-zinc-950">
+												{group.label ?? group.identity_key}
+											</p>
+											<p class="mt-0.5 font-mono text-[11px] text-zinc-500">
+												{group.matched_brand_slug ?? group.identity_key}
+											</p>
+										</div>
+										<div class="flex flex-wrap items-center gap-1 text-[11px]">
+											{#if group.identity_key === dossier.suggested_identity_key}
+												<span class="rounded bg-teal-100 px-2 py-0.5 font-medium text-teal-800"
+													>Suggested</span
+												>
+											{/if}
+											<span class="rounded bg-zinc-100 px-2 py-0.5 text-zinc-600"
+												>{group.current_count ?? 0} current</span
+											>
+											<span class="rounded bg-zinc-100 px-2 py-0.5 text-zinc-600"
+												>{group.closed_count ?? 0} closed</span
+											>
+										</div>
+									</div>
+									<div class="mt-3 space-y-2">
+										{#each group.observations ?? [] as observation}
+											<div class="rounded border border-zinc-200 bg-white px-3 py-2 text-xs">
+												<div class="flex flex-wrap justify-between gap-2">
+													<strong>{(observation.provider ?? 'source').toUpperCase()}</strong>
+													<span class="text-zinc-500"
+														>{storefrontRelationshipLabel(observation.relationship)} ·
+														{storefrontLifecycleLabel(observation.lifecycle_status)}</span
+													>
+												</div>
+												<p class="mt-1">{observation.name ?? group.label}</p>
+												<p class="mt-1 text-zinc-500">
+													{observation.display_address ??
+														observation.address ??
+														'No provider address'}
+												</p>
+												<div class="mt-1 flex flex-wrap gap-x-3 text-[11px] text-zinc-400">
+													{#if observationSourceHref(observation)}
+														<a
+															href={observationSourceHref(observation) ?? '#'}
+															target="_blank"
+															rel="noreferrer"
+															class="text-blue-700"
+															>{observation.provider === 'fsq' ? 'FSQ PlaceMaker' : 'Source'}</a
+														>
+													{/if}
+													{#if formatWhen(observation.last_seen_at)}
+														<span>Seen {formatWhen(observation.last_seen_at)}</span>
+													{/if}
+													{#if formatWhen(observation.provider_refreshed_at)}
+														<span
+															>Refresh {formatWhen(observation.provider_refreshed_at)} (tie-break only)</span
+														>
+													{/if}
+												</div>
+											</div>
+										{/each}
+									</div>
+									<form
+										method="POST"
+										action="?/resolveDossier"
+										use:enhance={enhanceAction}
+										class="mt-3"
+									>
+										<input type="hidden" name="dossier_id" value={dossier.id} />
+										<input type="hidden" name="filter_tab" value="manual" />
+										<input type="hidden" name="filter_q" value={searchTerm} />
+										<input
+											type="hidden"
+											name="resolution"
+											value={STOREFRONT_RESOLUTIONS.selectIdentity}
+										/>
+										<input type="hidden" name="selected_identity_key" value={group.identity_key} />
+										<button
+											class="rounded-md bg-teal-700 px-3 py-1.5 text-xs font-semibold text-white"
+											>Select as current</button
+										>
+									</form>
+								</div>
+							{/each}
+							{#if groups.length === 0}
+								<p class="text-xs text-zinc-500">No identity tiles on this storefront.</p>
+							{/if}
+						</section>
+
+						<aside
+							class="space-y-4 border-t border-zinc-200 bg-zinc-50 p-4 lg:border-t-0 lg:border-l"
+						>
+							<p class="text-[11px] font-medium text-zinc-500 uppercase">Storefront decision</p>
+							<form
+								method="POST"
+								action="?/resolveDossier"
+								use:enhance={enhanceAction}
+								class="space-y-2"
+							>
+								<input type="hidden" name="dossier_id" value={dossier.id} />
+								<input type="hidden" name="filter_tab" value="manual" />
+								<input type="hidden" name="filter_q" value={searchTerm} />
+								<input
+									type="hidden"
+									name="resolution"
+									value={STOREFRONT_RESOLUTIONS.closedOrVacant}
+								/>
+								<input
+									name="note"
+									placeholder="Closed / vacant note"
+									class="w-full rounded-md border-zinc-300 text-xs"
+								/>
+								<button
+									class="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold"
+									>Mark storefront closed/vacant</button
+								>
+							</form>
+							<form
+								method="POST"
+								action="?/resolveDossier"
+								use:enhance={enhanceAction}
+								class="space-y-2 border-t border-zinc-200 pt-4"
+							>
+								<input type="hidden" name="dossier_id" value={dossier.id} />
+								<input type="hidden" name="filter_tab" value="manual" />
+								<input type="hidden" name="filter_q" value={searchTerm} />
+								<input
+									type="hidden"
+									name="resolution"
+									value={STOREFRONT_RESOLUTIONS.keepUnresolved}
+								/>
+								<input
+									name="note"
+									placeholder="Why this should stay unresolved"
+									class="w-full rounded-md border-zinc-300 text-xs"
+								/>
+								<button
+									class="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold"
+									>Keep unresolved</button
+								>
+							</form>
+						</aside>
+					</div>
+				</article>
+			{/each}
+			{#if data.dossiers.length === 0}
+				<div
+					class="rounded-lg border border-zinc-200 bg-white px-6 py-14 text-center text-sm text-zinc-500"
+				>
+					No storefront dossiers need review.
+				</div>
+			{/if}
+			{#if !searchTerm.trim() && (data.dossierPage > 1 || data.dossierHasMore)}
+				<nav class="flex justify-between text-sm" aria-label="Storefront pages">
+					{#if data.dossierPage > 1}
+						<a
+							href={reviewUrl('manual', data.dossierPage - 1)}
+							class="text-zinc-700 hover:text-zinc-950">Previous</a
+						>
+					{:else}
+						<span></span>
+					{/if}
+					{#if data.dossierHasMore}
+						<a
+							href={reviewUrl('manual', data.dossierPage + 1)}
+							class="text-zinc-700 hover:text-zinc-950">Next</a
+						>
+					{/if}
+				</nav>
+			{/if}
+		</section>
+	{:else if data.reviewTab === 'history'}
 		<section class="mt-5">
 			{#if data.history.length}
 				<div class="overflow-x-auto rounded-lg border border-zinc-200 bg-white shadow-sm">
@@ -224,11 +456,17 @@
 									</td>
 									<td class="px-4 py-2.5">
 										<p class="font-medium text-zinc-950">{row.canonical_name}</p>
+										{#if row.display_address}
+											<p class="mt-0.5 text-xs text-zinc-700">{row.display_address}</p>
+										{/if}
 										<p class="mt-0.5 text-xs text-zinc-500">
 											{row.region_key ?? 'No region'} · {(row.route_class ?? 'no route').replaceAll(
 												'_',
 												' '
 											)}
+											{#if row.matched_brand_slug}
+												· {row.matched_brand_slug}
+											{/if}
 										</p>
 									</td>
 									<td class="px-4 py-2.5 text-zinc-600"
@@ -254,6 +492,9 @@
 											<p>
 												Candidate status: {(row.process_status ?? 'unknown').replaceAll('_', ' ')}
 											</p>
+											{#if row.display_address}
+												<p class="mt-1">{row.display_address}</p>
+											{/if}
 											{#if row.error_text}
 												<p class="mt-2 text-red-700">{row.error_text}</p>
 											{/if}

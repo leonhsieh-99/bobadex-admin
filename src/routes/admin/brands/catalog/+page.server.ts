@@ -144,7 +144,7 @@ async function resolveManualLocationPoint(input: {
 	return { lat, lon, address: input.address };
 }
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+export const load: PageServerLoad = async ({ locals, url, depends }) => {
 	const q = cleanSearch(url.searchParams.get('q'));
 	const requestedStatus = url.searchParams.get('status');
 	const status: BrandStatus | null =
@@ -164,6 +164,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			? 'asc'
 			: 'desc';
 	const page = Math.max(1, Number.parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+	depends('app:catalog');
 
 	const [catalogResult, regionsResult] = await Promise.all([
 		locals.supabase.rpc('admin_list_brand_catalog', {

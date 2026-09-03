@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { applyAction, enhance } from '$app/forms';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate } from '$app/navigation';
 	import BrandIdentityFields from '$lib/BrandIdentityFields.svelte';
 	import BrandMatchPolicyField from '$lib/BrandMatchPolicyField.svelte';
 	import BrandMergeDialog from '$lib/BrandMergeDialog.svelte';
@@ -761,7 +761,7 @@
 					if (action === 'markClosed') closeMarkClosed();
 					if (action === 'reviewAndPublish') closePublish();
 					if (action === 'mergeBrand') closeMerge();
-					await invalidateAll();
+					await invalidate('app:enrichment');
 					if (action === 'configureCron' || action === 'disableCron') {
 						await refreshCron();
 					}
@@ -1173,7 +1173,7 @@
 		if (refreshing || document.hidden) return;
 		refreshing = true;
 		try {
-			await invalidateAll();
+			await invalidate('app:enrichment');
 		} finally {
 			refreshing = false;
 		}
